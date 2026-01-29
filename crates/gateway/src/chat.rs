@@ -132,6 +132,14 @@ impl ChatService for LiveChatService {
             );
         }
 
+        info!(
+            run_id = %run_id,
+            user_message = %text,
+            model = provider.id(),
+            stream_only,
+            "chat.send"
+        );
+
         let handle = tokio::spawn(async move {
             if stream_only {
                 // Streaming mode (no tools) — plain LLM text generation.
