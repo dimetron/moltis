@@ -14,6 +14,8 @@
   var rpcSend = $("rpcSend");
   var rpcResult = $("rpcResult");
 
+  var modelSelect = $("modelSelect");
+
   var ws = null;
   var reqId = 0;
   var connected = false;
@@ -21,6 +23,7 @@
   var streamEl = null;
   var streamText = "";
   var pending = {};
+  var models = [];
 
   // ── Theme ────────────────────────────────────────────────────────
 
@@ -129,6 +132,7 @@
           reconnectDelay = 1000;
           setStatus("connected", "connected (v" + hello.protocol + ")");
           addMsg("system", "Connected to moltis gateway v" + hello.server.version);
+          fetchModels();
         } else {
           setStatus("", "handshake failed");
           var reason = (frame.error && frame.error.message) || "unknown error";
@@ -181,17 +185,64 @@
 
     ws.onclose = function () {
       connected = false;
-      setStatus("", "disconnected");
+      setStatus("", "disconnected — reconnecting…");
       streamEl = null;
       streamText = "";
-      setTimeout(function () {
-        reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
-        connect();
-      }, reconnectDelay);
+      scheduleReconnect();
     };
 
     ws.onerror = function () {};
   }
+
+  var reconnectTimer = null;
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 5000);
+      connect();
+    }, reconnectDelay);
+  }
+
+  // Reconnect immediately when the tab becomes visible again.
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && !connected) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      reconnectDelay = 1000;
+      connect();
+    }
+  });
+
+  function fetchModels() {
+    sendRpc("models.list", {}).then(function (res) {
+      if (!res || !res.ok) return;
+      models = res.payload || [];
+      var saved = localStorage.getItem("moltis-model") || "";
+      modelSelect.textContent = "";
+      if (models.length === 0) {
+        var opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "no models";
+        modelSelect.appendChild(opt);
+        modelSelect.classList.add("hidden");
+        return;
+      }
+      models.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.displayName || m.id;
+        if (m.id === saved) opt.selected = true;
+        modelSelect.appendChild(opt);
+      });
+      modelSelect.classList.remove("hidden");
+    });
+  }
+
+  modelSelect.addEventListener("change", function () {
+    localStorage.setItem("moltis-model", modelSelect.value);
+  });
 
   function sendRpc(method, params) {
     return new Promise(function (resolve) {
@@ -207,7 +258,10 @@
     input.value = "";
     autoResize();
     addMsg("user", renderMarkdown(text), true);
-    sendRpc("chat.send", { text: text }).then(function (res) {
+    var chatParams = { text: text };
+    var selectedModel = modelSelect.value;
+    if (selectedModel) chatParams.model = selectedModel;
+    sendRpc("chat.send", chatParams).then(function (res) {
       if (res && !res.ok && res.error) {
         addMsg("error", res.error.message || "Request failed");
       }
