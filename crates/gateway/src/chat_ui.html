@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moltis</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0a0a;--surface:#111;--surface2:#1a1a1a;--border:#222;--text:#e0e0e0;--muted:#888;--accent:#6c8;--accent-dim:#4a6;--user-bg:#1a2a1a;--error:#c55;--font:system-ui,-apple-system,sans-serif;--mono:'SF Mono',Menlo,Consolas,monospace}
+html,body{height:100%;font-family:var(--font);background:var(--bg);color:var(--text)}
+body{display:flex;flex-direction:column}
+
+/* Top bar */
+.topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.topbar h1{font-size:1.1rem;font-weight:400;letter-spacing:0.04em}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);transition:background .3s}
+.status-dot.connected{background:var(--accent)}
+.status-dot.connecting{background:#ca0;animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.4}}
+.status-text{font-size:.75rem;color:var(--muted)}
+.topbar-spacer{flex:1}
+.methods-toggle{background:none;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:.8rem;font-family:var(--font)}
+.methods-toggle:hover{color:var(--text);border-color:#444}
+
+/* Layout */
+.main{display:flex;flex:1;overflow:hidden}
+.chat-col{flex:1;display:flex;flex-direction:column;min-width:0}
+.methods-col{width:420px;border-left:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface);flex-shrink:0}
+.methods-col.hidden{display:none}
+
+/* Chat messages */
+.messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:80%;padding:8px 12px;border-radius:8px;font-size:.9rem;line-height:1.5;word-wrap:break-word;white-space:pre-wrap}
+.msg.user{align-self:flex-end;background:var(--user-bg);border:1px solid #2a3a2a}
+.msg.assistant{align-self:flex-start;background:var(--surface2);border:1px solid var(--border)}
+.msg.system{align-self:center;color:var(--muted);font-size:.8rem;background:none;padding:4px 0}
+.msg.error{align-self:center;color:var(--error);font-size:.8rem;background:none;padding:4px 0}
+.msg code{background:#222;padding:1px 5px;border-radius:3px;font-family:var(--mono);font-size:.85em}
+.msg pre{background:#111;padding:8px;border-radius:4px;overflow-x:auto;margin:4px 0}
+.msg pre code{background:none;padding:0}
+.msg strong{font-weight:600}
+
+/* Input */
+.input-area{padding:12px 16px;border-top:1px solid var(--border);background:var(--surface);display:flex;gap:8px;align-items:flex-end}
+.input-area textarea{flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-family:var(--font);font-size:.9rem;resize:none;min-height:40px;max-height:120px;line-height:1.4}
+.input-area textarea:focus{outline:none;border-color:#444}
+.input-area button{background:var(--accent-dim);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:.85rem;font-family:var(--font);white-space:nowrap}
+.input-area button:hover{background:var(--accent)}
+.input-area button:disabled{opacity:.4;cursor:default}
+
+/* Methods panel */
+.methods-header{padding:10px 12px;border-bottom:1px solid var(--border);font-size:.85rem;color:var(--muted)}
+.methods-body{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.methods-body label{font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px}
+.methods-body input,.methods-body textarea{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-family:var(--mono);font-size:.8rem}
+.methods-body textarea{min-height:80px;resize:vertical}
+.methods-body button{background:var(--accent-dim);color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:.8rem}
+.methods-body button:hover{background:var(--accent)}
+.methods-result{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:var(--mono);font-size:.78rem;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;color:var(--text)}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>moltis</h1>
+  <span class="status-dot" id="statusDot"></span>
+  <span class="status-text" id="statusText">disconnected</span>
+  <div class="topbar-spacer"></div>
+  <button class="methods-toggle" id="methodsToggle">Methods</button>
+</div>
+
+<div class="main">
+  <div class="chat-col">
+    <div class="messages" id="messages"></div>
+    <div class="input-area">
+      <textarea id="chatInput" placeholder="Type a message..." rows="1"></textarea>
+      <button id="sendBtn" disabled>Send</button>
+    </div>
+  </div>
+  <div class="methods-col hidden" id="methodsPanel">
+    <div class="methods-header">Method Explorer</div>
+    <div class="methods-body">
+      <div>
+        <label>Method</label>
+        <input id="rpcMethod" placeholder="e.g. health" value="health">
+      </div>
+      <div>
+        <label>Params (JSON, optional)</label>
+        <textarea id="rpcParams" placeholder="{}"></textarea>
+      </div>
+      <button id="rpcSend">Call</button>
+      <div>
+        <label>Response</label>
+        <div class="methods-result" id="rpcResult"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  var $ = function(id) { return document.getElementById(id); };
+  var msgBox = $('messages');
+  var input = $('chatInput');
+  var sendBtn = $('sendBtn');
+  var dot = $('statusDot');
+  var sText = $('statusText');
+  var methodsToggle = $('methodsToggle');
+  var methodsPanel = $('methodsPanel');
+  var rpcMethod = $('rpcMethod');
+  var rpcParams = $('rpcParams');
+  var rpcSend = $('rpcSend');
+  var rpcResult = $('rpcResult');
+
+  var ws = null;
+  var reqId = 0;
+  var connected = false;
+  var reconnectDelay = 1000;
+  var streamEl = null;
+  var streamText = '';
+  var pending = {};
+
+  function nextId() { return 'ui-' + (++reqId); }
+
+  function setStatus(state, text) {
+    dot.className = 'status-dot ' + state;
+    sText.textContent = text;
+    sendBtn.disabled = state !== 'connected';
+  }
+
+  // Escape HTML entities to prevent injection
+  function esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Simple markdown rendering (input is already escaped)
+  function renderMarkdown(raw) {
+    var s = esc(raw);
+    // Fenced code blocks
+    s = s.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+      return '<pre><code>' + code + '</code></pre>';
+    });
+    // Inline code
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    return s;
+  }
+
+  function addMsg(cls, content, isHtml) {
+    var el = document.createElement('div');
+    el.className = 'msg ' + cls;
+    if (isHtml) {
+      el.innerHTML = content;
+    } else {
+      el.textContent = content;
+    }
+    msgBox.appendChild(el);
+    msgBox.scrollTop = msgBox.scrollHeight;
+    return el;
+  }
+
+  function connect() {
+    setStatus('connecting', 'connecting...');
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = function() {
+      var id = nextId();
+      ws.send(JSON.stringify({
+        type: 'req', id: id, method: 'connect',
+        params: {
+          minProtocol: 3, maxProtocol: 3,
+          client: { id: 'web-chat-ui', version: '0.1.0', platform: 'browser', mode: 'operator' }
+        }
+      }));
+      pending[id] = function(frame) {
+        // HelloOk arrives as: {type:"res", ok:true, payload:{type:"hello-ok", protocol:3, server:{...}, ...}}
+        var hello = frame.ok && frame.payload;
+        if (hello && hello.type === 'hello-ok') {
+          connected = true;
+          reconnectDelay = 1000;
+          setStatus('connected', 'connected (v' + hello.protocol + ')');
+          addMsg('system', 'Connected to moltis gateway v' + hello.server.version);
+        } else {
+          setStatus('', 'handshake failed');
+          var reason = (frame.error && frame.error.message) || 'unknown error';
+          addMsg('error', 'Handshake failed: ' + reason);
+        }
+      };
+    };
+
+    ws.onmessage = function(evt) {
+      var frame;
+      try { frame = JSON.parse(evt.data); } catch(e) { return; }
+
+      if (frame.type === 'res') {
+        var cb2 = pending[frame.id];
+        if (cb2) { delete pending[frame.id]; cb2(frame); }
+        return;
+      }
+
+      if (frame.type === 'event') {
+        if (frame.event === 'chat') {
+          var p = frame.payload || {};
+          if (p.state === 'delta' && p.text) {
+            if (!streamEl) {
+              streamText = '';
+              streamEl = document.createElement('div');
+              streamEl.className = 'msg assistant';
+              msgBox.appendChild(streamEl);
+            }
+            streamText += p.text;
+            streamEl.innerHTML = renderMarkdown(streamText);
+            msgBox.scrollTop = msgBox.scrollHeight;
+          } else if (p.state === 'final') {
+            if (p.text && streamEl) {
+              streamEl.innerHTML = renderMarkdown(p.text);
+            } else if (p.text && !streamEl) {
+              addMsg('assistant', renderMarkdown(p.text), true);
+            }
+            streamEl = null;
+            streamText = '';
+          } else if (p.state === 'error') {
+            addMsg('error', 'Chat error: ' + (p.message || 'unknown'));
+            streamEl = null;
+            streamText = '';
+          }
+        }
+        return;
+      }
+    };
+
+    ws.onclose = function() {
+      connected = false;
+      setStatus('', 'disconnected');
+      streamEl = null;
+      streamText = '';
+      setTimeout(function() {
+        reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+        connect();
+      }, reconnectDelay);
+    };
+
+    ws.onerror = function() {};
+  }
+
+  function sendRpc(method, params) {
+    return new Promise(function(resolve) {
+      var id = nextId();
+      pending[id] = resolve;
+      ws.send(JSON.stringify({ type: 'req', id: id, method: method, params: params }));
+    });
+  }
+
+  function sendChat() {
+    var text = input.value.trim();
+    if (!text || !connected) return;
+    input.value = '';
+    autoResize();
+    addMsg('user', renderMarkdown(text), true);
+    sendRpc('chat.send', { text: text }).then(function(res) {
+      if (res && !res.ok && res.error) {
+        addMsg('error', res.error.message || 'Request failed');
+      }
+    });
+  }
+
+  function autoResize() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  }
+  input.addEventListener('input', autoResize);
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  });
+  sendBtn.addEventListener('click', sendChat);
+
+  methodsToggle.addEventListener('click', function() {
+    methodsPanel.classList.toggle('hidden');
+  });
+
+  rpcSend.addEventListener('click', function() {
+    var method = rpcMethod.value.trim();
+    if (!method || !connected) return;
+    var params;
+    var raw = rpcParams.value.trim();
+    if (raw) {
+      try { params = JSON.parse(raw); } catch(e) {
+        rpcResult.textContent = 'Invalid JSON: ' + e.message;
+        return;
+      }
+    }
+    rpcResult.textContent = 'calling...';
+    sendRpc(method, params).then(function(res) {
+      rpcResult.textContent = JSON.stringify(res, null, 2);
+    });
+  });
+
+  connect();
+})();
+</script>
+</body>
+</html>

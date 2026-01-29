@@ -1,8 +1,8 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
-    extract::WebSocketUpgrade,
+    extract::{ConnectInfo, State, WebSocketUpgrade},
     response::{Html, IntoResponse, Json},
     routing::get,
     Router,
@@ -12,8 +12,10 @@ use tracing::info;
 
 use moltis_protocol::TICK_INTERVAL_MS;
 
+use crate::auth;
 use crate::broadcast::broadcast_tick;
 use crate::methods::MethodRegistry;
+use crate::services::GatewayServices;
 use crate::state::GatewayState;
 use crate::ws::handle_connection;
 
@@ -27,14 +29,14 @@ struct AppState {
 
 // ── Server startup ───────────────────────────────────────────────────────────
 
-/// Start the gateway HTTP + WebSocket server.
-pub async fn start_gateway(bind: &str, port: u16) -> anyhow::Result<()> {
-    let state = GatewayState::new();
-    let methods = Arc::new(MethodRegistry::new());
-
+/// Build the gateway router (shared between production startup and tests).
+pub fn build_gateway_app(
+    state: Arc<GatewayState>,
+    methods: Arc<MethodRegistry>,
+) -> Router {
     let app_state = AppState {
-        gateway: Arc::clone(&state),
-        methods: Arc::clone(&methods),
+        gateway: state,
+        methods,
     };
 
     let cors = CorsLayer::new()
@@ -42,22 +44,46 @@ pub async fn start_gateway(bind: &str, port: u16) -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    Router::new()
         .route("/health", get(health_handler))
         .route("/ws", get(ws_upgrade_handler))
         .route("/", get(root_handler))
         .layer(cors)
-        .with_state(app_state);
+        .with_state(app_state)
+}
 
-    let addr = format!("{bind}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+/// Start the gateway HTTP + WebSocket server.
+pub async fn start_gateway(bind: &str, port: u16) -> anyhow::Result<()> {
+    // Resolve auth from environment (MOLTIS_TOKEN / MOLTIS_PASSWORD).
+    let token = std::env::var("MOLTIS_TOKEN").ok();
+    let password = std::env::var("MOLTIS_PASSWORD").ok();
+    let resolved_auth = auth::resolve_auth(token, password);
+
+    let services = GatewayServices::noop();
+    let state = GatewayState::new(resolved_auth, services);
+    let methods = Arc::new(MethodRegistry::new());
+
+    let app = build_gateway_app(Arc::clone(&state), Arc::clone(&methods));
+
+    let addr: SocketAddr = format!("{bind}:{port}").parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Startup banner.
-    info!("┌─────────────────────────────────────────────┐");
-    info!("│  moltis gateway v{}                     │", state.version);
-    info!("│  protocol v{}, listening on {}  │", moltis_protocol::PROTOCOL_VERSION, addr);
-    info!("│  {} methods registered                      │", methods.method_names().len());
-    info!("└─────────────────────────────────────────────┘");
+    let lines = [
+        format!("moltis gateway v{}", state.version),
+        format!(
+            "protocol v{}, listening on {}",
+            moltis_protocol::PROTOCOL_VERSION,
+            addr
+        ),
+        format!("{} methods registered", methods.method_names().len()),
+    ];
+    let width = lines.iter().map(|l| l.len()).max().unwrap_or(0) + 4;
+    info!("┌{}┐", "─".repeat(width));
+    for line in &lines {
+        info!("│  {:<w$}│", line, w = width - 2);
+    }
+    info!("└{}┘", "─".repeat(width));
 
     // Spawn tick timer.
     let tick_state = Arc::clone(&state);
@@ -70,8 +96,12 @@ pub async fn start_gateway(bind: &str, port: u16) -> anyhow::Result<()> {
         }
     });
 
-    // Run the server.
-    axum::serve(listener, app).await?;
+    // Run the server with ConnectInfo for remote IP extraction.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -89,35 +119,14 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn ws_upgrade_handler(
     ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| {
-        handle_connection(socket, state.gateway, state.methods)
+        handle_connection(socket, state.gateway, state.methods, addr)
     })
 }
 
 async fn root_handler() -> impl IntoResponse {
-    Html(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>moltis gateway</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0a0a0a; color: #e0e0e0;
-           display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .container { text-align: center; }
-    h1 { font-size: 2rem; font-weight: 300; letter-spacing: 0.05em; }
-    p { color: #888; font-size: 0.9rem; }
-    code { background: #1a1a1a; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>moltis</h1>
-    <p>Gateway is running. Connect via WebSocket at <code>/ws</code></p>
-  </div>
-</body>
-</html>"#,
-    )
+    Html(include_str!("chat_ui.html"))
 }

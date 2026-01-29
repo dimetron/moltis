@@ -1257,6 +1257,7 @@ name = "moltis-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "futures",
  "hostname",
@@ -1271,6 +1272,7 @@ dependencies = [
  "moltis-protocol",
  "moltis-routing",
  "moltis-sessions",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
