@@ -4,7 +4,7 @@
 //! apply media understanding → parse directives → invoke agent → chunk response →
 //! deliver via channel outbound.
 
-pub mod directives;
 pub mod chunk;
+pub mod directives;
 pub mod queue;
 pub mod reply;

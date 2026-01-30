@@ -2,16 +2,10 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, warn};
 
-use crate::env_subst::substitute_env;
-use crate::schema::MoltisConfig;
+use crate::{env_subst::substitute_env, schema::MoltisConfig};
 
 /// Standard config file names, checked in order.
-const CONFIG_FILENAMES: &[&str] = &[
-    "moltis.toml",
-    "moltis.yaml",
-    "moltis.yml",
-    "moltis.json",
-];
+const CONFIG_FILENAMES: &[&str] = &["moltis.toml", "moltis.yaml", "moltis.yml", "moltis.json"];
 
 /// Load config from the given path (any supported format).
 pub fn load_config(path: &Path) -> anyhow::Result<MoltisConfig> {
@@ -43,7 +37,7 @@ pub fn discover_and_load() -> MoltisConfig {
             Ok(cfg) => return cfg,
             Err(e) => {
                 warn!(path = %path.display(), error = %e, "failed to load config, using defaults");
-            }
+            },
         }
     } else {
         debug!("no config file found, using defaults");
@@ -76,10 +70,7 @@ fn find_config_file() -> Option<PathBuf> {
 }
 
 fn parse_config(raw: &str, path: &Path) -> anyhow::Result<MoltisConfig> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("toml");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("toml");
 
     match ext {
         "toml" => Ok(toml::from_str(raw)?),
@@ -90,20 +81,17 @@ fn parse_config(raw: &str, path: &Path) -> anyhow::Result<MoltisConfig> {
 }
 
 fn parse_config_value(raw: &str, path: &Path) -> anyhow::Result<serde_json::Value> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("toml");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("toml");
 
     match ext {
         "toml" => {
             let v: toml::Value = toml::from_str(raw)?;
             Ok(serde_json::to_value(v)?)
-        }
+        },
         "yaml" | "yml" => {
             let v: serde_yaml::Value = serde_yaml::from_str(raw)?;
             Ok(serde_json::to_value(v)?)
-        }
+        },
         "json" => Ok(serde_json::from_str(raw)?),
         _ => anyhow::bail!("unsupported config format: .{ext}"),
     }

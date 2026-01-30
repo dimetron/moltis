@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
-use tracing::debug;
+use {
+    serde::{Deserialize, Serialize},
+    tracing::debug,
+};
 
 /// Glob-based allow/deny policy for tool access.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -106,19 +108,21 @@ pub fn resolve_effective_policy(config: &serde_json::Value, context: &PolicyCont
 
     // Layer 1: Global — tools.policy
     if let Some(global) = config.pointer("/tools/policy")
-        && let Ok(p) = serde_json::from_value::<ToolPolicy>(global.clone()) {
-            effective = effective.merge_with(&p);
-            debug!("policy: applied global layer");
-        }
+        && let Ok(p) = serde_json::from_value::<ToolPolicy>(global.clone())
+    {
+        effective = effective.merge_with(&p);
+        debug!("policy: applied global layer");
+    }
 
     // Layer 2: Per-provider — tools.providers.<provider>.policy
     if let Some(ref provider) = context.provider {
         let pointer = format!("/tools/providers/{}/policy", provider);
         if let Some(prov) = config.pointer(&pointer)
-            && let Ok(p) = serde_json::from_value::<ToolPolicy>(prov.clone()) {
-                effective = effective.merge_with(&p);
-                debug!(provider, "policy: applied provider layer");
-            }
+            && let Ok(p) = serde_json::from_value::<ToolPolicy>(prov.clone())
+        {
+            effective = effective.merge_with(&p);
+            debug!(provider, "policy: applied provider layer");
+        }
     }
 
     // Layer 3: Per-agent — agents.list[agent_id].tools.policy
@@ -128,10 +132,11 @@ pub fn resolve_effective_policy(config: &serde_json::Value, context: &PolicyCont
             let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if id == context.agent_id {
                 if let Some(agent_policy) = agent.pointer("/tools/policy")
-                    && let Ok(p) = serde_json::from_value::<ToolPolicy>(agent_policy.clone()) {
-                        effective = effective.merge_with(&p);
-                        debug!(agent_id = %context.agent_id, "policy: applied agent layer");
-                    }
+                    && let Ok(p) = serde_json::from_value::<ToolPolicy>(agent_policy.clone())
+                {
+                    effective = effective.merge_with(&p);
+                    debug!(agent_id = %context.agent_id, "policy: applied agent layer");
+                }
                 break;
             }
         }
@@ -139,37 +144,42 @@ pub fn resolve_effective_policy(config: &serde_json::Value, context: &PolicyCont
 
     // Layer 4: Per-group — channels.<ch>.groups.<gid>.tools.policy
     if let Some(ref channel) = context.channel
-        && let Some(ref group_id) = context.group_id {
-            let pointer = format!("/channels/{}/groups/{}/tools/policy", channel, group_id);
-            if let Some(group) = config.pointer(&pointer)
-                && let Ok(p) = serde_json::from_value::<ToolPolicy>(group.clone()) {
-                    effective = effective.merge_with(&p);
-                    debug!(channel, group_id, "policy: applied group layer");
-                }
+        && let Some(ref group_id) = context.group_id
+    {
+        let pointer = format!("/channels/{}/groups/{}/tools/policy", channel, group_id);
+        if let Some(group) = config.pointer(&pointer)
+            && let Ok(p) = serde_json::from_value::<ToolPolicy>(group.clone())
+        {
+            effective = effective.merge_with(&p);
+            debug!(channel, group_id, "policy: applied group layer");
         }
+    }
 
     // Layer 5: Per-sender — channels.<ch>.groups.<gid>.tools.bySender.<sender>
     if let Some(ref channel) = context.channel
         && let Some(ref group_id) = context.group_id
-            && let Some(ref sender_id) = context.sender_id {
-                let pointer = format!(
-                    "/channels/{}/groups/{}/tools/bySender/{}",
-                    channel, group_id, sender_id
-                );
-                if let Some(sender) = config.pointer(&pointer)
-                    && let Ok(p) = serde_json::from_value::<ToolPolicy>(sender.clone()) {
-                        effective = effective.merge_with(&p);
-                        debug!(channel, group_id, sender_id, "policy: applied sender layer");
-                    }
-            }
+        && let Some(ref sender_id) = context.sender_id
+    {
+        let pointer = format!(
+            "/channels/{}/groups/{}/tools/bySender/{}",
+            channel, group_id, sender_id
+        );
+        if let Some(sender) = config.pointer(&pointer)
+            && let Ok(p) = serde_json::from_value::<ToolPolicy>(sender.clone())
+        {
+            effective = effective.merge_with(&p);
+            debug!(channel, group_id, sender_id, "policy: applied sender layer");
+        }
+    }
 
     // Layer 6: Sandbox overrides
     if context.sandboxed
         && let Some(sandbox_policy) = config.pointer("/tools/exec/sandbox/tools")
-            && let Ok(p) = serde_json::from_value::<ToolPolicy>(sandbox_policy.clone()) {
-                effective = effective.merge_with(&p);
-                debug!("policy: applied sandbox layer");
-            }
+        && let Ok(p) = serde_json::from_value::<ToolPolicy>(sandbox_policy.clone())
+    {
+        effective = effective.merge_with(&p);
+        debug!("policy: applied sandbox layer");
+    }
 
     effective
 }

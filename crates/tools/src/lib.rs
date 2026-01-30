@@ -6,7 +6,7 @@
 //! Policy: multi-layered allow/deny (global, per-agent, per-provider,
 //! per-group, per-sender, sandbox).
 
+pub mod approval;
+pub mod exec;
 pub mod policy;
 pub mod sandbox;
-pub mod exec;
-pub mod approval;

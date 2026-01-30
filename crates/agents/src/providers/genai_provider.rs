@@ -1,8 +1,6 @@
 use std::pin::Pin;
 
-use async_trait::async_trait;
-use futures::StreamExt;
-use tokio_stream::Stream;
+use {async_trait::async_trait, futures::StreamExt, tokio_stream::Stream};
 
 use crate::model::{CompletionResponse, LlmProvider, StreamEvent, Usage};
 

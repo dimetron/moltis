@@ -1,11 +1,12 @@
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
-use anyhow::{bail, Result};
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use tokio::process::Command;
-use tracing::{debug, warn};
+use {
+    anyhow::{Result, bail},
+    async_trait::async_trait,
+    serde::{Deserialize, Serialize},
+    tokio::process::Command,
+    tracing::{debug, warn},
+};
 
 use moltis_agents::tool_registry::AgentTool;
 
@@ -39,7 +40,11 @@ impl Default for ExecOpts {
 
 /// Execute a shell command with timeout and output limits.
 pub async fn exec_command(command: &str, opts: &ExecOpts) -> Result<ExecResult> {
-    debug!(command, timeout_secs = opts.timeout.as_secs(), "exec_command");
+    debug!(
+        command,
+        timeout_secs = opts.timeout.as_secs(),
+        "exec_command"
+    );
 
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(command);
@@ -76,15 +81,24 @@ pub async fn exec_command(command: &str, opts: &ExecOpts) -> Result<ExecResult> 
             }
 
             let exit_code = output.status.code().unwrap_or(-1);
-            debug!(exit_code, stdout_len = stdout.len(), stderr_len = stderr.len(), "exec done");
+            debug!(
+                exit_code,
+                stdout_len = stdout.len(),
+                stderr_len = stderr.len(),
+                "exec done"
+            );
 
-            Ok(ExecResult { stdout, stderr, exit_code })
-        }
+            Ok(ExecResult {
+                stdout,
+                stderr,
+                exit_code,
+            })
+        },
         Ok(Err(e)) => bail!("failed to run command: {e}"),
         Err(_) => {
             warn!(command, "exec timeout");
             bail!("command timed out after {}s", opts.timeout.as_secs())
-        }
+        },
     }
 }
 
@@ -172,14 +186,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_echo() {
-        let result = exec_command("echo hello", &ExecOpts::default()).await.unwrap();
+        let result = exec_command("echo hello", &ExecOpts::default())
+            .await
+            .unwrap();
         assert_eq!(result.stdout.trim(), "hello");
         assert_eq!(result.exit_code, 0);
     }
 
     #[tokio::test]
     async fn test_exec_stderr() {
-        let result = exec_command("echo err >&2", &ExecOpts::default()).await.unwrap();
+        let result = exec_command("echo err >&2", &ExecOpts::default())
+            .await
+            .unwrap();
         assert_eq!(result.stderr.trim(), "err");
     }
 

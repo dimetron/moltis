@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 /// A connected device node (macOS, iOS, Android).
 #[derive(Debug, Clone)]

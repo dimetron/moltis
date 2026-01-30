@@ -1,8 +1,6 @@
 use std::pin::Pin;
 
-use async_trait::async_trait;
-use futures::StreamExt;
-use tokio_stream::Stream;
+use {async_trait::async_trait, futures::StreamExt, tokio_stream::Stream};
 
 use crate::model::{CompletionResponse, LlmProvider, StreamEvent, ToolCall, Usage};
 
@@ -102,10 +100,10 @@ impl LlmProvider for AnthropicProvider {
                 } else if m["role"].as_str() == Some("assistant") && m.get("tool_calls").is_some() {
                     // Convert assistant tool_calls to Anthropic content blocks.
                     let mut content = Vec::new();
-                    if let Some(text) = m["content"].as_str() {
-                        if !text.is_empty() {
-                            content.push(serde_json::json!({ "type": "text", "text": text }));
-                        }
+                    if let Some(text) = m["content"].as_str()
+                        && !text.is_empty()
+                    {
+                        content.push(serde_json::json!({ "type": "text", "text": text }));
                     }
                     if let Some(tcs) = m["tool_calls"].as_array() {
                         for tc in tcs {

@@ -1,7 +1,9 @@
 //! Device pairing state machine and device token management.
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -126,8 +128,7 @@ impl PairingState {
                 .as_millis() as u64,
             revoked: false,
         };
-        self.devices
-            .insert(req.device_id.clone(), token.clone());
+        self.devices.insert(req.device_id.clone(), token.clone());
         Ok(token)
     }
 
@@ -167,7 +168,8 @@ impl PairingState {
                 .as_millis() as u64,
             revoked: false,
         };
-        self.devices.insert(device_id.to_string(), new_token.clone());
+        self.devices
+            .insert(device_id.to_string(), new_token.clone());
         Ok(new_token)
     }
 
@@ -184,8 +186,7 @@ impl PairingState {
     /// Evict expired pending requests.
     pub fn evict_expired(&mut self) {
         let now = Instant::now();
-        self.pending.retain(|_, r| {
-            !(r.status == PairStatus::Pending && now > r.expires_at)
-        });
+        self.pending
+            .retain(|_, r| !(r.status == PairStatus::Pending && now > r.expires_at));
     }
 }

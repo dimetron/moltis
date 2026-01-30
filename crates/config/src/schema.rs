@@ -133,9 +133,7 @@ impl Default for ProviderEntry {
 impl ProvidersConfig {
     /// Check if a provider is enabled (defaults to true if not configured).
     pub fn is_enabled(&self, name: &str) -> bool {
-        self.providers
-            .get(name)
-            .map_or(true, |e| e.enabled)
+        self.providers.get(name).is_none_or(|e| e.enabled)
     }
 
     /// Get the configured entry for a provider, if any.

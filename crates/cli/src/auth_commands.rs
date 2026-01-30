@@ -1,6 +1,8 @@
-use anyhow::Result;
-use clap::Subcommand;
-use moltis_oauth::{CallbackServer, OAuthFlow, TokenStore, callback_port, load_oauth_config};
+use {
+    anyhow::Result,
+    clap::Subcommand,
+    moltis_oauth::{CallbackServer, OAuthFlow, TokenStore, callback_port, load_oauth_config},
+};
 
 #[derive(Subcommand)]
 pub enum AuthAction {

@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use super::plugin::ChannelPlugin;
+use {super::plugin::ChannelPlugin, std::collections::HashMap};
 
 /// Registry of all loaded channel plugins.
 pub struct ChannelRegistry {

@@ -1,8 +1,9 @@
-use anyhow::Result;
-use url::Url;
+use {anyhow::Result, url::Url};
 
-use crate::pkce::{generate_pkce, generate_state};
-use crate::types::{OAuthConfig, OAuthTokens, PkceChallenge};
+use crate::{
+    pkce::{generate_pkce, generate_state},
+    types::{OAuthConfig, OAuthTokens, PkceChallenge},
+};
 
 /// Manages the OAuth 2.0 authorization code flow with PKCE.
 pub struct OAuthFlow {

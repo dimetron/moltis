@@ -1,5 +1,7 @@
-use anyhow::Result;
-use std::path::{Path, PathBuf};
+use {
+    anyhow::Result,
+    std::path::{Path, PathBuf},
+};
 
 /// Download and save media to ~/.clawdbot/media/ with UUID-based naming.
 pub async fn save_media_source(_url: &str, _base_dir: &Path) -> Result<PathBuf> {

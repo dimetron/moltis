@@ -1,28 +1,31 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
-use axum::{
-    extract::{ConnectInfo, State, WebSocketUpgrade},
-    response::{IntoResponse, Json},
-    routing::get,
-    Router,
-};
 #[cfg(feature = "web-ui")]
 use axum::response::Html;
-use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use {
+    axum::{
+        Router,
+        extract::{ConnectInfo, State, WebSocketUpgrade},
+        response::{IntoResponse, Json},
+        routing::get,
+    },
+    tower_http::cors::{Any, CorsLayer},
+    tracing::info,
+};
 
 use moltis_protocol::TICK_INTERVAL_MS;
 
 use moltis_agents::providers::ProviderRegistry;
 
-use crate::auth;
-use crate::broadcast::broadcast_tick;
-use crate::chat::{LiveChatService, LiveModelService};
-use crate::methods::MethodRegistry;
-use crate::services::GatewayServices;
-use crate::state::GatewayState;
-use crate::ws::handle_connection;
+use crate::{
+    auth,
+    broadcast::broadcast_tick,
+    chat::{LiveChatService, LiveModelService},
+    methods::MethodRegistry,
+    services::GatewayServices,
+    state::GatewayState,
+    ws::handle_connection,
+};
 
 // ── Shared app state ─────────────────────────────────────────────────────────
 
@@ -35,10 +38,7 @@ struct AppState {
 // ── Server startup ───────────────────────────────────────────────────────────
 
 /// Build the gateway router (shared between production startup and tests).
-pub fn build_gateway_app(
-    state: Arc<GatewayState>,
-    methods: Arc<MethodRegistry>,
-) -> Router {
+pub fn build_gateway_app(state: Arc<GatewayState>, methods: Arc<MethodRegistry>) -> Router {
     let app_state = AppState {
         gateway: state,
         methods,
@@ -156,9 +156,7 @@ async fn ws_upgrade_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        handle_connection(socket, state.gateway, state.methods, addr)
-    })
+    ws.on_upgrade(move |socket| handle_connection(socket, state.gateway, state.methods, addr))
 }
 
 #[cfg(feature = "web-ui")]

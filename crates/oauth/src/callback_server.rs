@@ -1,9 +1,10 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Result, bail};
-use axum::{Router, extract::Query, response::Html, routing::get};
-use tokio::sync::oneshot;
+use {
+    anyhow::{Result, bail},
+    axum::{Router, extract::Query, response::Html, routing::get},
+    tokio::sync::oneshot,
+};
 
 /// Starts a local HTTP server to receive the OAuth callback, then shuts down.
 pub struct CallbackServer;

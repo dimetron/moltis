@@ -1,5 +1,4 @@
-use moltis_oauth::{OAuthFlow, TokenStore, callback_port, load_oauth_config};
-use moltis_oauth::pkce::generate_pkce;
+use moltis_oauth::{OAuthFlow, TokenStore, callback_port, load_oauth_config, pkce::generate_pkce};
 
 #[test]
 fn pkce_generates_valid_challenge() {
@@ -14,8 +13,10 @@ fn pkce_generates_valid_challenge() {
 
 #[test]
 fn pkce_is_deterministic_sha256() {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    use sha2::{Digest, Sha256};
+    use {
+        base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD},
+        sha2::{Digest, Sha256},
+    };
 
     let pkce = generate_pkce();
     // Recompute challenge from verifier
@@ -59,11 +60,26 @@ fn oauth_flow_start_builds_valid_url() {
     assert_eq!(url.path(), "/oauth/authorize");
 
     let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
-    assert_eq!(params.get("response_type").map(|v| v.as_ref()), Some("code"));
-    assert_eq!(params.get("client_id").map(|v| v.as_ref()), Some("app_EMoamEEZ73f0CkXaXp7hrann"));
-    assert_eq!(params.get("code_challenge_method").map(|v| v.as_ref()), Some("S256"));
-    assert_eq!(params.get("id_token_add_organizations").map(|v| v.as_ref()), Some("true"));
-    assert_eq!(params.get("codex_cli_simplified_flow").map(|v| v.as_ref()), Some("true"));
+    assert_eq!(
+        params.get("response_type").map(|v| v.as_ref()),
+        Some("code")
+    );
+    assert_eq!(
+        params.get("client_id").map(|v| v.as_ref()),
+        Some("app_EMoamEEZ73f0CkXaXp7hrann")
+    );
+    assert_eq!(
+        params.get("code_challenge_method").map(|v| v.as_ref()),
+        Some("S256")
+    );
+    assert_eq!(
+        params.get("id_token_add_organizations").map(|v| v.as_ref()),
+        Some("true")
+    );
+    assert_eq!(
+        params.get("codex_cli_simplified_flow").map(|v| v.as_ref()),
+        Some("true")
+    );
     assert_eq!(params.get("originator").map(|v| v.as_ref()), Some("pi"));
     assert!(params.contains_key("state"));
     assert!(params.contains_key("code_challenge"));
@@ -94,7 +110,9 @@ fn token_store_roundtrip() {
 
     store.save("test-provider", &tokens).unwrap();
 
-    let loaded = store.load("test-provider").expect("should load saved tokens");
+    let loaded = store
+        .load("test-provider")
+        .expect("should load saved tokens");
     assert_eq!(loaded.access_token, "test-access");
     assert_eq!(loaded.refresh_token.as_deref(), Some("test-refresh"));
     assert_eq!(loaded.expires_at, Some(9999999999));

@@ -1,10 +1,14 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
-use tracing::{debug, info, warn};
+use {
+    anyhow::{Result, bail},
+    tracing::{debug, info, warn},
+};
 
-use crate::model::{CompletionResponse, LlmProvider};
-use crate::tool_registry::ToolRegistry;
+use crate::{
+    model::{CompletionResponse, LlmProvider},
+    tool_registry::ToolRegistry,
+};
 
 /// Maximum number of tool-call loop iterations before giving up.
 const MAX_ITERATIONS: usize = 25;
@@ -27,8 +31,15 @@ pub enum RunnerEvent {
     Thinking,
     /// LLM finished thinking (hide the indicator).
     ThinkingDone,
-    ToolCallStart { id: String, name: String },
-    ToolCallEnd { id: String, name: String, success: bool },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallEnd {
+        id: String,
+        name: String,
+        success: bool,
+    },
     TextDelta(String),
     Iteration(usize),
 }
@@ -143,7 +154,7 @@ pub async fn run_agent_loop(
                             });
                         }
                         serde_json::json!({ "result": val })
-                    }
+                    },
                     Err(e) => {
                         warn!(tool = %tc.name, error = %e, "tool execution failed");
                         if let Some(cb) = on_event {
@@ -154,7 +165,7 @@ pub async fn run_agent_loop(
                             });
                         }
                         serde_json::json!({ "error": e.to_string() })
-                    }
+                    },
                 }
             } else {
                 warn!(tool = %tc.name, "unknown tool");
@@ -178,21 +189,19 @@ pub async fn run_agent_loop(
 }
 
 /// Convenience wrapper matching the old stub signature.
-pub async fn run_agent(
-    _agent_id: &str,
-    _session_key: &str,
-    _message: &str,
-) -> Result<String> {
+pub async fn run_agent(_agent_id: &str, _session_key: &str, _message: &str) -> Result<String> {
     bail!("run_agent requires a configured provider and tool registry; use run_agent_loop instead")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::model::{CompletionResponse, LlmProvider, StreamEvent, ToolCall, Usage};
-    use async_trait::async_trait;
-    use std::pin::Pin;
-    use tokio_stream::Stream;
+    use {
+        super::*,
+        crate::model::{CompletionResponse, LlmProvider, StreamEvent, ToolCall, Usage},
+        async_trait::async_trait,
+        std::pin::Pin,
+        tokio_stream::Stream,
+    };
 
     /// A mock provider that returns text on the first call.
     struct MockProvider {
@@ -201,8 +210,13 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for MockProvider {
-        fn name(&self) -> &str { "mock" }
-        fn id(&self) -> &str { "mock-model" }
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn id(&self) -> &str {
+            "mock-model"
+        }
 
         async fn complete(
             &self,
@@ -212,7 +226,10 @@ mod tests {
             Ok(CompletionResponse {
                 text: Some(self.response_text.clone()),
                 tool_calls: vec![],
-                usage: Usage { input_tokens: 10, output_tokens: 5 },
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                },
             })
         }
 
@@ -230,15 +247,9 @@ mod tests {
             response_text: "Hello!".into(),
         });
         let tools = ToolRegistry::new();
-        let result = run_agent_loop(
-            provider,
-            &tools,
-            "You are a test bot.",
-            "Hi",
-            None,
-        )
-        .await
-        .unwrap();
+        let result = run_agent_loop(provider, &tools, "You are a test bot.", "Hi", None)
+            .await
+            .unwrap();
         assert_eq!(result.text, "Hello!");
         assert_eq!(result.iterations, 1);
         assert_eq!(result.tool_calls_made, 0);
@@ -251,15 +262,22 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for ToolCallingProvider {
-        fn name(&self) -> &str { "mock" }
-        fn id(&self) -> &str { "mock-model" }
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn id(&self) -> &str {
+            "mock-model"
+        }
 
         async fn complete(
             &self,
             _messages: &[serde_json::Value],
             _tools: &[serde_json::Value],
         ) -> Result<CompletionResponse> {
-            let count = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let count = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if count == 0 {
                 Ok(CompletionResponse {
                     text: None,
@@ -268,13 +286,19 @@ mod tests {
                         name: "echo_tool".into(),
                         arguments: serde_json::json!({"text": "hi"}),
                     }],
-                    usage: Usage { input_tokens: 10, output_tokens: 5 },
+                    usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
                 })
             } else {
                 Ok(CompletionResponse {
                     text: Some("Done!".into()),
                     tool_calls: vec![],
-                    usage: Usage { input_tokens: 20, output_tokens: 10 },
+                    usage: Usage {
+                        input_tokens: 20,
+                        output_tokens: 10,
+                    },
                 })
             }
         }
@@ -292,11 +316,18 @@ mod tests {
 
     #[async_trait]
     impl crate::tool_registry::AgentTool for EchoTool {
-        fn name(&self) -> &str { "echo_tool" }
-        fn description(&self) -> &str { "Echoes input" }
+        fn name(&self) -> &str {
+            "echo_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Echoes input"
+        }
+
         fn parameters_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
         }
+
         async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
             Ok(params)
         }

@@ -1,18 +1,21 @@
 //! Integration tests for the embedded chat UI and WebSocket handshake.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
-use futures::{SinkExt, StreamExt};
-use tokio::net::TcpListener;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use {
+    futures::{SinkExt, StreamExt},
+    tokio::net::TcpListener,
+    tokio_tungstenite::{connect_async, tungstenite::Message},
+};
 
-use moltis_gateway::auth;
-use moltis_gateway::chat::{LiveChatService, LiveModelService};
-use moltis_gateway::methods::MethodRegistry;
-use moltis_gateway::server::build_gateway_app;
-use moltis_gateway::services::GatewayServices;
-use moltis_gateway::state::GatewayState;
+use moltis_gateway::{
+    auth,
+    chat::{LiveChatService, LiveModelService},
+    methods::MethodRegistry,
+    server::build_gateway_app,
+    services::GatewayServices,
+    state::GatewayState,
+};
 
 use moltis_agents::providers::ProviderRegistry;
 

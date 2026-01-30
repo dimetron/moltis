@@ -2,9 +2,7 @@
 //! Each trait has a `Noop` implementation that returns empty/default responses,
 //! allowing the gateway to run standalone before domain crates are wired in.
 
-use async_trait::async_trait;
-use serde_json::Value;
-use std::sync::Arc;
+use {async_trait::async_trait, serde_json::Value, std::sync::Arc};
 
 /// Error type returned by service methods.
 pub type ServiceError = String;
@@ -27,12 +25,15 @@ impl AgentService for NoopAgentService {
     async fn run(&self, _params: Value) -> ServiceResult {
         Err("agent service not configured".into())
     }
+
     async fn run_wait(&self, _params: Value) -> ServiceResult {
         Err("agent service not configured".into())
     }
+
     async fn identity_get(&self) -> ServiceResult {
         Ok(serde_json::json!({ "name": "moltis", "avatar": null }))
     }
+
     async fn list(&self) -> ServiceResult {
         Ok(serde_json::json!([]))
     }
@@ -55,13 +56,33 @@ pub struct NoopSessionService;
 
 #[async_trait]
 impl SessionService for NoopSessionService {
-    async fn list(&self) -> ServiceResult { Ok(serde_json::json!([])) }
-    async fn preview(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn resolve(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn patch(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn reset(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn delete(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn compact(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
+    async fn list(&self) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
+
+    async fn preview(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn resolve(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn patch(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn reset(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn delete(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn compact(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
 }
 
 // ── Channels ────────────────────────────────────────────────────────────────
@@ -77,8 +98,14 @@ pub struct NoopChannelService;
 
 #[async_trait]
 impl ChannelService for NoopChannelService {
-    async fn status(&self) -> ServiceResult { Ok(serde_json::json!({ "channels": [] })) }
-    async fn logout(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
+    async fn status(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "channels": [] }))
+    }
+
+    async fn logout(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
     async fn send(&self, _p: Value) -> ServiceResult {
         Err("no channels configured".into())
     }
@@ -99,11 +126,25 @@ pub struct NoopConfigService;
 
 #[async_trait]
 impl ConfigService for NoopConfigService {
-    async fn get(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn set(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn apply(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn patch(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn schema(&self) -> ServiceResult { Ok(serde_json::json!({})) }
+    async fn get(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn set(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn apply(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn patch(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn schema(&self) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
 }
 
 // ── Cron ────────────────────────────────────────────────────────────────────
@@ -123,13 +164,33 @@ pub struct NoopCronService;
 
 #[async_trait]
 impl CronService for NoopCronService {
-    async fn list(&self) -> ServiceResult { Ok(serde_json::json!([])) }
-    async fn status(&self) -> ServiceResult { Ok(serde_json::json!({ "running": false })) }
-    async fn add(&self, _p: Value) -> ServiceResult { Err("cron not configured".into()) }
-    async fn update(&self, _p: Value) -> ServiceResult { Err("cron not configured".into()) }
-    async fn remove(&self, _p: Value) -> ServiceResult { Err("cron not configured".into()) }
-    async fn run(&self, _p: Value) -> ServiceResult { Err("cron not configured".into()) }
-    async fn runs(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!([])) }
+    async fn list(&self) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
+
+    async fn status(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "running": false }))
+    }
+
+    async fn add(&self, _p: Value) -> ServiceResult {
+        Err("cron not configured".into())
+    }
+
+    async fn update(&self, _p: Value) -> ServiceResult {
+        Err("cron not configured".into())
+    }
+
+    async fn remove(&self, _p: Value) -> ServiceResult {
+        Err("cron not configured".into())
+    }
+
+    async fn run(&self, _p: Value) -> ServiceResult {
+        Err("cron not configured".into())
+    }
+
+    async fn runs(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────
@@ -146,10 +207,21 @@ pub struct NoopChatService;
 
 #[async_trait]
 impl ChatService for NoopChatService {
-    async fn send(&self, _p: Value) -> ServiceResult { Err("chat not configured".into()) }
-    async fn abort(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn history(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!([])) }
-    async fn inject(&self, _p: Value) -> ServiceResult { Err("chat not configured".into()) }
+    async fn send(&self, _p: Value) -> ServiceResult {
+        Err("chat not configured".into())
+    }
+
+    async fn abort(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn history(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
+
+    async fn inject(&self, _p: Value) -> ServiceResult {
+        Err("chat not configured".into())
+    }
 }
 
 // ── TTS ─────────────────────────────────────────────────────────────────────
@@ -168,12 +240,29 @@ pub struct NoopTtsService;
 
 #[async_trait]
 impl TtsService for NoopTtsService {
-    async fn status(&self) -> ServiceResult { Ok(serde_json::json!({ "enabled": false })) }
-    async fn providers(&self) -> ServiceResult { Ok(serde_json::json!([])) }
-    async fn enable(&self, _p: Value) -> ServiceResult { Err("tts not available".into()) }
-    async fn disable(&self) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn convert(&self, _p: Value) -> ServiceResult { Err("tts not available".into()) }
-    async fn set_provider(&self, _p: Value) -> ServiceResult { Err("tts not available".into()) }
+    async fn status(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "enabled": false }))
+    }
+
+    async fn providers(&self) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
+
+    async fn enable(&self, _p: Value) -> ServiceResult {
+        Err("tts not available".into())
+    }
+
+    async fn disable(&self) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn convert(&self, _p: Value) -> ServiceResult {
+        Err("tts not available".into())
+    }
+
+    async fn set_provider(&self, _p: Value) -> ServiceResult {
+        Err("tts not available".into())
+    }
 }
 
 // ── Skills ──────────────────────────────────────────────────────────────────
@@ -190,10 +279,21 @@ pub struct NoopSkillsService;
 
 #[async_trait]
 impl SkillsService for NoopSkillsService {
-    async fn status(&self) -> ServiceResult { Ok(serde_json::json!({ "installed": [] })) }
-    async fn bins(&self) -> ServiceResult { Ok(serde_json::json!([])) }
-    async fn install(&self, _p: Value) -> ServiceResult { Err("skills not available".into()) }
-    async fn update(&self, _p: Value) -> ServiceResult { Err("skills not available".into()) }
+    async fn status(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "installed": [] }))
+    }
+
+    async fn bins(&self) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
+
+    async fn install(&self, _p: Value) -> ServiceResult {
+        Err("skills not available".into())
+    }
+
+    async fn update(&self, _p: Value) -> ServiceResult {
+        Err("skills not available".into())
+    }
 }
 
 // ── Browser ─────────────────────────────────────────────────────────────────
@@ -207,7 +307,9 @@ pub struct NoopBrowserService;
 
 #[async_trait]
 impl BrowserService for NoopBrowserService {
-    async fn request(&self, _p: Value) -> ServiceResult { Err("browser not available".into()) }
+    async fn request(&self, _p: Value) -> ServiceResult {
+        Err("browser not available".into())
+    }
 }
 
 // ── Usage ───────────────────────────────────────────────────────────────────
@@ -225,6 +327,7 @@ impl UsageService for NoopUsageService {
     async fn status(&self) -> ServiceResult {
         Ok(serde_json::json!({ "totalCost": 0, "requests": 0 }))
     }
+
     async fn cost(&self, _p: Value) -> ServiceResult {
         Ok(serde_json::json!({ "cost": 0 }))
     }
@@ -246,12 +349,29 @@ pub struct NoopExecApprovalService;
 
 #[async_trait]
 impl ExecApprovalService for NoopExecApprovalService {
-    async fn get(&self) -> ServiceResult { Ok(serde_json::json!({ "mode": "always" })) }
-    async fn set(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn node_get(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({ "mode": "always" })) }
-    async fn node_set(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn request(&self, _p: Value) -> ServiceResult { Err("approvals not configured".into()) }
-    async fn resolve(&self, _p: Value) -> ServiceResult { Err("approvals not configured".into()) }
+    async fn get(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "mode": "always" }))
+    }
+
+    async fn set(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn node_get(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({ "mode": "always" }))
+    }
+
+    async fn node_set(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn request(&self, _p: Value) -> ServiceResult {
+        Err("approvals not configured".into())
+    }
+
+    async fn resolve(&self, _p: Value) -> ServiceResult {
+        Err("approvals not configured".into())
+    }
 }
 
 // ── Onboarding ──────────────────────────────────────────────────────────────
@@ -268,10 +388,21 @@ pub struct NoopOnboardingService;
 
 #[async_trait]
 impl OnboardingService for NoopOnboardingService {
-    async fn wizard_start(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({ "step": 0 })) }
-    async fn wizard_next(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({ "step": 0, "done": true })) }
-    async fn wizard_cancel(&self) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn wizard_status(&self) -> ServiceResult { Ok(serde_json::json!({ "active": false })) }
+    async fn wizard_start(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({ "step": 0 }))
+    }
+
+    async fn wizard_next(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({ "step": 0, "done": true }))
+    }
+
+    async fn wizard_cancel(&self) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn wizard_status(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "active": false }))
+    }
 }
 
 // ── Update ──────────────────────────────────────────────────────────────────
@@ -285,7 +416,9 @@ pub struct NoopUpdateService;
 
 #[async_trait]
 impl UpdateService for NoopUpdateService {
-    async fn run(&self, _p: Value) -> ServiceResult { Err("update not available".into()) }
+    async fn run(&self, _p: Value) -> ServiceResult {
+        Err("update not available".into())
+    }
 }
 
 // ── Model ───────────────────────────────────────────────────────────────────
@@ -299,7 +432,9 @@ pub struct NoopModelService;
 
 #[async_trait]
 impl ModelService for NoopModelService {
-    async fn list(&self) -> ServiceResult { Ok(serde_json::json!([])) }
+    async fn list(&self) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
 }
 
 // ── Web Login ───────────────────────────────────────────────────────────────
@@ -314,8 +449,13 @@ pub struct NoopWebLoginService;
 
 #[async_trait]
 impl WebLoginService for NoopWebLoginService {
-    async fn start(&self, _p: Value) -> ServiceResult { Err("web login not available".into()) }
-    async fn wait(&self, _p: Value) -> ServiceResult { Err("web login not available".into()) }
+    async fn start(&self, _p: Value) -> ServiceResult {
+        Err("web login not available".into())
+    }
+
+    async fn wait(&self, _p: Value) -> ServiceResult {
+        Err("web login not available".into())
+    }
 }
 
 // ── Voicewake ───────────────────────────────────────────────────────────────
@@ -332,10 +472,21 @@ pub struct NoopVoicewakeService;
 
 #[async_trait]
 impl VoicewakeService for NoopVoicewakeService {
-    async fn get(&self) -> ServiceResult { Ok(serde_json::json!({ "enabled": false })) }
-    async fn set(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
-    async fn wake(&self, _p: Value) -> ServiceResult { Err("voicewake not available".into()) }
-    async fn talk_mode(&self, _p: Value) -> ServiceResult { Ok(serde_json::json!({})) }
+    async fn get(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "enabled": false }))
+    }
+
+    async fn set(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
+
+    async fn wake(&self, _p: Value) -> ServiceResult {
+        Err("voicewake not available".into())
+    }
+
+    async fn talk_mode(&self, _p: Value) -> ServiceResult {
+        Ok(serde_json::json!({}))
+    }
 }
 
 // ── Logs ────────────────────────────────────────────────────────────────────

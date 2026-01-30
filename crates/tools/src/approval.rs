@@ -1,11 +1,11 @@
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
-use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
-use tokio::sync::{oneshot, RwLock};
-use tracing::{debug, warn};
+use {
+    anyhow::{Result, bail},
+    serde::{Deserialize, Serialize},
+    tokio::sync::{RwLock, oneshot},
+    tracing::{debug, warn},
+};
 
 /// Outcome of an approval request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,7 +27,6 @@ pub enum ApprovalMode {
     Always,
 }
 
-
 /// Security level for exec commands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,19 +38,65 @@ pub enum SecurityLevel {
     Full,
 }
 
-
 /// Well-known safe binaries that don't need approval.
 pub const SAFE_BINS: &[&str] = &[
-    "cat", "echo", "printf", "head", "tail", "wc", "sort", "uniq", "cut", "tr",
-    "grep", "egrep", "fgrep", "awk", "sed", "jq", "yq", "date", "cal",
-    "ls", "pwd", "whoami", "hostname", "uname", "env", "printenv",
-    "basename", "dirname", "realpath", "readlink",
-    "diff", "comm", "paste", "tee", "xargs",
-    "true", "false", "test", "[",
-    "seq", "yes", "rev", "fold", "expand", "unexpand",
-    "md5sum", "sha256sum", "sha1sum", "b2sum",
-    "file", "stat", "du", "df", "free",
-    "which", "type", "command",
+    "cat",
+    "echo",
+    "printf",
+    "head",
+    "tail",
+    "wc",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "grep",
+    "egrep",
+    "fgrep",
+    "awk",
+    "sed",
+    "jq",
+    "yq",
+    "date",
+    "cal",
+    "ls",
+    "pwd",
+    "whoami",
+    "hostname",
+    "uname",
+    "env",
+    "printenv",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "diff",
+    "comm",
+    "paste",
+    "tee",
+    "xargs",
+    "true",
+    "false",
+    "test",
+    "[",
+    "seq",
+    "yes",
+    "rev",
+    "fold",
+    "expand",
+    "unexpand",
+    "md5sum",
+    "sha256sum",
+    "sha1sum",
+    "b2sum",
+    "file",
+    "stat",
+    "du",
+    "df",
+    "free",
+    "which",
+    "type",
+    "command",
 ];
 
 /// Extract the first command/binary from a shell command string.
@@ -133,7 +178,7 @@ impl ApprovalManager {
         match self.security_level {
             SecurityLevel::Deny => bail!("exec denied: security level is 'deny'"),
             SecurityLevel::Full => return Ok(ApprovalAction::Proceed),
-            SecurityLevel::Allowlist => {}
+            SecurityLevel::Allowlist => {},
         }
 
         match self.mode {
@@ -153,15 +198,21 @@ impl ApprovalManager {
                     return Ok(ApprovalAction::Proceed);
                 }
                 Ok(ApprovalAction::NeedsApproval)
-            }
+            },
         }
     }
 
     /// Register a pending approval request. Returns an ID and a receiver for the decision.
-    pub async fn create_request(&self, command: &str) -> (String, oneshot::Receiver<ApprovalDecision>) {
+    pub async fn create_request(
+        &self,
+        command: &str,
+    ) -> (String, oneshot::Receiver<ApprovalDecision>) {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
-        self.pending.write().await.insert(id.clone(), PendingApproval { tx });
+        self.pending
+            .write()
+            .await
+            .insert(id.clone(), PendingApproval { tx });
         debug!(id = %id, command, "approval request created");
         (id, rx)
     }
@@ -170,9 +221,10 @@ impl ApprovalManager {
     pub async fn resolve(&self, id: &str, decision: ApprovalDecision, command: Option<&str>) {
         if let Some(pending) = self.pending.write().await.remove(id) {
             if decision == ApprovalDecision::Approved
-                && let Some(cmd) = command {
-                    self.approved_commands.write().await.insert(cmd.to_string());
-                }
+                && let Some(cmd) = command
+            {
+                self.approved_commands.write().await.insert(cmd.to_string());
+            }
             let _ = pending.tx.send(decision);
             debug!(id, "approval resolved");
         } else {
@@ -181,17 +233,20 @@ impl ApprovalManager {
     }
 
     /// Wait for an approval decision with timeout.
-    pub async fn wait_for_decision(&self, rx: oneshot::Receiver<ApprovalDecision>) -> ApprovalDecision {
+    pub async fn wait_for_decision(
+        &self,
+        rx: oneshot::Receiver<ApprovalDecision>,
+    ) -> ApprovalDecision {
         match tokio::time::timeout(self.timeout, rx).await {
             Ok(Ok(decision)) => decision,
             Ok(Err(_)) => {
                 warn!("approval channel closed");
                 ApprovalDecision::Denied
-            }
+            },
             Err(_) => {
                 warn!("approval timed out");
                 ApprovalDecision::Timeout
-            }
+            },
         }
     }
 }

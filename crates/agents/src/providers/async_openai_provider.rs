@@ -1,14 +1,18 @@
 use std::pin::Pin;
 
-use async_openai::config::OpenAIConfig;
-use async_openai::types::chat::{
-    ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
-    CreateChatCompletionRequestArgs,
+use {
+    async_openai::{
+        config::OpenAIConfig,
+        types::chat::{
+            ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+            ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+            CreateChatCompletionRequestArgs,
+        },
+    },
+    async_trait::async_trait,
+    futures::StreamExt,
+    tokio_stream::Stream,
 };
-use async_trait::async_trait;
-use futures::StreamExt;
-use tokio_stream::Stream;
 
 use crate::model::{CompletionResponse, LlmProvider, StreamEvent, Usage};
 
@@ -47,7 +51,7 @@ fn build_messages(
                         .build()?
                         .into(),
                 );
-            }
+            },
             "assistant" => {
                 out.push(
                     ChatCompletionRequestAssistantMessageArgs::default()
@@ -55,7 +59,7 @@ fn build_messages(
                         .build()?
                         .into(),
                 );
-            }
+            },
             _ => {
                 out.push(
                     ChatCompletionRequestUserMessageArgs::default()
@@ -63,7 +67,7 @@ fn build_messages(
                         .build()?
                         .into(),
                 );
-            }
+            },
         }
     }
     Ok(out)

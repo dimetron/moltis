@@ -10,8 +10,7 @@ pub mod async_openai_provider;
 #[cfg(feature = "provider-openai-codex")]
 pub mod openai_codex;
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use moltis_config::schema::ProvidersConfig;
 
@@ -87,12 +86,7 @@ impl ProviderRegistry {
                 "claude-sonnet-4-20250514",
                 "Claude Sonnet 4 (genai)",
             ),
-            (
-                "OPENAI_API_KEY",
-                "openai",
-                "gpt-4o",
-                "GPT-4o (genai)",
-            ),
+            ("OPENAI_API_KEY", "openai", "gpt-4o", "GPT-4o (genai)"),
             (
                 "GEMINI_API_KEY",
                 "gemini",
@@ -105,12 +99,7 @@ impl ProviderRegistry {
                 "llama-3.1-8b-instant",
                 "Llama 3.1 8B (genai/groq)",
             ),
-            (
-                "XAI_API_KEY",
-                "xai",
-                "grok-3-mini",
-                "Grok 3 Mini (genai)",
-            ),
+            ("XAI_API_KEY", "xai", "grok-3-mini", "Grok 3 Mini (genai)"),
             (
                 "DEEPSEEK_API_KEY",
                 "deepseek",
@@ -137,11 +126,11 @@ impl ProviderRegistry {
             }
 
             // If config provides an api_key, set the env var so genai picks it up.
-            if let Some(key) = config.get(provider_name).and_then(|e| e.api_key.as_ref()) {
-                if !key.is_empty() {
-                    // Safety: only called during single-threaded startup.
-                    unsafe { std::env::set_var(env_key, key) };
-                }
+            if let Some(key) = config.get(provider_name).and_then(|e| e.api_key.as_ref())
+                && !key.is_empty()
+            {
+                // Safety: only called during single-threaded startup.
+                unsafe { std::env::set_var(env_key, key) };
             }
 
             let model_id = config
@@ -302,11 +291,8 @@ impl ProviderRegistry {
                         .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
                         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
-                    let provider = Arc::new(openai::OpenAiProvider::new(
-                        key,
-                        model_id.into(),
-                        base_url,
-                    ));
+                    let provider =
+                        Arc::new(openai::OpenAiProvider::new(key, model_id.into(), base_url));
                     self.register(
                         ModelInfo {
                             id: model_id.into(),

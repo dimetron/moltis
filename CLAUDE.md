@@ -37,8 +37,8 @@ cargo test -- --nocapture            # Run tests with stdout visible
 ## Code Quality
 
 ```bash
-cargo fmt                # Format code
-cargo clippy             # Run linter
+cargo +nightly fmt       # Format code (uses nightly)
+cargo +nightly clippy    # Run linter (uses nightly)
 cargo check              # Fast compile check without producing binary
 ```
 
@@ -48,5 +48,5 @@ Follow conventional commit format: `feat|fix|refactor|docs|test|chore(scope): de
 
 Run all checks before committing:
 1. `cargo check`
-2. `cargo clippy`
+2. `cargo +nightly clippy`
 3. `cargo test`

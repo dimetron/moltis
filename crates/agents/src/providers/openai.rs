@@ -1,8 +1,6 @@
 use std::pin::Pin;
 
-use async_trait::async_trait;
-use futures::StreamExt;
-use tokio_stream::Stream;
+use {async_trait::async_trait, futures::StreamExt, tokio_stream::Stream};
 
 use crate::model::{CompletionResponse, LlmProvider, StreamEvent, ToolCall, Usage};
 
@@ -51,9 +49,12 @@ fn parse_tool_calls(message: &serde_json::Value) -> Vec<ToolCall> {
                     let id = tc["id"].as_str()?.to_string();
                     let name = tc["function"]["name"].as_str()?.to_string();
                     let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                    let arguments =
-                        serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                    Some(ToolCall { id, name, arguments })
+                    let arguments = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                    Some(ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    })
                 })
                 .collect()
         })

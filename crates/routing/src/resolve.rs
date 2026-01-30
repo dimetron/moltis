@@ -8,6 +8,9 @@ pub struct ResolvedRoute {
 }
 
 /// Resolve which agent should handle a message, following the binding cascade.
-pub fn resolve_agent_route(_msg: &MsgContext, _config: &serde_json::Value) -> anyhow::Result<ResolvedRoute> {
+pub fn resolve_agent_route(
+    _msg: &MsgContext,
+    _config: &serde_json::Value,
+) -> anyhow::Result<ResolvedRoute> {
     todo!("walk binding cascade: peer → guild → team → account → channel → default")
 }

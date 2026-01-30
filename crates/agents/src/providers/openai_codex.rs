@@ -1,11 +1,13 @@
 use std::pin::Pin;
 
-use async_trait::async_trait;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures::StreamExt;
-use moltis_oauth::{OAuthFlow, TokenStore, load_oauth_config};
-use tokio_stream::Stream;
-use tracing::debug;
+use {
+    async_trait::async_trait,
+    base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD},
+    futures::StreamExt,
+    moltis_oauth::{OAuthFlow, TokenStore, load_oauth_config},
+    tokio_stream::Stream,
+    tracing::debug,
+};
 
 use crate::model::{CompletionResponse, LlmProvider, StreamEvent, Usage};
 
@@ -27,10 +29,11 @@ impl OpenAiCodexProvider {
     }
 
     fn get_valid_token(&self) -> anyhow::Result<String> {
-        let tokens = self
-            .token_store
-            .load("openai-codex")
-            .ok_or_else(|| anyhow::anyhow!("not logged in to openai-codex — run `moltis auth login --provider openai-codex`"))?;
+        let tokens = self.token_store.load("openai-codex").ok_or_else(|| {
+            anyhow::anyhow!(
+                "not logged in to openai-codex — run `moltis auth login --provider openai-codex`"
+            )
+        })?;
 
         // Check expiry with 5 min buffer
         if let Some(expires_at) = tokens.expires_at {
@@ -47,13 +50,13 @@ impl OpenAiCodexProvider {
                         .ok_or_else(|| anyhow::anyhow!("missing oauth config for openai-codex"))?;
                     let flow = OAuthFlow::new(oauth_config);
                     let refresh = refresh_token.clone();
-                    let new_tokens = std::thread::scope(|_| {
-                        rt.block_on(flow.refresh(&refresh))
-                    })?;
+                    let new_tokens = std::thread::scope(|_| rt.block_on(flow.refresh(&refresh)))?;
                     self.token_store.save("openai-codex", &new_tokens)?;
                     return Ok(new_tokens.access_token);
                 }
-                return Err(anyhow::anyhow!("openai-codex token expired and no refresh token available"));
+                return Err(anyhow::anyhow!(
+                    "openai-codex token expired and no refresh token available"
+                ));
             }
         }
 
@@ -65,16 +68,15 @@ impl OpenAiCodexProvider {
         if parts.len() < 2 {
             anyhow::bail!("invalid JWT format");
         }
-        let payload = URL_SAFE_NO_PAD.decode(parts[1])
-            .or_else(|_| {
-                // Try with padding
-                let padded = match parts[1].len() % 4 {
-                    2 => format!("{}==", parts[1]),
-                    3 => format!("{}=", parts[1]),
-                    _ => parts[1].to_string(),
-                };
-                base64::engine::general_purpose::STANDARD.decode(&padded)
-            })?;
+        let payload = URL_SAFE_NO_PAD.decode(parts[1]).or_else(|_| {
+            // Try with padding
+            let padded = match parts[1].len() % 4 {
+                2 => format!("{}==", parts[1]),
+                3 => format!("{}=", parts[1]),
+                _ => parts[1].to_string(),
+            };
+            base64::engine::general_purpose::STANDARD.decode(&padded)
+        })?;
         let claims: serde_json::Value = serde_json::from_slice(&payload)?;
         let account_id = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
             .as_str()
@@ -152,20 +154,18 @@ impl LlmProvider for OpenAiCodexProvider {
             .json::<serde_json::Value>()
             .await?;
 
-        let text = resp["output"]
-            .as_array()
-            .and_then(|outputs| {
-                outputs.iter().find_map(|o| {
-                    if o["type"] == "message" {
-                        o["content"]
-                            .as_array()
-                            .and_then(|c| c.iter().find_map(|item| item["text"].as_str()))
-                            .map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-            });
+        let text = resp["output"].as_array().and_then(|outputs| {
+            outputs.iter().find_map(|o| {
+                if o["type"] == "message" {
+                    o["content"]
+                        .as_array()
+                        .and_then(|c| c.iter().find_map(|item| item["text"].as_str()))
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        });
 
         let usage = Usage {
             input_tokens: resp["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32,

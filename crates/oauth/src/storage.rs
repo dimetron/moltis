@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::Result;
 
-use crate::config_dir::moltis_config_dir;
-use crate::types::OAuthTokens;
+use crate::{config_dir::moltis_config_dir, types::OAuthTokens};
 
 /// File-based token storage at `~/.config/moltis/oauth_tokens.json`.
 #[derive(Debug, Clone)]

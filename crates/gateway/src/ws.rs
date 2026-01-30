@@ -1,24 +1,24 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
-use axum::extract::ws::{Message, WebSocket};
-use futures::stream::StreamExt;
-use futures::SinkExt;
-use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
-
-use moltis_protocol::{
-    error_codes, ConnectParams, ErrorShape, EventFrame, GatewayFrame, HelloAuth, HelloOk, Policy,
-    ResponseFrame, ServerInfo, Features, HANDSHAKE_TIMEOUT_MS, MAX_PAYLOAD_BYTES,
-    PROTOCOL_VERSION,
+use {
+    axum::extract::ws::{Message, WebSocket},
+    futures::{SinkExt, stream::StreamExt},
+    tokio::sync::mpsc,
+    tracing::{debug, info, warn},
 };
 
-use crate::auth;
-use crate::broadcast::{broadcast, BroadcastOpts};
-use crate::methods::{MethodContext, MethodRegistry};
-use crate::nodes::NodeSession;
-use crate::state::{ConnectedClient, GatewayState};
+use moltis_protocol::{
+    ConnectParams, ErrorShape, EventFrame, Features, GatewayFrame, HANDSHAKE_TIMEOUT_MS, HelloAuth,
+    HelloOk, MAX_PAYLOAD_BYTES, PROTOCOL_VERSION, Policy, ResponseFrame, ServerInfo, error_codes,
+};
+
+use crate::{
+    auth,
+    broadcast::{BroadcastOpts, broadcast},
+    methods::{MethodContext, MethodRegistry},
+    nodes::NodeSession,
+    state::{ConnectedClient, GatewayState},
+};
 
 /// Handle a single WebSocket connection through its full lifecycle:
 /// handshake (with auth) → message loop → cleanup.
@@ -60,13 +60,13 @@ pub async fn handle_connection(
             drop(client_tx);
             write_handle.abort();
             return;
-        }
+        },
         Err(_) => {
             warn!(conn_id = %conn_id, "ws: handshake timeout");
             drop(client_tx);
             write_handle.abort();
             return;
-        }
+        },
     };
 
     let (request_id, params) = connect_result;
@@ -92,14 +92,17 @@ pub async fn handle_connection(
     // ── Auth validation ──────────────────────────────────────────────────
     // If auth is configured (token or password set), validate credentials.
     let is_loopback = auth::is_loopback(&remote_ip);
-    let has_auth_configured =
-        state.auth.token.is_some() || state.auth.password.is_some();
+    let has_auth_configured = state.auth.token.is_some() || state.auth.password.is_some();
 
     let (role, scopes) = if has_auth_configured && !is_loopback {
         let provided_token = params.auth.as_ref().and_then(|a| a.token.as_deref());
         let provided_password = params.auth.as_ref().and_then(|a| a.password.as_deref());
-        let auth_result =
-            auth::authorize_connect(&state.auth, provided_token, provided_password, Some(&remote_ip));
+        let auth_result = auth::authorize_connect(
+            &state.auth,
+            provided_token,
+            provided_password,
+            Some(&remote_ip),
+        );
 
         if !auth_result.ok {
             warn!(
@@ -265,7 +268,7 @@ pub async fn handle_connection(
             Err(e) => {
                 debug!(conn_id = %conn_id, error = %e, "ws: read error");
                 break;
-            }
+            },
         };
 
         // Enforce payload size limit.
@@ -291,7 +294,7 @@ pub async fn handle_connection(
                 );
                 let _ = client_tx.send(serde_json::to_string(&err).unwrap());
                 continue;
-            }
+            },
         };
 
         // Touch activity timestamp.
@@ -312,10 +315,10 @@ pub async fn handle_connection(
                 };
                 let response = methods.dispatch(ctx).await;
                 let _ = client_tx.send(serde_json::to_string(&response).unwrap());
-            }
+            },
             _ => {
                 debug!(conn_id = %conn_id, "ws: ignoring non-request frame");
-            }
+            },
         }
     }
 
@@ -373,7 +376,7 @@ async fn wait_for_connect(
                 let params: ConnectParams =
                     serde_json::from_value(req.params.unwrap_or(serde_json::Value::Null))?;
                 return Ok((req.id, params));
-            }
+            },
             _ => anyhow::bail!("first message must be a request frame"),
         }
     }

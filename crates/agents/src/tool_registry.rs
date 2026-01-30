@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-use anyhow::Result;
-use async_trait::async_trait;
+use {anyhow::Result, async_trait::async_trait, std::collections::HashMap};
 
 /// Agent-callable tool.
 #[async_trait]
@@ -24,7 +22,9 @@ impl Default for ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self {
+            tools: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, tool: Box<dyn AgentTool>) {
@@ -36,12 +36,15 @@ impl ToolRegistry {
     }
 
     pub fn list_schemas(&self) -> Vec<serde_json::Value> {
-        self.tools.values().map(|t| {
-            serde_json::json!({
-                "name": t.name(),
-                "description": t.description(),
-                "parameters": t.parameters_schema(),
+        self.tools
+            .values()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name(),
+                    "description": t.description(),
+                    "parameters": t.parameters_schema(),
+                })
             })
-        }).collect()
+            .collect()
     }
 }

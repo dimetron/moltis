@@ -48,10 +48,7 @@ fn safe_equal(a: &str, b: &str) -> bool {
 }
 
 pub fn is_loopback(ip: &str) -> bool {
-    ip == "127.0.0.1"
-        || ip.starts_with("127.")
-        || ip == "::1"
-        || ip.starts_with("::ffff:127.")
+    ip == "127.0.0.1" || ip.starts_with("127.") || ip == "::1" || ip.starts_with("::ffff:127.")
 }
 
 // ── Auth logic ───────────────────────────────────────────────────────────────
@@ -105,7 +102,7 @@ pub fn authorize_connect(
                 method: Some(AuthMethod::Token),
                 reason: None,
             }
-        }
+        },
         AuthMode::Password => {
             let Some(expected) = auth.password.as_deref() else {
                 return AuthResult {
@@ -133,6 +130,6 @@ pub fn authorize_connect(
                 method: Some(AuthMethod::Password),
                 reason: None,
             }
-        }
+        },
     }
 }

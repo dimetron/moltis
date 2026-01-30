@@ -1,6 +1,4 @@
-use anyhow::Result;
-use async_trait::async_trait;
-use moltis_common::types::ReplyPayload;
+use {anyhow::Result, async_trait::async_trait, moltis_common::types::ReplyPayload};
 
 /// Core channel plugin trait. Each messaging platform implements this.
 #[async_trait]

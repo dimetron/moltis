@@ -1,7 +1,6 @@
 use std::pin::Pin;
 
-use async_trait::async_trait;
-use tokio_stream::Stream;
+use {async_trait::async_trait, tokio_stream::Stream};
 
 /// Events emitted during streaming LLM completion.
 #[derive(Debug, Clone)]

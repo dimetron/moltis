@@ -25,7 +25,7 @@ pub fn substitute_env(input: &str) -> String {
                         result.push_str("${");
                         result.push_str(&var_name);
                         result.push('}');
-                    }
+                    },
                 }
             } else {
                 // Malformed — emit literal.

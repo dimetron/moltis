@@ -10,5 +10,4 @@ pub mod loader;
 pub mod migrate;
 pub mod schema;
 
-pub use loader::discover_and_load;
-pub use schema::MoltisConfig;
+pub use {loader::discover_and_load, schema::MoltisConfig};

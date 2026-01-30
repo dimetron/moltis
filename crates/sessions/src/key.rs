@@ -20,7 +20,15 @@ impl SessionKey {
         Self(format!("agent:{agent_id}:main"))
     }
 
-    pub fn for_peer(agent_id: &str, channel: &str, account: &str, peer_kind: &str, peer_id: &str) -> Self {
-        Self(format!("agent:{agent_id}:channel:{channel}:account:{account}:peer:{peer_kind}:{peer_id}"))
+    pub fn for_peer(
+        agent_id: &str,
+        channel: &str,
+        account: &str,
+        peer_kind: &str,
+        peer_id: &str,
+    ) -> Self {
+        Self(format!(
+            "agent:{agent_id}:channel:{channel}:account:{account}:peer:{peer_kind}:{peer_id}"
+        ))
     }
 }

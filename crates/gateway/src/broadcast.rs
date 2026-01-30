@@ -1,8 +1,9 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use moltis_protocol::{scopes, EventFrame, StateVersion};
-use tracing::{debug, warn};
+use {
+    moltis_protocol::{EventFrame, StateVersion, scopes},
+    tracing::{debug, warn},
+};
 
 use crate::state::GatewayState;
 
@@ -11,30 +12,12 @@ use crate::state::GatewayState;
 /// Events that require specific scopes to receive.
 fn event_scope_guards() -> HashMap<&'static str, &'static [&'static str]> {
     let mut m = HashMap::new();
-    m.insert(
-        "exec.approval.requested",
-        [scopes::APPROVALS].as_slice(),
-    );
-    m.insert(
-        "exec.approval.resolved",
-        [scopes::APPROVALS].as_slice(),
-    );
-    m.insert(
-        "device.pair.requested",
-        [scopes::PAIRING].as_slice(),
-    );
-    m.insert(
-        "device.pair.resolved",
-        [scopes::PAIRING].as_slice(),
-    );
-    m.insert(
-        "node.pair.requested",
-        [scopes::PAIRING].as_slice(),
-    );
-    m.insert(
-        "node.pair.resolved",
-        [scopes::PAIRING].as_slice(),
-    );
+    m.insert("exec.approval.requested", [scopes::APPROVALS].as_slice());
+    m.insert("exec.approval.resolved", [scopes::APPROVALS].as_slice());
+    m.insert("device.pair.requested", [scopes::PAIRING].as_slice());
+    m.insert("device.pair.resolved", [scopes::PAIRING].as_slice());
+    m.insert("node.pair.requested", [scopes::PAIRING].as_slice());
+    m.insert("node.pair.resolved", [scopes::PAIRING].as_slice());
     m
 }
 
@@ -45,7 +28,6 @@ pub struct BroadcastOpts {
     pub drop_if_slow: bool,
     pub state_version: Option<StateVersion>,
 }
-
 
 // ── Broadcaster ──────────────────────────────────────────────────────────────
 
@@ -70,7 +52,7 @@ pub async fn broadcast(
         Err(e) => {
             warn!("failed to serialize broadcast event: {e}");
             return;
-        }
+        },
     };
 
     let guards = event_scope_guards();

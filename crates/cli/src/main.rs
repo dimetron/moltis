@@ -1,9 +1,9 @@
 mod auth_commands;
 
-use clap::{Parser, Subcommand};
-use tracing::info;
-use tracing_subscriber::{
-    fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
+use {
+    clap::{Parser, Subcommand},
+    tracing::info,
+    tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 
 #[derive(Parser)]
@@ -94,8 +94,8 @@ enum ConfigAction {
 }
 
 fn init_telemetry(cli: &Cli) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
 
     if cli.json_logs {
         tracing_subscriber::registry()
@@ -105,7 +105,12 @@ fn init_telemetry(cli: &Cli) {
     } else {
         tracing_subscriber::registry()
             .with(filter)
-            .with(fmt::layer().with_target(false).with_thread_ids(false).with_ansi(true))
+            .with(
+                fmt::layer()
+                    .with_target(false)
+                    .with_thread_ids(false)
+                    .with_ansi(true),
+            )
             .init();
     }
 }
@@ -121,17 +126,17 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Gateway { bind, port } => {
             moltis_gateway::server::start_gateway(&bind, port).await
-        }
+        },
         Commands::Agent { message, .. } => {
             let result = moltis_agents::runner::run_agent("default", "main", &message).await?;
             println!("{result}");
             Ok(())
-        }
+        },
         Commands::Onboard => moltis_onboarding::wizard::run_onboarding().await,
         Commands::Auth { action } => auth_commands::handle_auth(action).await,
         _ => {
             eprintln!("command not yet implemented");
             Ok(())
-        }
+        },
     }
 }

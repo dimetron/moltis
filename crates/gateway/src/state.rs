@@ -1,16 +1,19 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{RwLock, mpsc, oneshot};
 
 use moltis_protocol::ConnectParams;
 
-use crate::auth::ResolvedAuth;
-use crate::nodes::NodeRegistry;
-use crate::pairing::PairingState;
-use crate::services::GatewayServices;
+use crate::{
+    auth::ResolvedAuth, nodes::NodeRegistry, pairing::PairingState, services::GatewayServices,
+};
 
 // ── Connected client ─────────────────────────────────────────────────────────
 
@@ -95,15 +98,12 @@ impl DedupeCache {
                 .iter()
                 .min_by_key(|(_, v)| v.inserted_at)
                 .map(|(k, _)| k.clone())
-            {
-                self.entries.remove(&oldest_key);
-            }
-        self.entries.insert(
-            key.to_string(),
-            DedupeEntry {
-                inserted_at: Instant::now(),
-            },
-        );
+        {
+            self.entries.remove(&oldest_key);
+        }
+        self.entries.insert(key.to_string(), DedupeEntry {
+            inserted_at: Instant::now(),
+        });
         false
     }
 

@@ -1,22 +1,26 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use async_trait::async_trait;
-use serde_json::Value;
-use tokio::task::AbortHandle;
-use tokio::sync::RwLock;
-use tokio_stream::StreamExt;
-use tracing::{debug, info, warn};
+use {
+    async_trait::async_trait,
+    serde_json::Value,
+    tokio::{sync::RwLock, task::AbortHandle},
+    tokio_stream::StreamExt,
+    tracing::{debug, info, warn},
+};
 
-use moltis_agents::model::StreamEvent;
-use moltis_agents::prompt::build_system_prompt;
-use moltis_agents::providers::ProviderRegistry;
-use moltis_agents::runner::{run_agent_loop, RunnerEvent};
-use moltis_agents::tool_registry::ToolRegistry;
+use moltis_agents::{
+    model::StreamEvent,
+    prompt::build_system_prompt,
+    providers::ProviderRegistry,
+    runner::{RunnerEvent, run_agent_loop},
+    tool_registry::ToolRegistry,
+};
 
-use crate::broadcast::{broadcast, BroadcastOpts};
-use crate::services::{ChatService, ModelService, ServiceResult};
-use crate::state::GatewayState;
+use crate::{
+    broadcast::{BroadcastOpts, broadcast},
+    services::{ChatService, ModelService, ServiceResult},
+    state::GatewayState,
+};
 
 // ── LiveModelService ────────────────────────────────────────────────────────
 
@@ -213,7 +217,15 @@ async fn run_with_tools(
         });
     });
 
-    match run_agent_loop(provider, tool_registry, &system_prompt, text, Some(&on_event)).await {
+    match run_agent_loop(
+        provider,
+        tool_registry,
+        &system_prompt,
+        text,
+        Some(&on_event),
+    )
+    .await
+    {
         Ok(result) => {
             info!(
                 run_id,
@@ -234,7 +246,7 @@ async fn run_with_tools(
                 BroadcastOpts::default(),
             )
             .await;
-        }
+        },
         Err(e) => {
             warn!(run_id, error = %e, "agent run error");
             broadcast(
@@ -248,7 +260,7 @@ async fn run_with_tools(
                 BroadcastOpts::default(),
             )
             .await;
-        }
+        },
     }
 }
 
@@ -283,7 +295,7 @@ async fn run_streaming(
                     BroadcastOpts::default(),
                 )
                 .await;
-            }
+            },
             StreamEvent::Done(usage) => {
                 debug!(
                     run_id,
@@ -303,7 +315,7 @@ async fn run_streaming(
                 )
                 .await;
                 break;
-            }
+            },
             StreamEvent::Error(msg) => {
                 warn!(run_id, error = %msg, "chat stream error");
                 broadcast(
@@ -318,7 +330,7 @@ async fn run_streaming(
                 )
                 .await;
                 break;
-            }
+            },
         }
     }
 }

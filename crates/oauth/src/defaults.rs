@@ -1,30 +1,26 @@
 use std::collections::HashMap;
 
-use crate::config_dir::moltis_config_dir;
-use crate::types::OAuthConfig;
+use crate::{config_dir::moltis_config_dir, types::OAuthConfig};
 
 /// Default OAuth configurations for known providers.
 fn builtin_defaults() -> HashMap<String, OAuthConfig> {
     let mut m = HashMap::new();
-    m.insert(
-        "openai-codex".into(),
-        OAuthConfig {
-            client_id: "app_EMoamEEZ73f0CkXaXp7hrann".into(),
-            auth_url: "https://auth.openai.com/oauth/authorize".into(),
-            token_url: "https://auth.openai.com/oauth/token".into(),
-            redirect_uri: "http://localhost:1455/auth/callback".into(),
-            scopes: vec![
-                "openid".into(),
-                "profile".into(),
-                "email".into(),
-                "offline_access".into(),
-            ],
-            extra_auth_params: vec![
-                ("id_token_add_organizations".into(), "true".into()),
-                ("codex_cli_simplified_flow".into(), "true".into()),
-            ],
-        },
-    );
+    m.insert("openai-codex".into(), OAuthConfig {
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann".into(),
+        auth_url: "https://auth.openai.com/oauth/authorize".into(),
+        token_url: "https://auth.openai.com/oauth/token".into(),
+        redirect_uri: "http://localhost:1455/auth/callback".into(),
+        scopes: vec![
+            "openid".into(),
+            "profile".into(),
+            "email".into(),
+            "offline_access".into(),
+        ],
+        extra_auth_params: vec![
+            ("id_token_add_organizations".into(), "true".into()),
+            ("codex_cli_simplified_flow".into(), "true".into()),
+        ],
+    });
     m
 }
 

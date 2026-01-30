@@ -4,8 +4,8 @@
 //! ~/.clawdbot/agents/<agentId>/sessions/<sessionKey>.jsonl
 //! with file locking for concurrent access.
 
-pub mod store;
 pub mod compaction;
 pub mod key;
+pub mod store;
 
 pub use key::SessionKey;

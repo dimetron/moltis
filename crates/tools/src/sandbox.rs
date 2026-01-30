@@ -1,6 +1,8 @@
-use anyhow::Result;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use {
+    anyhow::Result,
+    async_trait::async_trait,
+    serde::{Deserialize, Serialize},
+};
 
 use crate::exec::{ExecOpts, ExecResult};
 
@@ -15,7 +17,6 @@ pub enum SandboxMode {
     All,
 }
 
-
 /// Scope determines container lifecycle boundaries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -27,7 +28,6 @@ pub enum SandboxScope {
     Shared,
 }
 
-
 /// Workspace mount mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -38,7 +38,6 @@ pub enum WorkspaceMount {
     Ro,
     Rw,
 }
-
 
 /// Configuration for sandbox behavior.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -87,7 +86,10 @@ impl DockerSandbox {
     }
 
     fn container_prefix(&self) -> &str {
-        self.config.container_prefix.as_deref().unwrap_or("moltis-sandbox")
+        self.config
+            .container_prefix
+            .as_deref()
+            .unwrap_or("moltis-sandbox")
     }
 
     fn container_name(&self, id: &SandboxId) -> String {
@@ -188,7 +190,7 @@ impl Sandbox for DockerSandbox {
                     stderr,
                     exit_code: output.status.code().unwrap_or(-1),
                 })
-            }
+            },
             Ok(Err(e)) => anyhow::bail!("docker exec failed: {e}"),
             Err(_) => anyhow::bail!("docker exec timed out after {}s", opts.timeout.as_secs()),
         }
