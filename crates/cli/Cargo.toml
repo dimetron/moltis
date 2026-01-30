@@ -2,6 +2,29 @@
 name = "moltis-cli"
 version.workspace = true
 edition.workspace = true
+description = "Rust version of moltbot"
+license = "MIT"
+homepage = "https://docs.molt.bot/"
+
+[package.metadata.deb]
+name = "moltis"
+maintainer = "Moltis Contributors"
+copyright = "2025, Moltis Contributors"
+depends = "$auto"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/moltis", "usr/bin/", "755"],
+]
+
+[package.metadata.generate-rpm]
+name = "moltis"
+license = "MIT"
+summary = "Rust version of moltbot"
+url = "https://docs.molt.bot/"
+assets = [
+    { source = "target/release/moltis", dest = "/usr/bin/moltis", mode = "0755" },
+]
 
 [[bin]]
 name = "moltis"
