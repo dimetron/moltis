@@ -65,12 +65,13 @@ impl SessionService for LiveSessionService {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing 'key' parameter".to_string())?;
 
+        // Auto-create the session entry if it doesn't exist.
         let entry = {
-            let meta = self.metadata.read().await;
-            meta.get(key).cloned()
+            let mut meta = self.metadata.write().await;
+            let entry = meta.upsert(key, None).clone();
+            let _ = meta.save();
+            entry
         };
-
-        let entry = entry.ok_or_else(|| format!("session '{key}' not found"))?;
         let history = self.store.read(key).await.map_err(|e| e.to_string())?;
 
         Ok(serde_json::json!({

@@ -15,6 +15,10 @@
   var rpcResult = $("rpcResult");
 
   var modelSelect = $("modelSelect");
+  var sessionsToggle = $("sessionsToggle");
+  var sessionsPanel = $("sessionsPanel");
+  var sessionList = $("sessionList");
+  var newSessionBtn = $("newSessionBtn");
 
   var ws = null;
   var reqId = 0;
@@ -25,6 +29,8 @@
   var pending = {};
   var models = [];
   var lastToolOutput = "";
+  var activeSessionKey = localStorage.getItem("moltis-session") || "main";
+  var sessions = [];
 
   // ── Theme ────────────────────────────────────────────────────────
 
@@ -297,6 +303,8 @@
           var ts = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
           addMsg("system", "Connected to moltis gateway v" + hello.server.version + " at " + ts);
           fetchModels();
+          // Restore session — switch to the saved session and load its history.
+          switchSession(activeSessionKey);
         } else {
           setStatus("", "handshake failed");
           var reason = (frame.error && frame.error.message) || "unknown error";
@@ -843,6 +851,113 @@
 
   providerModal.addEventListener("click", function (e) {
     if (e.target === providerModal) closeProviderModal();
+  });
+
+  // ── Sessions ──────────────────────────────────────────────────
+
+  sessionsToggle.addEventListener("click", function () {
+    sessionsPanel.classList.toggle("hidden");
+  });
+
+  function fetchSessions() {
+    sendRpc("sessions.list", {}).then(function (res) {
+      if (!res || !res.ok) return;
+      sessions = res.payload || [];
+      renderSessionList();
+    });
+  }
+
+  function renderSessionList() {
+    sessionList.textContent = "";
+    sessions.forEach(function (s) {
+      var item = document.createElement("div");
+      item.className = "session-item" + (s.key === activeSessionKey ? " active" : "");
+
+      var info = document.createElement("div");
+      info.className = "session-info";
+
+      var label = document.createElement("div");
+      label.className = "session-label";
+      label.textContent = s.label || s.key;
+      info.appendChild(label);
+
+      var meta = document.createElement("div");
+      meta.className = "session-meta";
+      var count = s.messageCount || 0;
+      meta.textContent = count + " msg" + (count !== 1 ? "s" : "");
+      info.appendChild(meta);
+
+      item.appendChild(info);
+
+      // Actions (rename + delete) for non-main sessions
+      var actions = document.createElement("div");
+      actions.className = "session-actions";
+
+      if (s.key !== "main") {
+        var renameBtn = document.createElement("button");
+        renameBtn.className = "session-action-btn";
+        renameBtn.textContent = "\u270F";
+        renameBtn.title = "Rename";
+        renameBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var newLabel = prompt("Rename session:", s.label || s.key);
+          if (newLabel !== null) {
+            sendRpc("sessions.patch", { key: s.key, label: newLabel }).then(fetchSessions);
+          }
+        });
+        actions.appendChild(renameBtn);
+
+        var deleteBtn = document.createElement("button");
+        deleteBtn.className = "session-action-btn session-delete";
+        deleteBtn.textContent = "\u2715";
+        deleteBtn.title = "Delete";
+        deleteBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (confirm("Delete this session?")) {
+            sendRpc("sessions.delete", { key: s.key }).then(function () {
+              if (activeSessionKey === s.key) {
+                switchSession("main");
+              }
+              fetchSessions();
+            });
+          }
+        });
+        actions.appendChild(deleteBtn);
+      }
+      item.appendChild(actions);
+
+      item.addEventListener("click", function () {
+        switchSession(s.key);
+      });
+
+      sessionList.appendChild(item);
+    });
+  }
+
+  function switchSession(key) {
+    activeSessionKey = key;
+    localStorage.setItem("moltis-session", key);
+    msgBox.textContent = "";
+    streamEl = null;
+    streamText = "";
+    sendRpc("sessions.switch", { key: key }).then(function (res) {
+      if (res && res.ok && res.payload) {
+        var history = res.payload.history || [];
+        history.forEach(function (msg) {
+          if (msg.role === "user") {
+            addMsg("user", renderMarkdown(msg.content || ""), true);
+          } else if (msg.role === "assistant") {
+            addMsg("assistant", renderMarkdown(msg.content || ""), true);
+          }
+        });
+      }
+      fetchSessions();
+    });
+  }
+
+  newSessionBtn.addEventListener("click", function () {
+    var key = "session:" + crypto.randomUUID();
+    switchSession(key);
   });
 
   connect();

@@ -587,6 +587,66 @@
     padding: 8px 0;
   }
 
+  /* Session panel */
+  .session-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .session-item:hover {
+    background: var(--bg-hover);
+  }
+  .session-item.active {
+    background: var(--accent-subtle);
+    border-left: 3px solid var(--accent);
+  }
+  .session-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .session-label {
+    font-size: 0.82rem;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .session-meta {
+    font-size: 0.7rem;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .session-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .session-item:hover .session-actions {
+    opacity: 1;
+  }
+  .session-action-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+  }
+  .session-action-btn:hover {
+    color: var(--text);
+    background: var(--surface2);
+  }
+  .session-delete:hover {
+    color: var(--error);
+  }
+
   /* Methods panel */
   .methods-result {
     background: var(--bg);

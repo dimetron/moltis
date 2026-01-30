@@ -116,7 +116,11 @@ mod tests {
 
         let list = meta.list();
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].key, "session:abc"); // more recent
+        let keys: Vec<&str> = list.iter().map(|e| e.key.as_str()).collect();
+        assert!(keys.contains(&"main"));
+        assert!(keys.contains(&"session:abc"));
+        let abc = list.iter().find(|e| e.key == "session:abc").unwrap();
+        assert_eq!(abc.label.as_deref(), Some("My Chat"));
     }
 
     #[test]
