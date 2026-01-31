@@ -36,6 +36,8 @@ const NODE_METHODS: &[&str] = &["node.invoke.result", "node.event", "skills.bins
 const READ_METHODS: &[&str] = &[
     "health",
     "logs.tail",
+    "logs.list",
+    "logs.status",
     "channels.status",
     "status",
     "usage.status",
@@ -84,6 +86,7 @@ const WRITE_METHODS: &[&str] = &[
     "chat.clear",
     "chat.compact",
     "browser.request",
+    "logs.ack",
     "providers.save_key",
     "providers.remove_key",
     "providers.oauth.start",
@@ -628,6 +631,51 @@ impl MethodRegistry {
                         .services
                         .logs
                         .tail(ctx.params.clone())
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+
+        // logs.list
+        self.register(
+            "logs.list",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .logs
+                        .list(ctx.params.clone())
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+
+        // logs.status
+        self.register(
+            "logs.status",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .logs
+                        .status()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+
+        // logs.ack
+        self.register(
+            "logs.ack",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .logs
+                        .ack()
                         .await
                         .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
                 })

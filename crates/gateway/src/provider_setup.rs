@@ -93,10 +93,7 @@ pub(crate) fn config_with_saved_keys(
 ) -> ProvidersConfig {
     let mut config = base.clone();
     for (name, key) in key_store.load_all() {
-        let entry = config
-            .providers
-            .entry(name)
-            .or_default();
+        let entry = config.providers.entry(name).or_default();
         // Only override if config doesn't already have a key.
         if entry.api_key.as_ref().is_none_or(|k| k.is_empty()) {
             entry.api_key = Some(key);
@@ -504,8 +501,7 @@ impl ProviderSetupService for LiveProviderSetupService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use moltis_config::schema::ProviderEntry;
+    use {super::*, moltis_config::schema::ProviderEntry};
 
     #[test]
     fn known_providers_have_valid_auth_types() {

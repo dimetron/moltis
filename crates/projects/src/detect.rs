@@ -75,7 +75,8 @@ fn git_remote_name(dir: &Path) -> Option<String> {
             in_origin = false;
             continue;
         }
-        if in_origin && trimmed.starts_with("url")
+        if in_origin
+            && trimmed.starts_with("url")
             && let Some(url) = trimmed.split('=').nth(1)
         {
             let url = url.trim();
