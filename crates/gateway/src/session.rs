@@ -30,6 +30,7 @@ impl SessionService for LiveSessionService {
                     "id": e.id,
                     "key": e.key,
                     "label": e.label,
+                    "model": e.model,
                     "createdAt": e.created_at,
                     "updatedAt": e.updated_at,
                     "messageCount": e.message_count,
@@ -74,6 +75,7 @@ impl SessionService for LiveSessionService {
                 "id": entry.id,
                 "key": entry.key,
                 "label": entry.label,
+                "model": entry.model,
                 "createdAt": entry.created_at,
                 "updatedAt": entry.updated_at,
                 "messageCount": entry.message_count,
@@ -93,12 +95,21 @@ impl SessionService for LiveSessionService {
             .get("label")
             .and_then(|v| v.as_str())
             .map(String::from);
+        let model = params
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let mut meta = self.metadata.write().await;
         if meta.get(key).is_none() {
             return Err(format!("session '{key}' not found"));
         }
-        meta.upsert(key, label);
+        if label.is_some() {
+            meta.upsert(key, label);
+        }
+        if model.is_some() {
+            meta.set_model(key, model);
+        }
         // Update project_id if provided (explicit null clears it).
         if params.get("project_id").is_some() {
             let project_id = params
@@ -115,6 +126,7 @@ impl SessionService for LiveSessionService {
             "id": entry.id,
             "key": entry.key,
             "label": entry.label,
+            "model": entry.model,
         }))
     }
 
