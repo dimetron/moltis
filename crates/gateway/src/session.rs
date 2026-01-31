@@ -56,7 +56,9 @@ impl SessionService for LiveSessionService {
                     "createdAt": e.created_at,
                     "updatedAt": e.updated_at,
                     "messageCount": e.message_count,
+                    "projectId": e.project_id,
                     "sandbox_enabled": e.sandbox_enabled,
+                    "worktree_branch": e.worktree_branch,
                 })
             })
             .collect();
@@ -103,6 +105,7 @@ impl SessionService for LiveSessionService {
                 "projectId": entry.project_id,
                 "archived": entry.archived,
                 "sandbox_enabled": entry.sandbox_enabled,
+                "worktree_branch": entry.worktree_branch,
             },
             "history": history,
         }))

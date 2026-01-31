@@ -80,6 +80,89 @@
     sendRpc("sessions.patch", { key: sessionKey, model: modelId });
   }
 
+  // ── Session project combo (in chat header) ──────────────────
+  var projectCombo = null;
+  var projectComboBtn = null;
+  var projectComboLabel = null;
+  var projectDropdown = null;
+  var projectDropdownList = null;
+
+  function openProjectDropdown() {
+    if (!projectDropdown) return;
+    projectDropdown.classList.remove("hidden");
+    renderProjectDropdownList();
+  }
+
+  function closeProjectDropdown() {
+    if (!projectDropdown) return;
+    projectDropdown.classList.add("hidden");
+  }
+
+  function renderProjectDropdownList() {
+    if (!projectDropdownList) return;
+    projectDropdownList.textContent = "";
+    // "No project" option
+    var none = document.createElement("div");
+    none.className = "model-dropdown-item" + (!activeProjectId ? " selected" : "");
+    var noneLabel = document.createElement("span");
+    noneLabel.className = "model-item-label";
+    noneLabel.textContent = "No project";
+    none.appendChild(noneLabel);
+    none.addEventListener("click", function () { selectProject("", "No project"); });
+    projectDropdownList.appendChild(none);
+    (projects || []).forEach(function (p) {
+      var el = document.createElement("div");
+      el.className = "model-dropdown-item" + (p.id === activeProjectId ? " selected" : "");
+      var lbl = document.createElement("span");
+      lbl.className = "model-item-label";
+      lbl.textContent = p.label || p.id;
+      el.appendChild(lbl);
+      el.addEventListener("click", function () { selectProject(p.id, p.label || p.id); });
+      projectDropdownList.appendChild(el);
+    });
+  }
+
+  function selectProject(id, label) {
+    activeProjectId = id;
+    localStorage.setItem("moltis-project", activeProjectId);
+    if (projectComboLabel) projectComboLabel.textContent = label;
+    closeProjectDropdown();
+    if (connected && activeSessionKey) {
+      sendRpc("sessions.patch", { key: activeSessionKey, project_id: id });
+    }
+  }
+
+  function updateSessionProjectSelect(projectId) {
+    if (!projectComboLabel) return;
+    if (!projectId) {
+      projectComboLabel.textContent = "No project";
+      return;
+    }
+    var proj = (projects || []).find(function (p) { return p.id === projectId; });
+    projectComboLabel.textContent = proj ? (proj.label || proj.id) : projectId;
+  }
+
+  function renderSessionProjectSelect() {
+    updateSessionProjectSelect(activeProjectId);
+  }
+
+  function bindProjectComboEvents() {
+    if (!projectComboBtn || !projectCombo) return;
+    projectComboBtn.addEventListener("click", function () {
+      if (projectDropdown.classList.contains("hidden")) {
+        openProjectDropdown();
+      } else {
+        closeProjectDropdown();
+      }
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    if (projectCombo && !projectCombo.contains(e.target)) {
+      closeProjectDropdown();
+    }
+  });
+
   // ── Sandbox toggle ───────────────────────────────────────────
   var sandboxToggleBtn = null;
   var sandboxLabel = null;
@@ -351,7 +434,13 @@
 
   function renderSessionList() {
     sessionList.textContent = "";
-    sessions.forEach(function (s) {
+    var filtered = sessions;
+    if (projectFilterId) {
+      filtered = sessions.filter(function (s) {
+        return s.projectId === projectFilterId;
+      });
+    }
+    filtered.forEach(function (s) {
       var item = document.createElement("div");
       item.className = "session-item" + (s.key === activeSessionKey ? " active" : "");
       item.setAttribute("data-session-key", s.key);
@@ -368,7 +457,11 @@
       meta.className = "session-meta";
       meta.setAttribute("data-session-key", s.key);
       var count = s.messageCount || 0;
-      meta.textContent = count + " msg" + (count !== 1 ? "s" : "");
+      var metaText = count + " msg" + (count !== 1 ? "s" : "");
+      if (s.worktree_branch) {
+        metaText += " \u00b7 \u2387 " + s.worktree_branch;
+      }
+      meta.textContent = metaText;
       info.appendChild(meta);
 
       item.appendChild(info);
@@ -396,12 +489,22 @@
         deleteBtn.title = "Delete";
         deleteBtn.addEventListener("click", function (e) {
           e.stopPropagation();
-          if (confirm("Delete this session?")) {
-            sendRpc("sessions.delete", { key: s.key }).then(function () {
-              if (activeSessionKey === s.key) switchSession("main");
-              fetchSessions();
-            });
-          }
+          var metaEl = sessionList.querySelector('.session-meta[data-session-key="' + s.key + '"]');
+          var count = metaEl ? (parseInt(metaEl.textContent, 10) || 0) : (s.messageCount || 0);
+          if (count > 0 && !confirm("Delete this session?")) return;
+          sendRpc("sessions.delete", { key: s.key }).then(function (res) {
+            if (res && !res.ok && res.error && res.error.indexOf("uncommitted changes") !== -1) {
+              if (confirm("Worktree has uncommitted changes. Force delete?")) {
+                sendRpc("sessions.delete", { key: s.key, force: true }).then(function () {
+                  if (activeSessionKey === s.key) switchSession("main");
+                  fetchSessions();
+                });
+              }
+              return;
+            }
+            if (activeSessionKey === s.key) switchSession("main");
+            fetchSessions();
+          });
         });
         actions.appendChild(deleteBtn);
       }
@@ -437,7 +540,7 @@
   newSessionBtn.addEventListener("click", function () {
     if (currentPage !== "/") navigate("/");
     var key = "session:" + crypto.randomUUID();
-    switchSession(key);
+    switchSession(key, null, null);
   });
 
   // ── Projects ──────────────────────────────────────────────────
@@ -448,6 +551,7 @@
       if (!res || !res.ok) return;
       projects = res.payload || [];
       renderProjectSelect();
+      renderSessionProjectSelect();
     });
   }
 
@@ -456,25 +560,24 @@
     while (projectSelect.firstChild) projectSelect.removeChild(projectSelect.firstChild);
     var defaultOpt = document.createElement("option");
     defaultOpt.value = "";
-    defaultOpt.textContent = "No project";
+    defaultOpt.textContent = "All sessions";
     projectSelect.appendChild(defaultOpt);
 
     projects.forEach(function (p) {
       var opt = document.createElement("option");
       opt.value = p.id;
       opt.textContent = p.label || p.id;
-      if (p.id === activeProjectId) opt.selected = true;
       projectSelect.appendChild(opt);
     });
+    projectSelect.value = projectFilterId || "";
   }
 
+  var projectFilterId = localStorage.getItem("moltis-project-filter") || "";
+
   projectSelect.addEventListener("change", function () {
-    activeProjectId = projectSelect.value;
-    localStorage.setItem("moltis-project", activeProjectId);
-    // Persist project binding to the current session.
-    if (connected && activeSessionKey) {
-      sendRpc("sessions.switch", { key: activeSessionKey, project_id: activeProjectId });
-    }
+    projectFilterId = projectSelect.value;
+    localStorage.setItem("moltis-project-filter", projectFilterId);
+    renderSessionList();
   });
 
   // ── Project modal ─────────────────────────────────────────────
@@ -1521,7 +1624,7 @@
     });
   }
 
-  function switchSession(key, searchContext) {
+  function switchSession(key, searchContext, projectId) {
     activeSessionKey = key;
     localStorage.setItem("moltis-session", key);
     if (chatMsgBox) chatMsgBox.textContent = "";
@@ -1537,20 +1640,18 @@
       if (isTarget) el.classList.remove("unread");
     });
 
-    sendRpc("sessions.switch", { key: key }).then(function (res) {
+    var switchParams = { key: key };
+    if (projectId) switchParams.project_id = projectId;
+    sendRpc("sessions.switch", switchParams).then(function (res) {
       if (res && res.ok && res.payload) {
         var entry = res.payload.entry || {};
         // Restore the session's project binding.
-        if (entry.projectId) {
-          activeProjectId = entry.projectId;
-          localStorage.setItem("moltis-project", activeProjectId);
-          projectSelect.value = activeProjectId;
-        } else {
-          // Session has no project — clear selection.
-          activeProjectId = "";
-          localStorage.setItem("moltis-project", "");
-          projectSelect.value = "";
-        }
+        // If we explicitly passed a projectId (e.g. new session), keep it
+        // even if the server response hasn't persisted it yet.
+        var effectiveProjectId = entry.projectId || projectId || "";
+        activeProjectId = effectiveProjectId;
+        localStorage.setItem("moltis-project", activeProjectId);
+        updateSessionProjectSelect(activeProjectId);
         // Restore per-session model
         if (entry.model && models.length > 0) {
           var found = models.find(function (m) { return m.id === entry.model; });
@@ -1695,7 +1796,8 @@
               if (chatMsgBox) chatMsgBox.textContent = "";
               sessionTokens = { input: 0, output: 0 };
               updateTokenBar();
-              bumpSessionCount(activeSessionKey, 0);
+              var metaEl = sessionList.querySelector('.session-meta[data-session-key="' + activeSessionKey + '"]');
+              if (metaEl) metaEl.textContent = "0 msgs";
             } else {
               chatAddMsg("error", (res && res.error && res.error.message) || "Clear failed");
             }
@@ -1779,6 +1881,15 @@
   var chatPageHTML =
     '<div class="flex-1 flex flex-col min-w-0">' +
       '<div class="px-4 py-1.5 border-b border-[var(--border)] bg-[var(--surface)] flex items-center gap-2 shrink-0">' +
+        '<div id="projectCombo" class="model-combo">' +
+          '<button id="projectComboBtn" class="model-combo-btn" type="button">' +
+            '<span id="projectComboLabel">No project</span>' +
+            '<svg class="model-combo-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="12" height="12"><path d="M19.5 8.25l-7.5 7.5-7.5-7.5"/></svg>' +
+          '</button>' +
+          '<div id="projectDropdown" class="model-dropdown hidden">' +
+            '<div id="projectDropdownList" class="model-dropdown-list"></div>' +
+          '</div>' +
+        '</div>' +
         '<div id="modelCombo" class="model-combo">' +
           '<button id="modelComboBtn" class="model-combo-btn" type="button">' +
             '<span id="modelComboLabel">' + (selectedModelId || 'loading\u2026') + '</span>' +
@@ -1824,6 +1935,14 @@
     sandboxLabel = $("sandboxLabel");
     bindSandboxToggleEvents();
     updateSandboxUI(true); // default: sandboxed until session loads
+
+    // Bind session project combo
+    projectCombo = $("projectCombo");
+    projectComboBtn = $("projectComboBtn");
+    projectComboLabel = $("projectComboLabel");
+    projectDropdown = $("projectDropdown");
+    projectDropdownList = $("projectDropdownList");
+    bindProjectComboEvents();
 
     // Update model selector label if models are already loaded
     if (models.length > 0 && modelComboLabel) {
@@ -1890,6 +2009,11 @@
     modelDropdownList = null;
     sandboxToggleBtn = null;
     sandboxLabel = null;
+    projectCombo = null;
+    projectComboBtn = null;
+    projectComboLabel = null;
+    projectDropdown = null;
+    projectDropdownList = null;
   });
 
   // ════════════════════════════════════════════════════════════
@@ -2530,6 +2654,16 @@
           style: "font-size:.72rem;color:var(--muted);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;"
         }));
 
+        if (p.setup_command) {
+          nameRow.appendChild(createEl("span", { className: "provider-item-badge api-key", textContent: "setup" }));
+        }
+        if (p.teardown_command) {
+          nameRow.appendChild(createEl("span", { className: "provider-item-badge api-key", textContent: "teardown" }));
+        }
+        if (p.branch_prefix) {
+          nameRow.appendChild(createEl("span", { className: "provider-item-badge oauth", textContent: p.branch_prefix + "/*" }));
+        }
+
         if (p.system_prompt) {
           info.appendChild(createEl("div", {
             textContent: "System prompt: " + p.system_prompt.substring(0, 80) + (p.system_prompt.length > 80 ? "..." : ""),
@@ -2619,6 +2753,12 @@
       var setupField = labeledInput("Setup command", p.setup_command, "e.g. pnpm install", true);
       form.appendChild(setupField.group);
 
+      var teardownField = labeledInput("Teardown command", p.teardown_command, "e.g. docker compose down", true);
+      form.appendChild(teardownField.group);
+
+      var prefixField = labeledInput("Branch prefix", p.branch_prefix, "default: moltis", true);
+      form.appendChild(prefixField.group);
+
       // Worktree toggle
       var wtGroup = createEl("div", { style: "margin-bottom:10px;display:flex;align-items:center;gap:8px;" });
       var wtCheckbox = createEl("input", { type: "checkbox" });
@@ -2640,6 +2780,8 @@
         updated.directory = dirField.input.value.trim() || p.directory;
         updated.system_prompt = promptInput.value.trim() || null;
         updated.setup_command = setupField.input.value.trim() || null;
+        updated.teardown_command = teardownField.input.value.trim() || null;
+        updated.branch_prefix = prefixField.input.value.trim() || null;
         updated.auto_worktree = wtCheckbox.checked;
         updated.updated_at = Date.now();
 
