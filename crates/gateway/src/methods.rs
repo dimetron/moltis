@@ -1444,7 +1444,10 @@ impl MethodRegistry {
                         .await
                         .map_err(|e| {
                             tracing::error!("session resolve failed: {e}");
-                            ErrorShape::new(error_codes::UNAVAILABLE, format!("session resolve failed: {e}"))
+                            ErrorShape::new(
+                                error_codes::UNAVAILABLE,
+                                format!("session resolve failed: {e}"),
+                            )
                         })?;
 
                     if let Some(pid) = ctx.params.get("project_id").and_then(|v| v.as_str()) {
@@ -1454,6 +1457,85 @@ impl MethodRegistry {
                             .session
                             .patch(serde_json::json!({ "key": key, "project_id": pid }))
                             .await;
+
+                        // Auto-create worktree if project has auto_worktree enabled.
+                        if let Ok(proj_val) = ctx
+                            .state
+                            .services
+                            .project
+                            .get(serde_json::json!({"id": pid}))
+                            .await
+                            && proj_val
+                                .get("auto_worktree")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                            && let Some(dir) = proj_val.get("directory").and_then(|v| v.as_str())
+                        {
+                            let project_dir = std::path::Path::new(dir);
+                            let create_result =
+                                match moltis_projects::WorktreeManager::resolve_base_branch(
+                                    project_dir,
+                                )
+                                .await
+                                {
+                                    Ok(base) => {
+                                        moltis_projects::WorktreeManager::create_from_base(
+                                            project_dir,
+                                            key,
+                                            &base,
+                                        )
+                                        .await
+                                    },
+                                    Err(_) => {
+                                        moltis_projects::WorktreeManager::create(project_dir, key)
+                                            .await
+                                    },
+                                };
+                            match create_result {
+                                Ok(wt_dir) => {
+                                    let prefix = proj_val
+                                        .get("branch_prefix")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or("moltis");
+                                    let branch = format!("{prefix}/{key}");
+                                    let _ = ctx
+                                        .state
+                                        .services
+                                        .session
+                                        .patch(serde_json::json!({
+                                            "key": key,
+                                            "worktree_branch": branch,
+                                        }))
+                                        .await;
+
+                                    if let Err(e) = moltis_projects::worktree::copy_project_config(
+                                        project_dir,
+                                        &wt_dir,
+                                    ) {
+                                        tracing::warn!("failed to copy project config: {e}");
+                                    }
+
+                                    if let Some(cmd) = proj_val
+                                        .get("setup_command")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        && let Err(e) = moltis_projects::WorktreeManager::run_setup(
+                                            &wt_dir,
+                                            cmd,
+                                            project_dir,
+                                            key,
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!("worktree setup failed: {e}");
+                                    }
+                                },
+                                Err(e) => {
+                                    tracing::warn!("auto-create worktree failed: {e}");
+                                },
+                            }
+                        }
                     }
 
                     Ok(result)

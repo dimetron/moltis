@@ -15,6 +15,10 @@ pub struct Project {
     #[serde(default)]
     pub setup_command: Option<String>,
     #[serde(default)]
+    pub teardown_command: Option<String>,
+    #[serde(default)]
+    pub branch_prefix: Option<String>,
+    #[serde(default)]
     pub detected: bool,
     pub created_at: u64,
     pub updated_at: u64,
@@ -45,6 +49,12 @@ impl ProjectContext {
             self.project.label,
             self.project.directory.display()
         );
+        if let Some(ref wt_dir) = self.worktree_dir {
+            out.push_str(&format!(
+                "Working directory (worktree): {}\n\n",
+                wt_dir.display()
+            ));
+        }
         if let Some(ref prompt) = self.project.system_prompt {
             out.push_str(prompt);
             out.push_str("\n\n");
@@ -54,5 +64,66 @@ impl ProjectContext {
             out.push_str(&format!("## {}\n\n{}\n\n", name, cf.content));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_project() -> Project {
+        Project {
+            id: "test".into(),
+            label: "Test Project".into(),
+            directory: PathBuf::from("/projects/test"),
+            system_prompt: None,
+            auto_worktree: false,
+            setup_command: None,
+            teardown_command: None,
+            branch_prefix: None,
+            detected: false,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_prompt_section_without_worktree() {
+        let ctx = ProjectContext {
+            project: test_project(),
+            context_files: vec![],
+            worktree_dir: None,
+        };
+        let section = ctx.to_prompt_section();
+        assert!(section.contains("# Project: Test Project"));
+        assert!(section.contains("Directory: /projects/test"));
+        assert!(!section.contains("worktree"));
+    }
+
+    #[test]
+    fn test_prompt_section_with_worktree() {
+        let ctx = ProjectContext {
+            project: test_project(),
+            context_files: vec![],
+            worktree_dir: Some(PathBuf::from("/projects/test/.moltis-worktrees/session1")),
+        };
+        let section = ctx.to_prompt_section();
+        assert!(section.contains("Working directory (worktree):"));
+        assert!(section.contains(".moltis-worktrees/session1"));
+    }
+
+    #[test]
+    fn test_prompt_section_with_context_files() {
+        let ctx = ProjectContext {
+            project: test_project(),
+            context_files: vec![ContextFile {
+                path: PathBuf::from("/projects/test/CLAUDE.md"),
+                content: "Hello world".into(),
+            }],
+            worktree_dir: None,
+        };
+        let section = ctx.to_prompt_section();
+        assert!(section.contains("## CLAUDE.md"));
+        assert!(section.contains("Hello world"));
     }
 }

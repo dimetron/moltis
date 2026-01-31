@@ -3,6 +3,7 @@ use std::sync::Arc;
 use {async_trait::async_trait, serde_json::Value};
 
 use {
+    moltis_projects::ProjectStore,
     moltis_sessions::{metadata::SqliteSessionMetadata, store::SessionStore},
     moltis_tools::sandbox::SandboxRouter,
 };
@@ -14,6 +15,7 @@ pub struct LiveSessionService {
     store: Arc<SessionStore>,
     metadata: Arc<SqliteSessionMetadata>,
     sandbox_router: Option<Arc<SandboxRouter>>,
+    project_store: Option<Arc<dyn ProjectStore>>,
 }
 
 impl LiveSessionService {
@@ -22,11 +24,17 @@ impl LiveSessionService {
             store,
             metadata,
             sandbox_router: None,
+            project_store: None,
         }
     }
 
     pub fn with_sandbox_router(mut self, router: Arc<SandboxRouter>) -> Self {
         self.sandbox_router = Some(router);
+        self
+    }
+
+    pub fn with_project_store(mut self, store: Arc<dyn ProjectStore>) -> Self {
+        self.project_store = Some(store);
         self
     }
 }
@@ -76,7 +84,11 @@ impl SessionService for LiveSessionService {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing 'key' parameter".to_string())?;
 
-        let entry = self.metadata.upsert(key, None).await.map_err(|e| e.to_string())?;
+        let entry = self
+            .metadata
+            .upsert(key, None)
+            .await
+            .map_err(|e| e.to_string())?;
         let history = self.store.read(key).await.map_err(|e| e.to_string())?;
 
         Ok(serde_json::json!({
@@ -127,10 +139,24 @@ impl SessionService for LiveSessionService {
                 .map(String::from);
             self.metadata.set_project_id(key, project_id).await;
         }
+        // Update worktree_branch if provided.
+        if params.get("worktree_branch").is_some() {
+            let worktree_branch = params
+                .get("worktree_branch")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            self.metadata
+                .set_worktree_branch(key, worktree_branch)
+                .await;
+        }
+
         // Update sandbox_enabled if provided.
         if params.get("sandbox_enabled").is_some() {
             let sandbox_enabled = params.get("sandbox_enabled").and_then(|v| v.as_bool());
-            self.metadata.set_sandbox_enabled(key, sandbox_enabled).await;
+            self.metadata
+                .set_sandbox_enabled(key, sandbox_enabled)
+                .await;
             // Push override to sandbox router.
             if let Some(ref router) = self.sandbox_router {
                 if let Some(enabled) = sandbox_enabled {
@@ -148,6 +174,7 @@ impl SessionService for LiveSessionService {
             "label": entry.label,
             "model": entry.model,
             "sandbox_enabled": entry.sandbox_enabled,
+            "worktree_branch": entry.worktree_branch,
         }))
     }
 
@@ -171,6 +198,48 @@ impl SessionService for LiveSessionService {
 
         if key == "main" {
             return Err("cannot delete the main session".to_string());
+        }
+
+        let force = params
+            .get("force")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Check for worktree cleanup before deleting metadata.
+        if let Some(entry) = self.metadata.get(key).await
+            && entry.worktree_branch.is_some()
+            && let Some(ref project_id) = entry.project_id
+            && let Some(ref project_store) = self.project_store
+            && let Ok(Some(project)) = project_store.get(project_id).await
+        {
+            let project_dir = &project.directory;
+            let wt_dir = project_dir.join(".moltis-worktrees").join(key);
+
+            // Safety checks unless force is set.
+            if !force
+                && wt_dir.exists()
+                && let Ok(true) =
+                    moltis_projects::WorktreeManager::has_uncommitted_changes(&wt_dir).await
+            {
+                return Err(
+                    "worktree has uncommitted changes; use force: true to delete anyway"
+                        .to_string(),
+                );
+            }
+
+            // Run teardown command if configured.
+            if let Some(ref cmd) = project.teardown_command
+                && wt_dir.exists()
+                && let Err(e) =
+                    moltis_projects::WorktreeManager::run_teardown(&wt_dir, cmd, project_dir, key)
+                        .await
+            {
+                tracing::warn!("worktree teardown failed: {e}");
+            }
+
+            if let Err(e) = moltis_projects::WorktreeManager::cleanup(project_dir, key).await {
+                tracing::warn!("worktree cleanup failed: {e}");
+            }
         }
 
         self.store.clear(key).await.map_err(|e| e.to_string())?;

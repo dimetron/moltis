@@ -75,7 +75,8 @@ fn git_remote_name(dir: &Path) -> Option<String> {
             in_origin = false;
             continue;
         }
-        if in_origin && trimmed.starts_with("url")
+        if in_origin
+            && trimmed.starts_with("url")
             && let Some(url) = trimmed.split('=').nth(1)
         {
             let url = url.trim();
@@ -124,6 +125,8 @@ pub fn detect_project(dir: &Path) -> Option<Project> {
         system_prompt: None,
         auto_worktree: is_git_repo(dir),
         setup_command: None,
+        teardown_command: None,
+        branch_prefix: None,
         detected: true,
         created_at: now,
         updated_at: now,

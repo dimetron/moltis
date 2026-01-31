@@ -14,4 +14,5 @@ pub mod worktree;
 pub use {
     store::{ProjectStore, SqliteProjectStore, TomlProjectStore},
     types::{ContextFile, Project, ProjectContext},
+    worktree::WorktreeManager,
 };
