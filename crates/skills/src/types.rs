@@ -91,18 +91,86 @@ pub struct SkillMetadata {
     /// Short human-readable description.
     #[serde(default)]
     pub description: String,
+    /// Homepage URL.
+    #[serde(default)]
+    pub homepage: Option<String>,
     /// SPDX license identifier.
     #[serde(default)]
     pub license: Option<String>,
-    /// Tools this skill is allowed to use.
+    /// Environment requirements (intended product, system packages, network access, etc.).
     #[serde(default)]
+    pub compatibility: Option<String>,
+    /// Tools this skill is allowed to use (space-delimited in spec, parsed as list).
+    #[serde(default, alias = "allowed-tools")]
     pub allowed_tools: Vec<String>,
+    /// Binary/tool requirements for this skill.
+    #[serde(default)]
+    pub requires: SkillRequirements,
     /// Filesystem path to the skill directory.
     #[serde(skip)]
     pub path: PathBuf,
     /// Where this skill was discovered.
     #[serde(skip)]
     pub source: Option<SkillSource>,
+}
+
+// ── Skill requirements ──────────────────────────────────────────────────────
+
+/// Binary and tool requirements declared in SKILL.md frontmatter.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillRequirements {
+    /// All of these binaries must be found in PATH.
+    #[serde(default)]
+    pub bins: Vec<String>,
+    /// At least one of these binaries must be found (openclaw `anyBins`).
+    #[serde(default)]
+    pub any_bins: Vec<String>,
+    /// Install instructions for missing binaries.
+    #[serde(default)]
+    pub install: Vec<InstallSpec>,
+}
+
+/// How to install a missing binary dependency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallSpec {
+    pub kind: InstallKind,
+    #[serde(default)]
+    pub formula: Option<String>,
+    #[serde(default)]
+    pub package: Option<String>,
+    #[serde(default)]
+    pub module: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Which binaries this install step provides.
+    #[serde(default)]
+    pub bins: Vec<String>,
+    /// Platform filter (e.g. `["darwin"]`, `["linux"]`). Empty = all platforms.
+    #[serde(default)]
+    pub os: Vec<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// Install method kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallKind {
+    Brew,
+    Npm,
+    Go,
+    Cargo,
+    Uv,
+    Download,
+}
+
+/// Result of checking whether a skill's requirements are met.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillEligibility {
+    pub eligible: bool,
+    pub missing_bins: Vec<String>,
+    /// Install options filtered to the current OS.
+    pub install_options: Vec<InstallSpec>,
 }
 
 /// Full skill content: metadata + markdown body.

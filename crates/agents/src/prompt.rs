@@ -133,7 +133,10 @@ mod tests {
             name: "commit".into(),
             description: "Create git commits".into(),
             license: None,
+            compatibility: None,
             allowed_tools: vec![],
+            homepage: None,
+            requires: Default::default(),
             path: std::path::PathBuf::from("/skills/commit"),
             source: None,
         }];

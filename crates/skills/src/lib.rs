@@ -9,4 +9,5 @@ pub mod manifest;
 pub mod parse;
 pub mod prompt_gen;
 pub mod registry;
+pub mod requirements;
 pub mod types;

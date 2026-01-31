@@ -132,7 +132,10 @@ mod tests {
             name: "my-skill".into(),
             description: "test".into(),
             license: None,
+            compatibility: None,
             allowed_tools: vec![],
+            homepage: None,
+            requires: Default::default(),
             path: skill_dir,
             source: Some(SkillSource::Project),
         });
@@ -157,7 +160,10 @@ mod tests {
             name: "local".into(),
             description: "".into(),
             license: None,
+            compatibility: None,
             allowed_tools: vec![],
+            homepage: None,
+            requires: Default::default(),
             path: PathBuf::from("/tmp/local"),
             source: Some(SkillSource::Project),
         });
