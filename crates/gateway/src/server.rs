@@ -150,8 +150,9 @@ pub async fn start_gateway(
     crate::message_log_store::SqliteMessageLog::init(&db_pool)
         .await
         .expect("failed to init message_log table");
-    let message_log: Arc<dyn moltis_channels::message_log::MessageLog> =
-        Arc::new(crate::message_log_store::SqliteMessageLog::new(db_pool.clone()));
+    let message_log: Arc<dyn moltis_channels::message_log::MessageLog> = Arc::new(
+        crate::message_log_store::SqliteMessageLog::new(db_pool.clone()),
+    );
 
     // Migrate from projects.toml if it exists.
     let config_dir = directories::ProjectDirs::from("", "", "moltis")
@@ -329,8 +330,9 @@ pub async fn start_gateway(
         crate::channel_store::SqliteChannelStore::init(&db_pool)
             .await
             .expect("failed to init channels table");
-        let channel_store: Arc<dyn ChannelStore> =
-            Arc::new(crate::channel_store::SqliteChannelStore::new(db_pool.clone()));
+        let channel_store: Arc<dyn ChannelStore> = Arc::new(
+            crate::channel_store::SqliteChannelStore::new(db_pool.clone()),
+        );
 
         let channel_sink = Arc::new(crate::channel_events::GatewayChannelEventSink::new(
             Arc::clone(&deferred_state),
@@ -359,14 +361,18 @@ pub async fn start_gateway(
                 info!("{} stored channel(s) found in database", stored.len());
                 for ch in stored {
                     if started.contains(&ch.account_id) {
-                        info!(account_id = ch.account_id, "skipping stored channel (already started from config)");
+                        info!(
+                            account_id = ch.account_id,
+                            "skipping stored channel (already started from config)"
+                        );
                         continue;
                     }
-                    info!(account_id = ch.account_id, channel_type = ch.channel_type, "starting stored channel");
-                    if let Err(e) = tg_plugin
-                        .start_account(&ch.account_id, ch.config)
-                        .await
-                    {
+                    info!(
+                        account_id = ch.account_id,
+                        channel_type = ch.channel_type,
+                        "starting stored channel"
+                    );
+                    if let Err(e) = tg_plugin.start_account(&ch.account_id, ch.config).await {
                         tracing::warn!(
                             account_id = ch.account_id,
                             "failed to start stored telegram account: {e}"
@@ -393,8 +399,11 @@ pub async fn start_gateway(
             tg_plugin,
             channel_store,
             Arc::clone(&message_log),
+            Arc::clone(&session_metadata),
         ));
     }
+
+    services = services.with_session_metadata(Arc::clone(&session_metadata));
 
     let state = GatewayState::with_sandbox_router(
         resolved_auth,

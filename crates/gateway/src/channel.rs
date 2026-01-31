@@ -13,6 +13,7 @@ use moltis_channels::{
     message_log::MessageLog,
     store::{ChannelStore, StoredChannel},
 };
+use moltis_sessions::metadata::SqliteSessionMetadata;
 
 use crate::services::{ChannelService, ServiceResult};
 
@@ -28,6 +29,7 @@ pub struct LiveChannelService {
     telegram: Arc<RwLock<TelegramPlugin>>,
     store: Arc<dyn ChannelStore>,
     message_log: Arc<dyn MessageLog>,
+    session_metadata: Arc<SqliteSessionMetadata>,
 }
 
 impl LiveChannelService {
@@ -35,11 +37,13 @@ impl LiveChannelService {
         telegram: TelegramPlugin,
         store: Arc<dyn ChannelStore>,
         message_log: Arc<dyn MessageLog>,
+        session_metadata: Arc<SqliteSessionMetadata>,
     ) -> Self {
         Self {
             telegram: Arc::new(RwLock::new(telegram)),
             store,
             message_log,
+            session_metadata,
         }
     }
 }
@@ -65,6 +69,34 @@ impl ChannelService for LiveChannelService {
                         if let Some(cfg) = tg.account_config(aid) {
                             entry["config"] = cfg;
                         }
+
+                        // Include bound sessions and active session mappings.
+                        let bound = self
+                            .session_metadata
+                            .list_account_sessions("telegram", aid)
+                            .await;
+                        let active_map = self
+                            .session_metadata
+                            .list_active_sessions("telegram", aid)
+                            .await;
+                        let sessions: Vec<_> = bound
+                            .iter()
+                            .map(|s| {
+                                let is_active = active_map
+                                    .iter()
+                                    .any(|(_, sk)| sk == &s.key);
+                                serde_json::json!({
+                                    "key": s.key,
+                                    "label": s.label,
+                                    "messageCount": s.message_count,
+                                    "active": is_active,
+                                })
+                            })
+                            .collect();
+                        if !sessions.is_empty() {
+                            entry["sessions"] = serde_json::json!(sessions);
+                        }
+
                         channels.push(entry);
                     },
                     Err(e) => {

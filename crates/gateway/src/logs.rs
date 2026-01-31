@@ -104,7 +104,9 @@ impl LogBuffer {
             let reader = BufReader::new(file);
             let (mut w, mut e) = (0u64, 0u64);
             for line in reader.lines() {
-                let Ok(line) = line else { continue };
+                let Ok(line) = line else {
+                    continue;
+                };
                 // Fast path: check level without full deserialization.
                 if line.contains("\"WARN\"") || line.contains("\"warn\"") {
                     w += 1;
@@ -143,8 +145,12 @@ impl LogBuffer {
     pub fn push(&self, entry: LogEntry) {
         // Update running counters.
         match entry.level.as_str() {
-            "WARN" | "warn" => { self.total_warns.fetch_add(1, Ordering::Relaxed); },
-            "ERROR" | "error" => { self.total_errors.fetch_add(1, Ordering::Relaxed); },
+            "WARN" | "warn" => {
+                self.total_warns.fetch_add(1, Ordering::Relaxed);
+            },
+            "ERROR" | "error" => {
+                self.total_errors.fetch_add(1, Ordering::Relaxed);
+            },
             _ => {},
         }
 

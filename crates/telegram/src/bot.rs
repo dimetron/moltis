@@ -3,7 +3,7 @@ use std::sync::Arc;
 use {
     teloxide::{
         prelude::*,
-        types::{AllowedUpdate, UpdateKind},
+        types::{AllowedUpdate, BotCommand, UpdateKind},
     },
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info, warn},
@@ -42,6 +42,19 @@ pub async fn start_polling(
 
     // Delete any existing webhook so long polling works.
     bot.delete_webhook().send().await?;
+
+    // Register slash commands for autocomplete in Telegram clients.
+    let commands = vec![
+        BotCommand::new("new", "Start a new session"),
+        BotCommand::new("sessions", "List and switch sessions"),
+        BotCommand::new("clear", "Clear session history"),
+        BotCommand::new("compact", "Compact session (summarize)"),
+        BotCommand::new("context", "Show session context info"),
+        BotCommand::new("help", "Show available commands"),
+    ];
+    if let Err(e) = bot.set_my_commands(commands).await {
+        warn!(account_id, "failed to register bot commands: {e}");
+    }
 
     info!(
         account_id,
@@ -88,7 +101,7 @@ pub async fn start_polling(
                 .get_updates()
                 .offset(offset as i32)
                 .timeout(30)
-                .allowed_updates(vec![AllowedUpdate::Message])
+                .allowed_updates(vec![AllowedUpdate::Message, AllowedUpdate::CallbackQuery])
                 .await;
 
             match result {
@@ -107,18 +120,31 @@ pub async fn start_polling(
                                     chat_id = msg.chat.id.0,
                                     "received telegram message"
                                 );
-                                if let Err(e) = handlers::handle_message_direct(
-                                    msg,
-                                    &bot,
-                                    &aid,
-                                    &poll_accounts,
-                                )
-                                .await
+                                if let Err(e) =
+                                    handlers::handle_message_direct(msg, &bot, &aid, &poll_accounts)
+                                        .await
                                 {
                                     error!(
                                         account_id = aid,
                                         error = %e,
                                         "error handling telegram message"
+                                    );
+                                }
+                            },
+                            UpdateKind::CallbackQuery(query) => {
+                                debug!(
+                                    account_id = aid,
+                                    callback_data = ?query.data,
+                                    "received telegram callback query"
+                                );
+                                if let Err(e) =
+                                    handlers::handle_callback_query(query, &bot, &aid, &poll_accounts)
+                                        .await
+                                {
+                                    error!(
+                                        account_id = aid,
+                                        error = %e,
+                                        "error handling telegram callback query"
                                     );
                                 }
                             },

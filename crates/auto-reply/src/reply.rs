@@ -1,5 +1,7 @@
-use moltis_common::types::{MsgContext, ReplyPayload};
-use tracing::info;
+use {
+    moltis_common::types::{MsgContext, ReplyPayload},
+    tracing::info,
+};
 
 /// Main entry point: process an inbound message and produce a reply.
 ///

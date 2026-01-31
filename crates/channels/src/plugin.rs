@@ -28,11 +28,20 @@ pub trait ChannelEventSink: Send + Sync {
     /// Dispatch an inbound message to the main chat session (like sending
     /// from the web UI). The response is broadcast over WebSocket and
     /// routed back to the originating channel.
-    async fn dispatch_to_chat(&self, text: &str, reply_to: ChannelReplyTarget, meta: ChannelMessageMeta);
+    async fn dispatch_to_chat(
+        &self,
+        text: &str,
+        reply_to: ChannelReplyTarget,
+        meta: ChannelMessageMeta,
+    );
 
     /// Dispatch a slash command (e.g. "new", "clear", "compact", "context")
     /// and return a text result to send back to the channel.
-    async fn dispatch_command(&self, command: &str, reply_to: ChannelReplyTarget) -> anyhow::Result<String>;
+    async fn dispatch_command(
+        &self,
+        command: &str,
+        reply_to: ChannelReplyTarget,
+    ) -> anyhow::Result<String>;
 }
 
 /// Metadata about a channel message, used for UI display.
@@ -47,7 +56,7 @@ pub struct ChannelMessageMeta {
 }
 
 /// Where to send the LLM response back.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChannelReplyTarget {
     pub channel_type: String,
     pub account_id: String,

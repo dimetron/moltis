@@ -73,19 +73,22 @@ impl MessageLog for SqliteMessageLog {
         account_id: &str,
         limit: u32,
     ) -> anyhow::Result<Vec<MessageLogEntry>> {
-        let rows = sqlx::query_as::<_, (
-            i64,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-            String,
-            String,
-            bool,
-            i64,
-        )>(
+        let rows = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+                String,
+                bool,
+                i64,
+            ),
+        >(
             "SELECT id, account_id, channel_type, peer_id, username, sender_name,
                     chat_id, chat_type, body, access_granted, created_at
              FROM message_log
@@ -176,9 +179,18 @@ mod tests {
         let pool = test_pool().await;
         let store = SqliteMessageLog::new(pool);
 
-        store.log(sample_entry("bot1", "user1", true)).await.unwrap();
-        store.log(sample_entry("bot1", "user2", false)).await.unwrap();
-        store.log(sample_entry("bot2", "user3", true)).await.unwrap();
+        store
+            .log(sample_entry("bot1", "user1", true))
+            .await
+            .unwrap();
+        store
+            .log(sample_entry("bot1", "user2", false))
+            .await
+            .unwrap();
+        store
+            .log(sample_entry("bot2", "user3", true))
+            .await
+            .unwrap();
 
         let entries = store.list_by_account("bot1", 10).await.unwrap();
         assert_eq!(entries.len(), 2);
@@ -209,9 +221,18 @@ mod tests {
         let pool = test_pool().await;
         let store = SqliteMessageLog::new(pool);
 
-        store.log(sample_entry("bot1", "user1", true)).await.unwrap();
-        store.log(sample_entry("bot1", "user1", false)).await.unwrap();
-        store.log(sample_entry("bot1", "user2", true)).await.unwrap();
+        store
+            .log(sample_entry("bot1", "user1", true))
+            .await
+            .unwrap();
+        store
+            .log(sample_entry("bot1", "user1", false))
+            .await
+            .unwrap();
+        store
+            .log(sample_entry("bot1", "user2", true))
+            .await
+            .unwrap();
 
         let senders = store.unique_senders("bot1").await.unwrap();
         assert_eq!(senders.len(), 2);

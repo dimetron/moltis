@@ -2288,8 +2288,12 @@ mod tests {
     fn senders_list_requires_read() {
         // With read scope → authorized
         assert!(
-            authorize_method("channels.senders.list", "operator", &scopes(&["operator.read"]))
-                .is_none()
+            authorize_method(
+                "channels.senders.list",
+                "operator",
+                &scopes(&["operator.read"])
+            )
+            .is_none()
         );
         // Without read or write → denied
         assert!(authorize_method("channels.senders.list", "operator", &scopes(&[])).is_some());
@@ -2297,29 +2301,41 @@ mod tests {
 
     #[test]
     fn senders_approve_requires_write() {
-        assert!(authorize_method(
-            "channels.senders.approve",
-            "operator",
-            &scopes(&["operator.write"])
-        )
-        .is_none());
-        assert!(authorize_method(
-            "channels.senders.approve",
-            "operator",
-            &scopes(&["operator.read"])
-        )
-        .is_some());
+        assert!(
+            authorize_method(
+                "channels.senders.approve",
+                "operator",
+                &scopes(&["operator.write"])
+            )
+            .is_none()
+        );
+        assert!(
+            authorize_method(
+                "channels.senders.approve",
+                "operator",
+                &scopes(&["operator.read"])
+            )
+            .is_some()
+        );
     }
 
     #[test]
     fn senders_deny_requires_write() {
         assert!(
-            authorize_method("channels.senders.deny", "operator", &scopes(&["operator.write"]))
-                .is_none()
+            authorize_method(
+                "channels.senders.deny",
+                "operator",
+                &scopes(&["operator.write"])
+            )
+            .is_none()
         );
         assert!(
-            authorize_method("channels.senders.deny", "operator", &scopes(&["operator.read"]))
-                .is_some()
+            authorize_method(
+                "channels.senders.deny",
+                "operator",
+                &scopes(&["operator.read"])
+            )
+            .is_some()
         );
     }
 

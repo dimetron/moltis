@@ -64,11 +64,10 @@ impl ChannelStore for SqliteChannelStore {
     }
 
     async fn get(&self, account_id: &str) -> Result<Option<StoredChannel>> {
-        let row =
-            sqlx::query_as::<_, ChannelRow>("SELECT * FROM channels WHERE account_id = ?")
-                .bind(account_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row = sqlx::query_as::<_, ChannelRow>("SELECT * FROM channels WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_optional(&self.pool)
+            .await?;
         row.map(TryInto::try_into).transpose()
     }
 

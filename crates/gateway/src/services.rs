@@ -2,7 +2,9 @@
 //! Each trait has a `Noop` implementation that returns empty/default responses,
 //! allowing the gateway to run standalone before domain crates are wired in.
 
-use {async_trait::async_trait, moltis_channels::ChannelOutbound, serde_json::Value, std::sync::Arc};
+use {
+    async_trait::async_trait, moltis_channels::ChannelOutbound, serde_json::Value, std::sync::Arc,
+};
 
 /// Error type returned by service methods.
 pub type ServiceError = String;
@@ -677,6 +679,8 @@ pub struct GatewayServices {
     pub project: Arc<dyn ProjectService>,
     /// Optional channel outbound for sending replies back to channels.
     channel_outbound: Option<Arc<dyn ChannelOutbound>>,
+    /// Optional session metadata for cross-service access (e.g. channel binding).
+    pub session_metadata: Option<Arc<moltis_sessions::metadata::SqliteSessionMetadata>>,
 }
 
 impl GatewayServices {
@@ -732,11 +736,20 @@ impl GatewayServices {
             provider_setup: Arc::new(NoopProviderSetupService),
             project: Arc::new(NoopProjectService),
             channel_outbound: None,
+            session_metadata: None,
         }
     }
 
     pub fn with_project(mut self, project: Arc<dyn ProjectService>) -> Self {
         self.project = project;
+        self
+    }
+
+    pub fn with_session_metadata(
+        mut self,
+        meta: Arc<moltis_sessions::metadata::SqliteSessionMetadata>,
+    ) -> Self {
+        self.session_metadata = Some(meta);
         self
     }
 }

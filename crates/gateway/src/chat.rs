@@ -267,6 +267,49 @@ impl ChatService for LiveChatService {
             .touch(&session_key, history.len() as u32)
             .await;
 
+        // If this is a web UI message on a channel-bound session, echo the
+        // user message to the channel and register a reply target so the LLM
+        // response is also delivered there.
+        let is_web_message = conn_id.is_some()
+            && params.get("_session_key").is_none()
+            && params.get("channel").is_none();
+        if is_web_message
+            && let Some(entry) = self.session_metadata.get(&session_key).await
+            && let Some(ref binding_json) = entry.channel_binding
+            && let Ok(target) =
+                serde_json::from_str::<moltis_channels::ChannelReplyTarget>(binding_json)
+        {
+            // Only echo to channel if this is the active session for this chat.
+            let is_active = self
+                .session_metadata
+                .get_active_session(&target.channel_type, &target.account_id, &target.chat_id)
+                .await
+                .map(|k| k == session_key)
+                .unwrap_or(true); // no override → deterministic key is active
+
+            if is_active {
+                // Push reply target so deliver_channel_replies sends the LLM
+                // response to the channel.
+                self.state
+                    .push_channel_reply(&session_key, target.clone())
+                    .await;
+
+                // Echo user message to the channel prefixed with [Web].
+                if let Some(outbound) = self.state.services.channel_outbound_arc() {
+                    let echo_text = format!("[Web] {text}");
+                    let account_id = target.account_id.clone();
+                    let chat_id = target.chat_id.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            outbound.send_text(&account_id, &chat_id, &echo_text).await
+                        {
+                            warn!("failed to echo web message to channel: {e}");
+                        }
+                    });
+                }
+            }
+        }
+
         let run_id = uuid::Uuid::new_v4().to_string();
         let state = Arc::clone(&self.state);
         let active_runs = Arc::clone(&self.active_runs);
@@ -487,7 +530,10 @@ impl ChatService for LiveChatService {
         let session_key = if let Some(sk) = params.get("_session_key").and_then(|v| v.as_str()) {
             sk.to_string()
         } else {
-            let conn_id = params.get("_conn_id").and_then(|v| v.as_str()).map(String::from);
+            let conn_id = params
+                .get("_conn_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             self.session_key_for(conn_id.as_deref()).await
         };
 
@@ -507,7 +553,10 @@ impl ChatService for LiveChatService {
         let session_key = if let Some(sk) = params.get("_session_key").and_then(|v| v.as_str()) {
             sk.to_string()
         } else {
-            let conn_id = params.get("_conn_id").and_then(|v| v.as_str()).map(String::from);
+            let conn_id = params
+                .get("_conn_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             self.session_key_for(conn_id.as_deref()).await
         };
 
@@ -602,7 +651,10 @@ impl ChatService for LiveChatService {
         let session_key = if let Some(sk) = params.get("_session_key").and_then(|v| v.as_str()) {
             sk.to_string()
         } else {
-            let conn_id = params.get("_conn_id").and_then(|v| v.as_str()).map(String::from);
+            let conn_id = params
+                .get("_conn_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             self.session_key_for(conn_id.as_deref()).await
         };
 
@@ -618,7 +670,10 @@ impl ChatService for LiveChatService {
         });
 
         // Project info & context files
-        let conn_id = params.get("_conn_id").and_then(|v| v.as_str()).map(String::from);
+        let conn_id = params
+            .get("_conn_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let project_id = if let Some(cid) = conn_id.as_deref() {
             let projects = self.state.active_projects.read().await;
             projects.get(cid).cloned()
@@ -723,9 +778,7 @@ impl ChatService for LiveChatService {
         // Context window from current provider
         let context_window = {
             let reg = self.providers.read().await;
-            reg.first()
-                .map(|p| p.context_window())
-                .unwrap_or(200_000)
+            reg.first().map(|p| p.context_window()).unwrap_or(200_000)
         };
 
         // Sandbox info
@@ -1072,8 +1125,9 @@ async fn deliver_channel_replies(state: &Arc<GatewayState>, session_key: &str, t
         tokio::spawn(async move {
             match target.channel_type.as_str() {
                 "telegram" => {
-                    if let Err(e) =
-                        outbound.send_text(&target.account_id, &target.chat_id, &text).await
+                    if let Err(e) = outbound
+                        .send_text(&target.account_id, &target.chat_id, &text)
+                        .await
                     {
                         warn!(
                             account_id = target.account_id,

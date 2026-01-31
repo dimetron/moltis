@@ -59,6 +59,7 @@ impl SessionService for LiveSessionService {
                     "projectId": e.project_id,
                     "sandbox_enabled": e.sandbox_enabled,
                     "worktree_branch": e.worktree_branch,
+                    "channelBinding": e.channel_binding,
                 })
             })
             .collect();
@@ -125,10 +126,15 @@ impl SessionService for LiveSessionService {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        if self.metadata.get(key).await.is_none() {
-            return Err(format!("session '{key}' not found"));
-        }
+        let entry = self
+            .metadata
+            .get(key)
+            .await
+            .ok_or_else(|| format!("session '{key}' not found"))?;
         if label.is_some() {
+            if entry.channel_binding.is_some() {
+                return Err("cannot rename a channel-bound session".to_string());
+            }
             let _ = self.metadata.upsert(key, label).await;
         }
         if model.is_some() {

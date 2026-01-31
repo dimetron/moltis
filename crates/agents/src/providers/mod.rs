@@ -778,8 +778,14 @@ mod tests {
 
     #[test]
     fn context_window_for_known_models() {
-        assert_eq!(super::context_window_for_model("claude-sonnet-4-20250514"), 200_000);
-        assert_eq!(super::context_window_for_model("claude-opus-4-5-20251101"), 200_000);
+        assert_eq!(
+            super::context_window_for_model("claude-sonnet-4-20250514"),
+            200_000
+        );
+        assert_eq!(
+            super::context_window_for_model("claude-opus-4-5-20251101"),
+            200_000
+        );
         assert_eq!(super::context_window_for_model("gpt-4o"), 128_000);
         assert_eq!(super::context_window_for_model("gpt-4o-mini"), 128_000);
         assert_eq!(super::context_window_for_model("gpt-4-turbo"), 128_000);
@@ -787,23 +793,28 @@ mod tests {
         assert_eq!(super::context_window_for_model("o3-mini"), 200_000);
         assert_eq!(super::context_window_for_model("o4-mini"), 200_000);
         assert_eq!(super::context_window_for_model("codestral-latest"), 256_000);
-        assert_eq!(super::context_window_for_model("mistral-large-latest"), 128_000);
-        assert_eq!(super::context_window_for_model("gemini-2.0-flash"), 1_000_000);
+        assert_eq!(
+            super::context_window_for_model("mistral-large-latest"),
+            128_000
+        );
+        assert_eq!(
+            super::context_window_for_model("gemini-2.0-flash"),
+            1_000_000
+        );
         assert_eq!(super::context_window_for_model("kimi-k2.5"), 128_000);
     }
 
     #[test]
     fn context_window_fallback_for_unknown_model() {
-        assert_eq!(super::context_window_for_model("some-unknown-model"), 200_000);
+        assert_eq!(
+            super::context_window_for_model("some-unknown-model"),
+            200_000
+        );
     }
 
     #[test]
     fn provider_context_window_uses_lookup() {
-        let provider = openai::OpenAiProvider::new(
-            "k".into(),
-            "gpt-4o".into(),
-            "u".into(),
-        );
+        let provider = openai::OpenAiProvider::new("k".into(), "gpt-4o".into(), "u".into());
         assert_eq!(provider.context_window(), 128_000);
 
         let anthropic = anthropic::AnthropicProvider::new(
@@ -817,11 +828,8 @@ mod tests {
     #[test]
     fn default_context_window_trait() {
         // OpenAiProvider with unknown model should get the fallback
-        let provider = openai::OpenAiProvider::new(
-            "k".into(),
-            "unknown-model-xyz".into(),
-            "u".into(),
-        );
+        let provider =
+            openai::OpenAiProvider::new("k".into(), "unknown-model-xyz".into(), "u".into());
         assert_eq!(provider.context_window(), 200_000);
     }
 

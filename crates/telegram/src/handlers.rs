@@ -2,14 +2,22 @@ use std::sync::Arc;
 
 use {
     teloxide::{
+        payloads::SendMessageSetters,
         prelude::*,
-        types::{MediaKind, MessageKind},
+        types::{
+            CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, MediaKind, MessageKind,
+        },
     },
     tracing::{debug, warn},
 };
 
-use moltis_channels::{ChannelEvent, ChannelMessageMeta, ChannelOutbound, ChannelReplyTarget, message_log::MessageLogEntry};
-use moltis_common::types::ChatType;
+use {
+    moltis_channels::{
+        ChannelEvent, ChannelMessageMeta, ChannelOutbound, ChannelReplyTarget,
+        message_log::MessageLogEntry,
+    },
+    moltis_common::types::ChatType,
+};
 
 use crate::{access, state::AccountStateMap};
 
@@ -155,7 +163,9 @@ pub async fn handle_message_direct(
 
     // Dispatch to the chat session (per-channel session key derived by the sink).
     // The reply target tells the gateway where to send the LLM response back.
-    if let Some(ref sink) = event_sink && !body.is_empty() {
+    if let Some(ref sink) = event_sink
+        && !body.is_empty()
+    {
         let reply_target = ChannelReplyTarget {
             channel_type: "telegram".into(),
             account_id: account_id.to_string(),
@@ -164,12 +174,48 @@ pub async fn handle_message_direct(
 
         // Intercept slash commands before dispatching to the LLM.
         if body.starts_with('/') {
-            let cmd = body.trim_start_matches('/').split_whitespace().next().unwrap_or("");
-            if matches!(cmd, "new" | "clear" | "compact" | "context" | "help") {
+            let cmd_text = body.trim_start_matches('/');
+            let cmd = cmd_text.split_whitespace().next().unwrap_or("");
+            if matches!(
+                cmd,
+                "new" | "clear" | "compact" | "context" | "sessions" | "help"
+            ) {
+                // For /sessions without args, send an inline keyboard instead of plain text.
+                if cmd == "sessions" && cmd_text.trim() == "sessions" {
+                    let list_result = sink
+                        .dispatch_command("sessions", reply_target.clone())
+                        .await;
+                    let bot = {
+                        let accts = accounts.read().unwrap();
+                        accts.get(account_id).map(|s| s.bot.clone())
+                    };
+                    if let Some(bot) = bot {
+                        match list_result {
+                            Ok(text) => {
+                                send_sessions_keyboard(
+                                    &bot,
+                                    &reply_target.chat_id,
+                                    &text,
+                                )
+                                .await;
+                            },
+                            Err(e) => {
+                                let _ = bot
+                                    .send_message(
+                                        ChatId(reply_target.chat_id.parse().unwrap_or(0)),
+                                        format!("Error: {e}"),
+                                    )
+                                    .await;
+                            },
+                        }
+                    }
+                    return Ok(());
+                }
+
                 let response = if cmd == "help" {
-                    "Available commands:\n/new — Start a new session\n/clear — Clear session history\n/compact — Compact session (summarize)\n/context — Show session context info\n/help — Show this help".to_string()
+                    "Available commands:\n/new — Start a new session\n/sessions — List and switch sessions\n/clear — Clear session history\n/compact — Compact session (summarize)\n/context — Show session context info\n/help — Show this help".to_string()
                 } else {
-                    match sink.dispatch_command(cmd, reply_target.clone()).await {
+                    match sink.dispatch_command(cmd_text, reply_target.clone()).await {
                         Ok(msg) => msg,
                         Err(e) => format!("Error: {e}"),
                     }
@@ -180,7 +226,9 @@ pub async fn handle_message_direct(
                     accts.get(account_id).map(|s| Arc::clone(&s.outbound))
                 };
                 if let Some(outbound) = outbound
-                    && let Err(e) = outbound.send_text(account_id, &reply_target.chat_id, &response).await
+                    && let Err(e) = outbound
+                        .send_text(account_id, &reply_target.chat_id, &response)
+                        .await
                 {
                     warn!(account_id, "failed to send command response: {e}");
                 }
@@ -203,7 +251,6 @@ pub async fn handle_message_direct(
     }
 
     Ok(())
-
 }
 
 /// Handle a single inbound Telegram message (teloxide dispatcher endpoint).
@@ -215,6 +262,126 @@ async fn handle_message(
     handle_message_direct(msg, &bot, &ctx.account_id, &ctx.accounts)
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Send a sessions list as an inline keyboard.
+///
+/// Parses the text response from `dispatch_command("sessions")` to extract
+/// session labels, then sends an inline keyboard with one button per session.
+async fn send_sessions_keyboard(bot: &Bot, chat_id: &str, sessions_text: &str) {
+    let chat = ChatId(chat_id.parse().unwrap_or(0));
+
+    // Parse numbered lines like "1. Session label (5 msgs) *"
+    let mut buttons: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+    for line in sessions_text.lines() {
+        let trimmed = line.trim();
+        // Match lines starting with a number followed by ". "
+        if let Some(dot_pos) = trimmed.find(". ")
+            && let Ok(n) = trimmed[..dot_pos].parse::<usize>()
+        {
+            let label_part = &trimmed[dot_pos + 2..];
+            let is_active = label_part.ends_with('*');
+            let display = if is_active {
+                format!("● {}", label_part.trim_end_matches('*').trim())
+            } else {
+                format!("○ {label_part}")
+            };
+            buttons.push(vec![InlineKeyboardButton::callback(
+                display,
+                format!("sessions_switch:{n}"),
+            )]);
+        }
+    }
+
+    if buttons.is_empty() {
+        let _ = bot.send_message(chat, sessions_text).await;
+        return;
+    }
+
+    let keyboard = InlineKeyboardMarkup::new(buttons);
+    let _ = bot
+        .send_message(chat, "Select a session:")
+        .reply_markup(keyboard)
+        .await;
+}
+
+/// Handle a Telegram callback query (inline keyboard button press).
+pub async fn handle_callback_query(
+    query: CallbackQuery,
+    _bot: &Bot,
+    account_id: &str,
+    accounts: &AccountStateMap,
+) -> anyhow::Result<()> {
+    let data = match query.data {
+        Some(ref d) => d.as_str(),
+        None => return Ok(()),
+    };
+
+    // Answer the callback to dismiss the loading spinner.
+    let bot = {
+        let accts = accounts.read().unwrap();
+        accts.get(account_id).map(|s| s.bot.clone())
+    };
+
+    if !data.starts_with("sessions_switch:") {
+        if let Some(ref bot) = bot {
+            let _ = bot.answer_callback_query(&query.id).await;
+        }
+        return Ok(());
+    }
+
+    let chat_id = query
+        .message
+        .as_ref()
+        .map(|m| m.chat().id.0.to_string())
+        .unwrap_or_default();
+
+    if chat_id.is_empty() {
+        return Ok(());
+    }
+
+    let (event_sink, outbound) = {
+        let accts = accounts.read().unwrap();
+        let state = match accts.get(account_id) {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        (state.event_sink.clone(), Arc::clone(&state.outbound))
+    };
+
+    // Extract the number from "sessions_switch:N"
+    let n_str = &data["sessions_switch:".len()..];
+    let cmd_text = format!("sessions {n_str}");
+
+    let reply_target = moltis_channels::ChannelReplyTarget {
+        channel_type: "telegram".into(),
+        account_id: account_id.to_string(),
+        chat_id: chat_id.clone(),
+    };
+
+    if let Some(ref sink) = event_sink {
+        let response = match sink.dispatch_command(&cmd_text, reply_target).await {
+            Ok(msg) => msg,
+            Err(e) => format!("Error: {e}"),
+        };
+
+        // Answer callback query with the response text (shows as toast).
+        if let Some(ref bot) = bot {
+            let _ = bot
+                .answer_callback_query(&query.id)
+                .text(&response)
+                .await;
+        }
+
+        // Also send as a regular message for visibility.
+        if let Err(e) = outbound.send_text(account_id, &chat_id, &response).await {
+            warn!(account_id, "failed to send callback response: {e}");
+        }
+    } else if let Some(ref bot) = bot {
+        let _ = bot.answer_callback_query(&query.id).await;
+    }
+
     Ok(())
 }
 

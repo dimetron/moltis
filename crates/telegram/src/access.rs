@@ -142,15 +142,17 @@ mod tests {
         c.dm_policy = DmPolicy::Allowlist;
         c.allowlist = vec!["fabienpenso".into()];
         // Numeric peer_id doesn't match, but username does
-        assert!(check_access(
-            &c,
-            &ChatType::Dm,
-            "377114917",
-            Some("fabienpenso"),
-            None,
-            false
-        )
-        .is_ok());
+        assert!(
+            check_access(
+                &c,
+                &ChatType::Dm,
+                "377114917",
+                Some("fabienpenso"),
+                None,
+                false
+            )
+            .is_ok()
+        );
         // Neither matches
         assert_eq!(
             check_access(&c, &ChatType::Dm, "377114917", Some("other"), None, false),
