@@ -490,15 +490,9 @@
       var labelText = document.createElement("span");
       labelText.textContent = s.label || s.key;
       label.appendChild(labelText);
-      var dots = document.createElement("span");
-      dots.className = "session-dots";
-      var ping = document.createElement("span");
-      ping.className = "dot-ping";
-      var core = document.createElement("span");
-      core.className = "dot-core";
-      dots.appendChild(ping);
-      dots.appendChild(core);
-      label.appendChild(dots);
+      var spinner = document.createElement("span");
+      spinner.className = "session-spinner";
+      label.appendChild(spinner);
       info.appendChild(label);
 
       var meta = document.createElement("div");
@@ -568,6 +562,15 @@
       sessionList.appendChild(item);
     });
   }
+
+  // Braille spinner for active sessions
+  var spinnerFrames = ["\u280B","\u2819","\u2839","\u2838","\u283C","\u2834","\u2826","\u2827","\u2807","\u280F"];
+  var spinnerIndex = 0;
+  setInterval(function () {
+    spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+    var els = document.querySelectorAll(".session-item.replying .session-spinner");
+    for (var i = 0; i < els.length; i++) els[i].textContent = spinnerFrames[spinnerIndex];
+  }, 80);
 
   function setSessionReplying(key, replying) {
     var el = sessionList.querySelector('.session-item[data-session-key="' + key + '"]');
@@ -980,11 +983,13 @@
         providerModalBody.textContent = "Failed to load providers.";
         return;
       }
-      var providers = res.payload || [];
+      var providers = (res.payload || []).slice().sort(function (a, b) {
+        return a.displayName.localeCompare(b.displayName);
+      });
       providerModalBody.textContent = "";
       providers.forEach(function (p) {
         var item = document.createElement("div");
-        item.className = "provider-item" + (p.configured ? " configured" : "");
+        item.className = "provider-item" + (p.configured && p.authType !== "oauth" ? " configured" : "");
         var name = document.createElement("span");
         name.className = "provider-item-name";
         name.textContent = p.displayName;
@@ -2161,46 +2166,6 @@
   });
 
   // ════════════════════════════════════════════════════════════
-  // Methods page
-  // ════════════════════════════════════════════════════════════
-  // Safe: static hardcoded HTML template, no user input.
-  var methodsPageHTML =
-    '<div class="flex-1 flex flex-col min-w-0 p-4 gap-3">' +
-      '<h2 class="text-lg font-medium text-[var(--text-strong)]">Method Explorer</h2>' +
-      '<div><label class="text-xs text-[var(--muted)] block mb-1">Method</label>' +
-        '<input id="rpcMethod" placeholder="e.g. health" value="health" class="w-full bg-[var(--surface2)] border border-[var(--border)] text-[var(--text)] px-2 py-1.5 rounded text-xs font-[var(--font-mono)] focus:outline-none focus:border-[var(--border-strong)]" style="max-width:400px"></div>' +
-      '<div><label class="text-xs text-[var(--muted)] block mb-1">Params (JSON, optional)</label>' +
-        '<textarea id="rpcParams" placeholder="{}" class="w-full bg-[var(--surface2)] border border-[var(--border)] text-[var(--text)] px-2 py-1.5 rounded text-xs font-[var(--font-mono)] min-h-[80px] resize-y focus:outline-none focus:border-[var(--border-strong)]" style="max-width:400px"></textarea></div>' +
-      '<button id="rpcSend" class="bg-[var(--accent-dim)] text-white border-none px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-[var(--accent)] transition-colors self-start">Call</button>' +
-      '<div><label class="text-xs text-[var(--muted)] block mb-1">Response</label>' +
-        '<div class="methods-result" id="rpcResult"></div></div></div>';
-
-  registerPage("/methods", function initMethods(container) {
-    container.innerHTML = methodsPageHTML;
-
-    var rpcMethod = $("rpcMethod");
-    var rpcParams = $("rpcParams");
-    var rpcSend = $("rpcSend");
-    var rpcResult = $("rpcResult");
-
-    rpcSend.addEventListener("click", function () {
-      var method = rpcMethod.value.trim();
-      if (!method || !connected) return;
-      var params;
-      var raw = rpcParams.value.trim();
-      if (raw) {
-        try { params = JSON.parse(raw); } catch (e) {
-          rpcResult.textContent = "Invalid JSON: " + e.message;
-          return;
-        }
-      }
-      rpcResult.textContent = "calling...";
-      sendRpc(method, params).then(function (res) {
-        rpcResult.textContent = JSON.stringify(res, null, 2);
-      });
-    });
-  });
-
   // ════════════════════════════════════════════════════════════
   // Crons page
   // ════════════════════════════════════════════════════════════
@@ -3021,21 +2986,24 @@
     function renderProviderList() {
       sendRpc("providers.available", {}).then(function (res) {
         if (!res || !res.ok) return;
-        var providers = res.payload || [];
+        var providers = (res.payload || []).filter(function (p) {
+          return p.configured;
+        }).sort(function (a, b) {
+          return a.displayName.localeCompare(b.displayName);
+        });
         while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
 
         if (providers.length === 0) {
           listEl.appendChild(createEl("div", {
             className: "text-sm text-[var(--muted)]",
-            textContent: "No providers available."
+            textContent: "No providers connected yet."
           }));
           return;
         }
 
         providers.forEach(function (p) {
           var card = createEl("div", {
-            style: "display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;" +
-              (p.configured ? "" : "opacity:0.5;")
+            style: "display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;"
           });
 
           var left = createEl("div", { style: "display:flex;align-items:center;gap:8px;" });
@@ -3050,42 +3018,23 @@
           });
           left.appendChild(badge);
 
-          if (p.configured) {
-            left.appendChild(createEl("span", {
-              className: "provider-item-badge configured",
-              textContent: "configured"
-            }));
-          }
-
           card.appendChild(left);
 
-          if (p.configured) {
-            var removeBtn = createEl("button", {
-              className: "session-action-btn session-delete",
-              textContent: "Remove",
-              title: "Remove " + p.displayName
+          var removeBtn = createEl("button", {
+            className: "session-action-btn session-delete",
+            textContent: "Remove",
+            title: "Remove " + p.displayName
+          });
+          removeBtn.addEventListener("click", function () {
+            if (!confirm("Remove credentials for " + p.displayName + "?")) return;
+            sendRpc("providers.remove_key", { provider: p.name }).then(function (res) {
+              if (res && res.ok) {
+                fetchModels();
+                renderProviderList();
+              }
             });
-            removeBtn.addEventListener("click", function () {
-              if (!confirm("Remove credentials for " + p.displayName + "?")) return;
-              sendRpc("providers.remove_key", { provider: p.name }).then(function (res) {
-                if (res && res.ok) {
-                  fetchModels();
-                  renderProviderList();
-                }
-              });
-            });
-            card.appendChild(removeBtn);
-          } else {
-            var connectBtn = createEl("button", {
-              className: "bg-[var(--accent-dim)] text-white border-none px-2.5 py-1 rounded text-xs cursor-pointer hover:bg-[var(--accent)] transition-colors",
-              textContent: "Connect"
-            });
-            connectBtn.addEventListener("click", function () {
-              if (p.authType === "api-key") showApiKeyForm(p);
-              else if (p.authType === "oauth") showOAuthFlow(p);
-            });
-            card.appendChild(connectBtn);
-          }
+          });
+          card.appendChild(removeBtn);
 
           listEl.appendChild(card);
         });

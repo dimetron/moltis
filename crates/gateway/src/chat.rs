@@ -661,10 +661,15 @@ impl ChatService for LiveChatService {
         // Session info
         let message_count = self.session_store.count(&session_key).await.unwrap_or(0);
         let session_entry = self.session_metadata.get(&session_key).await;
+        let provider_name = {
+            let reg = self.providers.read().await;
+            reg.first().map(|p| p.name().to_string())
+        };
         let session_info = serde_json::json!({
             "key": session_key,
             "messageCount": message_count,
             "model": session_entry.as_ref().and_then(|e| e.model.as_deref()),
+            "provider": provider_name,
             "label": session_entry.as_ref().and_then(|e| e.label.as_deref()),
             "projectId": session_entry.as_ref().and_then(|e| e.project_id.as_deref()),
         });

@@ -280,6 +280,10 @@ impl ChannelEventSink for GatewayChannelEventSink {
                     .get("messageCount")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
+                let provider = session_info
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 let model = session_info
                     .get("model")
                     .and_then(|v| v.as_str())
@@ -294,7 +298,7 @@ impl ChannelEventSink for GatewayChannelEventSink {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 Ok(format!(
-                    "Session: {session_key}\nMessages: {msg_count}\nModel: {model}\nTokens: ~{estimated}/{context_window}"
+                    "Session: {session_key}\nMessages: {msg_count}\nProvider: {provider}\nModel: {model}\nTokens: ~{estimated}/{context_window}"
                 ))
             },
             "sessions" => {

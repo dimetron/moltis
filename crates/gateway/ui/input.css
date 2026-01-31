@@ -364,6 +364,11 @@
     font-weight: 600;
     color: var(--text-strong);
   }
+  .msg-channel-footer {
+    font-size: 0.7rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }
 
   /* Theme toggle */
   .theme-toggle {
@@ -797,35 +802,17 @@
   .session-delete:hover {
     color: var(--error);
   }
-  .session-item.replying .session-dots {
-    display: inline-flex;
-    position: relative;
-    width: 8px;
-    height: 8px;
+  .session-spinner {
+    display: none;
     margin-left: 6px;
-    vertical-align: middle;
+    color: var(--warn);
+    font-family: monospace;
+    font-size: 0.75rem;
+    user-select: none;
     flex-shrink: 0;
   }
-  .session-item.replying .session-dots .dot-ping {
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    background: var(--warn);
-    opacity: 0.75;
-    animation: ping 1s linear infinite;
-  }
-  .session-item.replying .session-dots .dot-core {
-    position: relative;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--warn);
-  }
-  .session-item:not(.replying) .session-dots {
-    display: none;
-  }
-  @keyframes ping {
-    75%, 100% { transform: scale(2); opacity: 0; }
+  .session-item.replying .session-spinner {
+    display: inline;
   }
   .session-item.unread .session-label::before {
     content: "";

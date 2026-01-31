@@ -449,7 +449,7 @@ pub async fn start_gateway(
     let lines = [
         format!("moltis gateway v{}", state.version),
         format!(
-            "protocol v{}, listening on {}",
+            "protocol v{}, listening on http://{}",
             moltis_protocol::PROTOCOL_VERSION,
             addr
         ),
@@ -538,7 +538,7 @@ async fn ws_upgrade_handler(
 
 /// SPA fallback: serve `index.html` for any path not matched by an explicit
 /// route (assets, ws, health). This lets client-side routing handle `/crons`,
-/// `/methods`, etc.
+/// `/logs`, etc.
 #[cfg(feature = "web-ui")]
 async fn spa_fallback(uri: axum::http::Uri) -> impl IntoResponse {
     // Reject requests that look like missing asset files so the browser gets
