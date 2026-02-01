@@ -341,6 +341,8 @@ pub trait SkillsService: Send + Sync {
     async fn list(&self) -> ServiceResult;
     async fn remove(&self, params: Value) -> ServiceResult;
     async fn repos_list(&self) -> ServiceResult;
+    /// Full repos list with per-skill details (for search). Heavyweight.
+    async fn repos_list_full(&self) -> ServiceResult;
     async fn repos_remove(&self, params: Value) -> ServiceResult;
     async fn skill_enable(&self, params: Value) -> ServiceResult;
     async fn skill_disable(&self, params: Value) -> ServiceResult;
@@ -432,6 +434,30 @@ impl SkillsService for NoopSkillsService {
     }
 
     async fn repos_list(&self) -> ServiceResult {
+        let manifest_path =
+            moltis_skills::manifest::ManifestStore::default_path().map_err(|e| e.to_string())?;
+        let store = moltis_skills::manifest::ManifestStore::new(manifest_path);
+        let manifest = store.load().map_err(|e| e.to_string())?;
+
+        let repos: Vec<_> = manifest
+            .repos
+            .iter()
+            .map(|repo| {
+                let enabled = repo.skills.iter().filter(|s| s.enabled).count();
+                serde_json::json!({
+                    "source": repo.source,
+                    "repo_name": repo.repo_name,
+                    "installed_at_ms": repo.installed_at_ms,
+                    "skill_count": repo.skills.len(),
+                    "enabled_count": enabled,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!(repos))
+    }
+
+    async fn repos_list_full(&self) -> ServiceResult {
         use moltis_skills::requirements::check_requirements;
 
         let manifest_path =
@@ -450,7 +476,6 @@ impl SkillsService for NoopSkillsService {
                     .skills
                     .iter()
                     .map(|s| {
-                        // Parse SKILL.md directly to get description & requirements
                         let skill_dir = install_dir.join(&s.relative_path);
                         let skill_md = skill_dir.join("SKILL.md");
                         let meta_json = moltis_skills::parse::read_meta_json(&skill_dir);

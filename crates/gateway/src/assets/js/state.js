@@ -1,5 +1,4 @@
 // ── Shared mutable state ────────────────────────────────────
-"use strict";
 
 export var ws = null;
 export var reqId = 0;
@@ -16,7 +15,9 @@ export var projects = [];
 export var streamEl = null;
 export var streamText = "";
 export var lastToolOutput = "";
-export var chatHistory = JSON.parse(localStorage.getItem("moltis-chat-history") || "[]");
+export var chatHistory = JSON.parse(
+	localStorage.getItem("moltis-chat-history") || "[]",
+);
 export var chatHistoryIdx = -1;
 export var chatHistoryDraft = "";
 
@@ -61,61 +62,162 @@ export var refreshProvidersPage = null;
 export var refreshChannelsPage = null;
 export var channelEventUnsub = null;
 
+// Prefetched channel data
+export var cachedChannels = null;
+export function setCachedChannels(v) {
+	cachedChannels = v;
+}
+
 // Logs
 export var logsEventHandler = null;
 export var unseenErrors = 0;
 export var unseenWarns = 0;
 
 // Project filter
-export var projectFilterId = localStorage.getItem("moltis-project-filter") || "";
+export var projectFilterId =
+	localStorage.getItem("moltis-project-filter") || "";
 
 // DOM shorthand
-export function $(id) { return document.getElementById(id); }
+export function $(id) {
+	return document.getElementById(id);
+}
 
 // ── Setters ──────────────────────────────────────────────────
-export function setWs(v) { ws = v; }
-export function setReqId(v) { reqId = v; }
-export function setConnected(v) { connected = v; }
-export function setReconnectDelay(v) { reconnectDelay = v; }
-export function setModels(v) { models = v; }
-export function setActiveSessionKey(v) { activeSessionKey = v; }
-export function setActiveProjectId(v) { activeProjectId = v; }
-export function setSessions(v) { sessions = v; }
-export function setProjects(v) { projects = v; }
-export function setStreamEl(v) { streamEl = v; }
-export function setStreamText(v) { streamText = v; }
-export function setLastToolOutput(v) { lastToolOutput = v; }
-export function setChatHistory(v) { chatHistory = v; }
-export function setChatHistoryIdx(v) { chatHistoryIdx = v; }
-export function setChatHistoryDraft(v) { chatHistoryDraft = v; }
-export function setSessionTokens(v) { sessionTokens = v; }
-export function setModelCombo(v) { modelCombo = v; }
-export function setModelComboBtn(v) { modelComboBtn = v; }
-export function setModelComboLabel(v) { modelComboLabel = v; }
-export function setModelDropdown(v) { modelDropdown = v; }
-export function setModelSearchInput(v) { modelSearchInput = v; }
-export function setModelDropdownList(v) { modelDropdownList = v; }
-export function setSelectedModelId(v) { selectedModelId = v; }
-export function setModelIdx(v) { modelIdx = v; }
-export function setProjectCombo(v) { projectCombo = v; }
-export function setProjectComboBtn(v) { projectComboBtn = v; }
-export function setProjectComboLabel(v) { projectComboLabel = v; }
-export function setProjectDropdown(v) { projectDropdown = v; }
-export function setProjectDropdownList(v) { projectDropdownList = v; }
-export function setSandboxToggleBtn(v) { sandboxToggleBtn = v; }
-export function setSandboxLabel(v) { sandboxLabel = v; }
-export function setSessionSandboxEnabled(v) { sessionSandboxEnabled = v; }
-export function setChatMsgBox(v) { chatMsgBox = v; }
-export function setChatInput(v) { chatInput = v; }
-export function setChatSendBtn(v) { chatSendBtn = v; }
-export function setChatBatchLoading(v) { chatBatchLoading = v; }
-export function setSessionSwitchInProgress(v) { sessionSwitchInProgress = v; }
-export function setLastHistoryIndex(v) { lastHistoryIndex = v; }
-export function setSessionContextWindow(v) { sessionContextWindow = v; }
-export function setRefreshProvidersPage(v) { refreshProvidersPage = v; }
-export function setRefreshChannelsPage(v) { refreshChannelsPage = v; }
-export function setChannelEventUnsub(v) { channelEventUnsub = v; }
-export function setLogsEventHandler(v) { logsEventHandler = v; }
-export function setUnseenErrors(v) { unseenErrors = v; }
-export function setUnseenWarns(v) { unseenWarns = v; }
-export function setProjectFilterId(v) { projectFilterId = v; }
+export function setWs(v) {
+	ws = v;
+}
+export function setReqId(v) {
+	reqId = v;
+}
+export function setConnected(v) {
+	connected = v;
+}
+export function setReconnectDelay(v) {
+	reconnectDelay = v;
+}
+export function setModels(v) {
+	models = v;
+}
+export function setActiveSessionKey(v) {
+	activeSessionKey = v;
+}
+export function setActiveProjectId(v) {
+	activeProjectId = v;
+}
+export function setSessions(v) {
+	sessions = v;
+}
+export function setProjects(v) {
+	projects = v;
+}
+export function setStreamEl(v) {
+	streamEl = v;
+}
+export function setStreamText(v) {
+	streamText = v;
+}
+export function setLastToolOutput(v) {
+	lastToolOutput = v;
+}
+export function setChatHistory(v) {
+	chatHistory = v;
+}
+export function setChatHistoryIdx(v) {
+	chatHistoryIdx = v;
+}
+export function setChatHistoryDraft(v) {
+	chatHistoryDraft = v;
+}
+export function setSessionTokens(v) {
+	sessionTokens = v;
+}
+export function setModelCombo(v) {
+	modelCombo = v;
+}
+export function setModelComboBtn(v) {
+	modelComboBtn = v;
+}
+export function setModelComboLabel(v) {
+	modelComboLabel = v;
+}
+export function setModelDropdown(v) {
+	modelDropdown = v;
+}
+export function setModelSearchInput(v) {
+	modelSearchInput = v;
+}
+export function setModelDropdownList(v) {
+	modelDropdownList = v;
+}
+export function setSelectedModelId(v) {
+	selectedModelId = v;
+}
+export function setModelIdx(v) {
+	modelIdx = v;
+}
+export function setProjectCombo(v) {
+	projectCombo = v;
+}
+export function setProjectComboBtn(v) {
+	projectComboBtn = v;
+}
+export function setProjectComboLabel(v) {
+	projectComboLabel = v;
+}
+export function setProjectDropdown(v) {
+	projectDropdown = v;
+}
+export function setProjectDropdownList(v) {
+	projectDropdownList = v;
+}
+export function setSandboxToggleBtn(v) {
+	sandboxToggleBtn = v;
+}
+export function setSandboxLabel(v) {
+	sandboxLabel = v;
+}
+export function setSessionSandboxEnabled(v) {
+	sessionSandboxEnabled = v;
+}
+export function setChatMsgBox(v) {
+	chatMsgBox = v;
+}
+export function setChatInput(v) {
+	chatInput = v;
+}
+export function setChatSendBtn(v) {
+	chatSendBtn = v;
+}
+export function setChatBatchLoading(v) {
+	chatBatchLoading = v;
+}
+export function setSessionSwitchInProgress(v) {
+	sessionSwitchInProgress = v;
+}
+export function setLastHistoryIndex(v) {
+	lastHistoryIndex = v;
+}
+export function setSessionContextWindow(v) {
+	sessionContextWindow = v;
+}
+export function setRefreshProvidersPage(v) {
+	refreshProvidersPage = v;
+}
+export function setRefreshChannelsPage(v) {
+	refreshChannelsPage = v;
+}
+export function setChannelEventUnsub(v) {
+	channelEventUnsub = v;
+}
+export function setLogsEventHandler(v) {
+	logsEventHandler = v;
+}
+export function setUnseenErrors(v) {
+	unseenErrors = v;
+}
+export function setUnseenWarns(v) {
+	unseenWarns = v;
+}
+export function setProjectFilterId(v) {
+	projectFilterId = v;
+}

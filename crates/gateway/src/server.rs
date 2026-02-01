@@ -102,6 +102,13 @@ pub fn build_gateway_app(state: Arc<GatewayState>, methods: Arc<MethodRegistry>)
         .route("/assets/js/page-channels.js", get(js_page_channels_handler))
         .route("/assets/js/page-logs.js", get(js_page_logs_handler))
         .route("/assets/js/page-skills.js", get(js_page_skills_handler))
+        .route("/assets/js/vendor/preact.mjs", get(js_vendor_preact_handler))
+        .route("/assets/js/vendor/preact-hooks.mjs", get(js_vendor_preact_hooks_handler))
+        .route("/assets/js/vendor/preact-signals.mjs", get(js_vendor_preact_signals_handler))
+        .route("/assets/js/vendor/htm-preact.mjs", get(js_vendor_htm_preact_handler))
+        .route("/api/bootstrap", get(api_bootstrap_handler))
+        .route("/api/skills", get(api_skills_handler))
+        .route("/api/skills/search", get(api_skills_search_handler))
         .fallback(spa_fallback);
 
     router.layer(cors).with_state(app_state)
@@ -704,15 +711,139 @@ async fn ws_upgrade_handler(
 /// SPA fallback: serve `index.html` for any path not matched by an explicit
 /// route (assets, ws, health). This lets client-side routing handle `/crons`,
 /// `/logs`, etc.
+///
+/// Injects a `<script>` tag with pre-fetched bootstrap data (channels,
+/// sessions, models, projects) so the UI can render synchronously without
+/// waiting for the WebSocket handshake — similar to the gon pattern in Rails.
 #[cfg(feature = "web-ui")]
 async fn spa_fallback(uri: axum::http::Uri) -> impl IntoResponse {
-    // Reject requests that look like missing asset files so the browser gets
-    // a proper 404 instead of HTML.
     let path = uri.path();
     if path.starts_with("/assets/") || path.contains('.') {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
-    Html(include_str!("assets/index.html")).into_response()
+
+    static TEMPLATE: &str = include_str!("assets/index.html");
+    Html(TEMPLATE).into_response()
+}
+
+#[cfg(feature = "web-ui")]
+async fn api_bootstrap_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let gw = &state.gateway;
+    let (channels, sessions, models, projects) = tokio::join!(
+        gw.services.channel.status(),
+        gw.services.session.list(),
+        gw.services.model.list(),
+        gw.services.project.list(),
+    );
+    Json(serde_json::json!({
+        "channels": channels.ok(),
+        "sessions": sessions.ok(),
+        "models": models.ok(),
+        "projects": projects.ok(),
+    }))
+}
+
+/// Lightweight skills overview: repo summaries + enabled skills only.
+/// Full skill lists are loaded on-demand via /api/skills/search.
+#[cfg(feature = "web-ui")]
+async fn api_skills_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let gw = &state.gateway;
+    // repos_list() returns lightweight summaries (no per-skill arrays)
+    let repos = gw.services.skills.repos_list().await;
+
+    let repo_summaries = repos
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+
+    // Read manifest directly for enabled skill names (avoids heavy SKILL.md parsing)
+    let enabled_skills: Vec<serde_json::Value> =
+        if let Ok(path) = moltis_skills::manifest::ManifestStore::default_path() {
+            let store = moltis_skills::manifest::ManifestStore::new(path);
+            store
+                .load()
+                .map(|m| {
+                    m.repos
+                        .iter()
+                        .flat_map(|repo| {
+                            let source = repo.source.clone();
+                            repo.skills.iter().filter(|s| s.enabled).map(move |s| {
+                                serde_json::json!({
+                                    "name": s.name,
+                                    "source": source,
+                                    "enabled": true,
+                                })
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+    Json(serde_json::json!({
+        "skills": enabled_skills,
+        "repos": repo_summaries,
+    }))
+}
+
+/// Search skills within a specific repo. Query params: source, q (optional).
+/// If q is empty, returns all skills for the repo.
+#[cfg(feature = "web-ui")]
+async fn api_skills_search_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let source = params.get("source").cloned().unwrap_or_default();
+    let query = params
+        .get("q")
+        .cloned()
+        .unwrap_or_default()
+        .to_lowercase();
+
+    let gw = &state.gateway;
+    let repos = gw.services.skills.repos_list_full().await;
+
+    let skills: Vec<serde_json::Value> = repos
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .find(|repo| {
+            repo.get("source")
+                .and_then(|s| s.as_str())
+                .map(|s| s == source)
+                .unwrap_or(false)
+        })
+        .and_then(|repo| repo.get("skills").and_then(|s| s.as_array()).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|skill| {
+            if query.is_empty() {
+                return true;
+            }
+            let name = skill
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let display = skill
+                .get("display_name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let desc = skill
+                .get("description")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            name.contains(&query) || display.contains(&query) || desc.contains(&query)
+        })
+        .take(30)
+        .collect();
+
+    Json(serde_json::json!({ "skills": skills }))
 }
 
 #[cfg(feature = "web-ui")]
@@ -759,3 +890,18 @@ js_handler!(js_page_providers_handler, "assets/js/page-providers.js");
 js_handler!(js_page_channels_handler, "assets/js/page-channels.js");
 js_handler!(js_page_logs_handler, "assets/js/page-logs.js");
 js_handler!(js_page_skills_handler, "assets/js/page-skills.js");
+
+// Vendored Preact libraries (served locally to avoid CDN round-trips)
+js_handler!(js_vendor_preact_handler, "assets/js/vendor/preact.mjs");
+js_handler!(
+    js_vendor_preact_hooks_handler,
+    "assets/js/vendor/preact-hooks.mjs"
+);
+js_handler!(
+    js_vendor_preact_signals_handler,
+    "assets/js/vendor/preact-signals.mjs"
+);
+js_handler!(
+    js_vendor_htm_preact_handler,
+    "assets/js/vendor/htm-preact.mjs"
+);

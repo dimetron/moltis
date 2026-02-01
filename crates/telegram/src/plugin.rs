@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
+    time::Instant,
 };
 
 use {
@@ -20,12 +21,16 @@ use crate::{
     bot, config::TelegramAccountConfig, outbound::TelegramOutbound, state::AccountStateMap,
 };
 
+/// Cache TTL for probe results (30 seconds).
+const PROBE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Telegram channel plugin.
 pub struct TelegramPlugin {
     accounts: AccountStateMap,
     outbound: TelegramOutbound,
     message_log: Option<Arc<dyn MessageLog>>,
     event_sink: Option<Arc<dyn ChannelEventSink>>,
+    probe_cache: RwLock<HashMap<String, (ChannelHealthSnapshot, Instant)>>,
 }
 
 impl TelegramPlugin {
@@ -39,6 +44,7 @@ impl TelegramPlugin {
             outbound,
             message_log: None,
             event_sink: None,
+            probe_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -141,32 +147,47 @@ impl ChannelPlugin for TelegramPlugin {
 #[async_trait]
 impl ChannelStatus for TelegramPlugin {
     async fn probe(&self, account_id: &str) -> Result<ChannelHealthSnapshot> {
+        // Return cached result if fresh enough.
+        if let Ok(cache) = self.probe_cache.read() {
+            if let Some((snap, ts)) = cache.get(account_id) {
+                if ts.elapsed() < PROBE_CACHE_TTL {
+                    return Ok(snap.clone());
+                }
+            }
+        }
+
         let bot = {
             let accounts = self.accounts.read().unwrap();
             accounts.get(account_id).map(|s| s.bot.clone())
         };
 
-        match bot {
+        let result = match bot {
             Some(bot) => match bot.get_me().await {
-                Ok(me) => Ok(ChannelHealthSnapshot {
+                Ok(me) => ChannelHealthSnapshot {
                     connected: true,
                     account_id: account_id.to_string(),
                     details: Some(format!(
                         "Bot: @{}",
                         me.username.as_deref().unwrap_or("unknown")
                     )),
-                }),
-                Err(e) => Ok(ChannelHealthSnapshot {
+                },
+                Err(e) => ChannelHealthSnapshot {
                     connected: false,
                     account_id: account_id.to_string(),
                     details: Some(format!("API error: {e}")),
-                }),
+                },
             },
-            None => Ok(ChannelHealthSnapshot {
+            None => ChannelHealthSnapshot {
                 connected: false,
                 account_id: account_id.to_string(),
                 details: Some("account not started".into()),
-            }),
+            },
+        };
+
+        if let Ok(mut cache) = self.probe_cache.write() {
+            cache.insert(account_id.to_string(), (result.clone(), Instant::now()));
         }
+
+        Ok(result)
     }
 }

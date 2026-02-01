@@ -45,10 +45,14 @@ cargo +nightly fmt       # Format code (uses nightly)
 cargo +nightly clippy    # Run linter (uses nightly)
 cargo check              # Fast compile check without producing binary
 taplo fmt                # Format TOML files (Cargo.toml, etc.)
+biome check --write      # Lint & format JavaScript files (installed via mise)
 ```
 
 When editing `Cargo.toml` or other TOML files, run `taplo fmt` to format them
 according to the project's `taplo.toml` configuration.
+
+When editing JavaScript files, run `biome check --write` to lint and format them.
+Configuration is in `biome.json` at the project root.
 
 ## Provider Implementation Guidelines
 
@@ -92,3 +96,4 @@ Run all checks before committing:
 1. `cargo check`
 2. `cargo +nightly clippy`
 3. `cargo test`
+4. `biome check --write` (when JS files were modified)

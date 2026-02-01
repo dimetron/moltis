@@ -239,6 +239,11 @@ impl SqliteSessionMetadata {
             .await
             .ok(); // ignore if column already exists
 
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)")
+            .execute(pool)
+            .await
+            .ok();
+
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS channel_sessions (
                 channel_type TEXT NOT NULL,
