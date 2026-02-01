@@ -67,6 +67,7 @@ pub struct LiveChatService {
     tool_registry: Arc<ToolRegistry>,
     session_store: Arc<SessionStore>,
     session_metadata: Arc<SqliteSessionMetadata>,
+    hook_registry: Option<Arc<moltis_common::hooks::HookRegistry>>,
 }
 
 impl LiveChatService {
@@ -83,11 +84,17 @@ impl LiveChatService {
             tool_registry: Arc::new(ToolRegistry::new()),
             session_store,
             session_metadata,
+            hook_registry: None,
         }
     }
 
     pub fn with_tools(mut self, registry: ToolRegistry) -> Self {
         self.tool_registry = Arc::new(registry);
+        self
+    }
+
+    pub fn with_hooks(mut self, registry: moltis_common::hooks::HookRegistry) -> Self {
+        self.hook_registry = Some(Arc::new(registry));
         self
     }
 
@@ -327,6 +334,7 @@ impl ChatService for LiveChatService {
         let active_runs = Arc::clone(&self.active_runs);
         let run_id_clone = run_id.clone();
         let tool_registry = Arc::clone(&self.tool_registry);
+        let hook_registry = self.hook_registry.clone();
 
         // Warn if tool mode is active but the provider doesn't support tools.
         if !stream_only && !provider.supports_tools() {
@@ -486,6 +494,7 @@ impl ChatService for LiveChatService {
                     stats_ref,
                     user_message_index,
                     &discovered_skills,
+                    hook_registry,
                 )
                 .await
             };
@@ -868,6 +877,7 @@ async fn run_with_tools(
     session_context: Option<&str>,
     user_message_index: usize,
     skills: &[moltis_skills::types::SkillMetadata],
+    hook_registry: Option<Arc<moltis_common::hooks::HookRegistry>>,
 ) -> Option<(String, u32, u32)> {
     // Load identity and user profile from config so the LLM knows who it is.
     let config = moltis_config::discover_and_load();
@@ -994,6 +1004,7 @@ async fn run_with_tools(
         Some(&on_event),
         hist,
         Some(tool_context),
+        hook_registry,
     )
     .await
     {

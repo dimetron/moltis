@@ -10,3 +10,4 @@ pub mod hooks;
 pub mod install;
 pub mod loader;
 pub mod provider;
+pub mod shell_hook;
