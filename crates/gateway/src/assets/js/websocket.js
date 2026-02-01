@@ -63,6 +63,21 @@ function handleChatThinkingDone(_p, isActive, isChatPage) {
 	if (isActive && isChatPage) removeThinking();
 }
 
+/** Build a short summary string for a tool call card. */
+function toolCallSummary(name, args) {
+	if (!args) return name || "tool";
+	switch (name) {
+		case "exec":
+			return args.command || "exec";
+		case "web_fetch":
+			return `web_fetch ${args.url || ""}`.trim();
+		case "web_search":
+			return `web_search "${args.query || ""}"`;
+		default:
+			return name || "tool";
+	}
+}
+
 function handleChatToolCallStart(p, isActive, isChatPage) {
 	if (!(isActive && isChatPage)) return;
 	removeThinking();
@@ -70,7 +85,7 @@ function handleChatToolCallStart(p, isActive, isChatPage) {
 	var frag = tpl.content.cloneNode(true);
 	var card = frag.firstElementChild;
 	card.id = `tool-${p.toolCallId}`;
-	var cmd = p.toolName === "exec" && p.arguments && p.arguments.command ? p.arguments.command : p.toolName || "tool";
+	var cmd = toolCallSummary(p.toolName, p.arguments);
 	card.querySelector("[data-cmd]").textContent = ` ${cmd}`;
 	S.chatMsgBox.appendChild(card);
 	S.chatMsgBox.scrollTop = S.chatMsgBox.scrollHeight;
