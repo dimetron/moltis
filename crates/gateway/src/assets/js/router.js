@@ -120,3 +120,11 @@ navPanel.addEventListener("click", (e) => {
 	e.preventDefault();
 	navigate(link.getAttribute("href"));
 });
+
+var titleLink = document.getElementById("titleLink");
+if (titleLink) {
+	titleLink.addEventListener("click", (e) => {
+		e.preventDefault();
+		navigate("/chats");
+	});
+}

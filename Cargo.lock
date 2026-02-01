@@ -2191,6 +2191,7 @@ dependencies = [
  "moltis-cron",
  "moltis-media",
  "moltis-oauth",
+ "moltis-onboarding",
  "moltis-plugins",
  "moltis-projects",
  "moltis-protocol",
@@ -2276,7 +2277,11 @@ dependencies = [
  "anyhow",
  "moltis-common",
  "moltis-config",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
+ "toml",
  "tracing",
 ]
 

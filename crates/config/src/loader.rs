@@ -69,6 +69,36 @@ fn find_config_file() -> Option<PathBuf> {
     None
 }
 
+/// Returns the user-global config directory (`~/.config/moltis/`).
+pub fn config_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "moltis").map(|d| d.config_dir().to_path_buf())
+}
+
+/// Returns the path of an existing config file, or the default TOML path.
+pub fn find_or_default_config_path() -> PathBuf {
+    if let Some(path) = find_config_file() {
+        return path;
+    }
+    config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("moltis.toml")
+}
+
+/// Serialize `config` to TOML and write it to the user-global config path.
+///
+/// Creates parent directories if needed. Returns the path written to.
+pub fn save_config(config: &MoltisConfig) -> anyhow::Result<PathBuf> {
+    let path = find_or_default_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let toml_str =
+        toml::to_string_pretty(config).map_err(|e| anyhow::anyhow!("serialize config: {e}"))?;
+    std::fs::write(&path, toml_str)?;
+    debug!(path = %path.display(), "saved config");
+    Ok(path)
+}
+
 fn parse_config(raw: &str, path: &Path) -> anyhow::Result<MoltisConfig> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("toml");
 

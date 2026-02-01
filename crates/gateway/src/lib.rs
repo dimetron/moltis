@@ -23,6 +23,7 @@ pub mod logs;
 pub mod message_log_store;
 pub mod methods;
 pub mod nodes;
+pub mod onboarding;
 pub mod pairing;
 pub mod project;
 pub mod provider_setup;

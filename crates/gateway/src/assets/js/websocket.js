@@ -348,7 +348,7 @@ export function connect() {
 						else updateLogsAlert();
 					}
 				});
-				mount(currentPage);
+				if (currentPage === "/chats" || currentPrefix === "/chats") mount(currentPage);
 			} else {
 				setStatus("", "handshake failed");
 				var reason = frame.error?.message || "unknown error";

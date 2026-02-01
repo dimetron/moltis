@@ -17,6 +17,7 @@ import "./page-providers.js";
 import "./page-channels.js";
 import "./page-logs.js";
 import "./page-skills.js";
+import "./page-settings.js";
 
 // Import side-effect modules
 import "./session-search.js";
@@ -36,29 +37,34 @@ onEvent("session", () => {
 mount(location.pathname);
 connect();
 
+function applyModels(models) {
+	S.setModels(models || []);
+	if (S.models.length === 0) return;
+	var saved = localStorage.getItem("moltis-model") || "";
+	var found = S.models.find((m) => m.id === saved);
+	if (found) {
+		S.setSelectedModelId(found.id);
+	} else {
+		S.setSelectedModelId(S.models[0].id);
+		localStorage.setItem("moltis-model", S.selectedModelId);
+	}
+}
+
 // Fetch bootstrap data asynchronously — populates sidebar, models, projects
 // as soon as the data arrives, without blocking the initial page render.
 fetch("/api/bootstrap")
 	.then((r) => r.json())
 	.then((boot) => {
+		if (boot.onboarded === false && location.pathname !== "/settings") {
+			navigate("/settings");
+			return;
+		}
 		if (boot.channels) S.setCachedChannels(boot.channels.channels || boot.channels || []);
 		if (boot.sessions) {
 			S.setSessions(boot.sessions || []);
 			renderSessionList();
 		}
-		if (boot.models) {
-			S.setModels(boot.models || []);
-			if (S.models.length > 0) {
-				var saved = localStorage.getItem("moltis-model") || "";
-				var found = S.models.find((m) => m.id === saved);
-				if (found) {
-					S.setSelectedModelId(found.id);
-				} else {
-					S.setSelectedModelId(S.models[0].id);
-					localStorage.setItem("moltis-model", S.selectedModelId);
-				}
-			}
-		}
+		if (boot.models) applyModels(boot.models);
 		if (boot.projects) {
 			S.setProjects(boot.projects || []);
 			renderProjectSelect();

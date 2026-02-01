@@ -1,4 +1,18 @@
-use {crate::tool_registry::ToolRegistry, moltis_skills::types::SkillMetadata};
+use {
+    crate::tool_registry::ToolRegistry,
+    moltis_config::{AgentIdentity, UserProfile},
+    moltis_skills::types::SkillMetadata,
+};
+
+/// Default soul text used when the user hasn't written their own.
+pub const DEFAULT_SOUL: &str = "\
+Be genuinely helpful, not performatively helpful. Skip the filler words — just help.\n\
+Have opinions. You're allowed to disagree, prefer things, find stuff amusing or boring.\n\
+Be resourceful before asking. Try to figure it out first — read the context, search for it — then ask if you're stuck.\n\
+Earn trust through competence. Be careful with external actions. Be bold with internal ones.\n\
+Remember you're a guest. You have access to someone's life. Treat it with respect.\n\
+Private things stay private. When in doubt, ask before acting externally.\n\
+Be concise when needed, thorough when it matters. Not a corporate drone. Not a sycophant. Just good.";
 
 /// Build the system prompt for an agent run, including available tools.
 ///
@@ -11,22 +25,57 @@ pub fn build_system_prompt(
     native_tools: bool,
     project_context: Option<&str>,
 ) -> String {
-    build_system_prompt_with_session(tools, native_tools, project_context, None, &[])
+    build_system_prompt_with_session(tools, native_tools, project_context, None, &[], None, None)
 }
 
-/// Build the system prompt, optionally including session context stats and skills.
+/// Build the system prompt, optionally including session context stats, skills,
+/// and agent identity / user profile.
 pub fn build_system_prompt_with_session(
     tools: &ToolRegistry,
     native_tools: bool,
     project_context: Option<&str>,
     session_context: Option<&str>,
     skills: &[SkillMetadata],
+    identity: Option<&AgentIdentity>,
+    user: Option<&UserProfile>,
 ) -> String {
     let tool_schemas = tools.list_schemas();
 
     let mut prompt = String::from(
         "You are a helpful assistant with access to tools for executing shell commands.\n\n",
     );
+
+    // Inject agent identity and user name right after the opening line.
+    if let Some(id) = identity {
+        let mut parts = Vec::new();
+        if let (Some(name), Some(emoji)) = (&id.name, &id.emoji) {
+            parts.push(format!("Your name is {name} {emoji}."));
+        } else if let Some(name) = &id.name {
+            parts.push(format!("Your name is {name}."));
+        }
+        if let Some(creature) = &id.creature {
+            parts.push(format!("You are a {creature}."));
+        }
+        if let Some(vibe) = &id.vibe {
+            parts.push(format!("Your vibe: {vibe}."));
+        }
+        if !parts.is_empty() {
+            prompt.push_str(&parts.join(" "));
+            prompt.push('\n');
+        }
+        let soul = id.soul.as_deref().unwrap_or(DEFAULT_SOUL);
+        prompt.push_str("\n## Soul\n\n");
+        prompt.push_str(soul);
+        prompt.push('\n');
+    }
+    if let Some(u) = user
+        && let Some(name) = &u.name
+    {
+        prompt.push_str(&format!("The user's name is {name}.\n"));
+    }
+    if identity.is_some() || user.is_some() {
+        prompt.push('\n');
+    }
 
     // Inject project context (CLAUDE.md, AGENTS.md, etc.) early so the LLM
     // sees project-specific instructions before tool schemas.
@@ -141,7 +190,8 @@ mod tests {
             path: std::path::PathBuf::from("/skills/commit"),
             source: None,
         }];
-        let prompt = build_system_prompt_with_session(&tools, true, None, None, &skills);
+        let prompt =
+            build_system_prompt_with_session(&tools, true, None, None, &skills, None, None);
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("commit"));
     }
@@ -149,7 +199,71 @@ mod tests {
     #[test]
     fn test_no_skills_block_when_empty() {
         let tools = ToolRegistry::new();
-        let prompt = build_system_prompt_with_session(&tools, true, None, None, &[]);
+        let prompt = build_system_prompt_with_session(&tools, true, None, None, &[], None, None);
         assert!(!prompt.contains("<available_skills>"));
+    }
+
+    #[test]
+    fn test_identity_injected_into_prompt() {
+        let tools = ToolRegistry::new();
+        let identity = AgentIdentity {
+            name: Some("Momo".into()),
+            emoji: Some("🦜".into()),
+            creature: Some("parrot".into()),
+            vibe: Some("cheerful and curious".into()),
+            ..Default::default()
+        };
+        let user = UserProfile {
+            name: Some("Alice".into()),
+            timezone: None,
+        };
+        let prompt = build_system_prompt_with_session(
+            &tools,
+            true,
+            None,
+            None,
+            &[],
+            Some(&identity),
+            Some(&user),
+        );
+        assert!(prompt.contains("Your name is Momo 🦜."));
+        assert!(prompt.contains("You are a parrot."));
+        assert!(prompt.contains("Your vibe: cheerful and curious."));
+        assert!(prompt.contains("The user's name is Alice."));
+        // Default soul should be injected when soul is None.
+        assert!(prompt.contains("## Soul"));
+        assert!(prompt.contains("Be genuinely helpful"));
+    }
+
+    #[test]
+    fn test_custom_soul_injected() {
+        let tools = ToolRegistry::new();
+        let identity = AgentIdentity {
+            name: Some("Rex".into()),
+            soul: Some("You are a loyal companion who loves fetch.".into()),
+            ..Default::default()
+        };
+        let prompt = build_system_prompt_with_session(
+            &tools,
+            true,
+            None,
+            None,
+            &[],
+            Some(&identity),
+            None,
+        );
+        assert!(prompt.contains("## Soul"));
+        assert!(prompt.contains("loyal companion who loves fetch"));
+        assert!(!prompt.contains("Be genuinely helpful"));
+    }
+
+    #[test]
+    fn test_no_identity_no_extra_lines() {
+        let tools = ToolRegistry::new();
+        let prompt =
+            build_system_prompt_with_session(&tools, true, None, None, &[], None, None);
+        assert!(!prompt.contains("Your name is"));
+        assert!(!prompt.contains("The user's name is"));
+        assert!(!prompt.contains("## Soul"));
     }
 }

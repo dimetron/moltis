@@ -798,6 +798,9 @@ pub trait OnboardingService: Send + Sync {
     async fn wizard_next(&self, params: Value) -> ServiceResult;
     async fn wizard_cancel(&self) -> ServiceResult;
     async fn wizard_status(&self) -> ServiceResult;
+    async fn identity_get(&self) -> ServiceResult;
+    async fn identity_update(&self, params: Value) -> ServiceResult;
+    async fn identity_update_soul(&self, soul: Option<String>) -> ServiceResult;
 }
 
 pub struct NoopOnboardingService;
@@ -818,6 +821,18 @@ impl OnboardingService for NoopOnboardingService {
 
     async fn wizard_status(&self) -> ServiceResult {
         Ok(serde_json::json!({ "active": false }))
+    }
+
+    async fn identity_get(&self) -> ServiceResult {
+        Ok(serde_json::json!({ "name": "moltis", "avatar": null }))
+    }
+
+    async fn identity_update(&self, _params: Value) -> ServiceResult {
+        Err("onboarding service not configured".into())
+    }
+
+    async fn identity_update_soul(&self, _soul: Option<String>) -> ServiceResult {
+        Ok(serde_json::json!({}))
     }
 }
 
@@ -1105,6 +1120,11 @@ impl GatewayServices {
             session_metadata: None,
             session_store: None,
         }
+    }
+
+    pub fn with_onboarding(mut self, onboarding: Arc<dyn OnboardingService>) -> Self {
+        self.onboarding = onboarding;
+        self
     }
 
     pub fn with_project(mut self, project: Arc<dyn ProjectService>) -> Self {

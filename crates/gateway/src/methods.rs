@@ -49,6 +49,8 @@ const READ_METHODS: &[&str] = &[
     "models.list",
     "agents.list",
     "agent.identity.get",
+    "agent.identity.update",
+    "agent.identity.update_soul",
     "skills.list",
     "skills.status",
     "skills.repos.list",
@@ -1026,8 +1028,35 @@ impl MethodRegistry {
                 Box::pin(async move {
                     ctx.state
                         .services
-                        .agent
+                        .onboarding
                         .identity_get()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+        self.register(
+            "agent.identity.update",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    ctx.state
+                        .services
+                        .onboarding
+                        .identity_update(ctx.params)
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+        self.register(
+            "agent.identity.update_soul",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    let soul = ctx.params.get("soul").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    ctx.state
+                        .services
+                        .onboarding
+                        .identity_update_soul(soul)
                         .await
                         .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
                 })

@@ -841,6 +841,9 @@ async fn run_with_tools(
     session_context: Option<&str>,
     user_message_index: usize,
 ) -> Option<(String, u32, u32)> {
+    // Load identity and user profile from config so the LLM knows who it is.
+    let config = moltis_config::discover_and_load();
+
     let native_tools = provider.supports_tools();
     let system_prompt = build_system_prompt_with_session(
         tool_registry,
@@ -848,6 +851,8 @@ async fn run_with_tools(
         project_context,
         session_context,
         &[],
+        Some(&config.identity),
+        Some(&config.user),
     );
 
     // Broadcast tool events to the UI as they happen.
@@ -969,6 +974,7 @@ async fn run_with_tools(
                 run_id,
                 iterations = result.iterations,
                 tool_calls = result.tool_calls_made,
+                response = %result.text,
                 "agent run complete"
             );
             // Assistant message index = user message index + 1.

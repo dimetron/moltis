@@ -10,4 +10,7 @@ pub mod loader;
 pub mod migrate;
 pub mod schema;
 
-pub use {loader::discover_and_load, schema::MoltisConfig};
+pub use {
+    loader::{config_dir, discover_and_load, find_or_default_config_path, save_config},
+    schema::{AgentIdentity, MoltisConfig, UserProfile},
+};

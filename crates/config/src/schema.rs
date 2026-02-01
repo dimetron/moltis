@@ -4,6 +4,26 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Agent identity (name, emoji, creature, vibe, soul).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentIdentity {
+    pub name: Option<String>,
+    pub emoji: Option<String>,
+    pub creature: Option<String>,
+    pub vibe: Option<String>,
+    /// Freeform personality / soul text injected into the system prompt.
+    pub soul: Option<String>,
+}
+
+/// User profile collected during onboarding.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UserProfile {
+    pub name: Option<String>,
+    pub timezone: Option<String>,
+}
+
 /// Root configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -13,6 +33,16 @@ pub struct MoltisConfig {
     pub skills: SkillsConfig,
     pub channels: ChannelsConfig,
     pub tls: TlsConfig,
+    pub identity: AgentIdentity,
+    pub user: UserProfile,
+}
+
+impl MoltisConfig {
+    /// Returns `true` when both the agent name and user name have been set
+    /// (i.e. the onboarding wizard has been completed).
+    pub fn is_onboarded(&self) -> bool {
+        self.identity.name.is_some() && self.user.name.is_some()
+    }
 }
 
 /// Skills configuration.
