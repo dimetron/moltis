@@ -558,7 +558,7 @@ impl Sandbox for AppleContainerSandbox {
 
     async fn exec(&self, id: &SandboxId, command: &str, opts: &ExecOpts) -> Result<ExecResult> {
         let name = self.container_name(id);
-        debug!(name, command, "apple container exec");
+        info!(name, command, "apple container exec");
 
         let mut args = vec!["exec".to_string(), name.clone()];
 
