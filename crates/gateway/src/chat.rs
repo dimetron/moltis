@@ -974,6 +974,7 @@ async fn run_with_tools(
                 run_id,
                 iterations = result.iterations,
                 tool_calls = result.tool_calls_made,
+                response = %result.text,
                 "agent run complete"
             );
             // Assistant message index = user message index + 1.

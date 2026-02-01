@@ -231,17 +231,13 @@ pub async fn handle_message_direct(
             }
         }
 
-        let prefix = sender_name
-            .as_deref()
-            .map(|n| format!("[Telegram from {n}] "))
-            .unwrap_or_else(|| "[Telegram] ".to_string());
         let meta = ChannelMessageMeta {
             channel_type: "telegram".into(),
             sender_name: sender_name.clone(),
             username: username.clone(),
             model: config.model.clone(),
         };
-        sink.dispatch_to_chat(&format!("{prefix}{body}"), reply_target, meta)
+        sink.dispatch_to_chat(&body, reply_target, meta)
             .await;
     }
 
