@@ -5,7 +5,7 @@ use {
     async_trait::async_trait,
     serde::{Deserialize, Serialize},
     tokio::sync::RwLock,
-    tracing::debug,
+    tracing::{debug, info, warn},
 };
 
 use crate::exec::{ExecOpts, ExecResult};
@@ -94,6 +94,12 @@ impl Default for SandboxConfig {
 pub struct SandboxId {
     pub scope: SandboxScope,
     pub key: String,
+}
+
+impl std::fmt::Display for SandboxId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}/{}", self.scope, self.key)
+    }
 }
 
 /// Trait for sandbox implementations (Docker, cgroups, Apple Container, etc.).
@@ -480,6 +486,7 @@ impl Sandbox for AppleContainerSandbox {
 
     async fn ensure_ready(&self, id: &SandboxId, image_override: Option<&str>) -> Result<()> {
         let name = self.container_name(id);
+        let image = image_override.unwrap_or_else(|| self.image());
 
         // Check if container exists and parse its state.
         let check = tokio::process::Command::new("container")
@@ -493,30 +500,41 @@ impl Sandbox for AppleContainerSandbox {
             let stdout = String::from_utf8_lossy(&output.stdout);
             // If the container exists but is stopped, restart it.
             if stdout.contains("stopped") || stdout.contains("exited") {
-                debug!(name, "apple container exists but stopped, starting");
+                info!(name, "apple container stopped, restarting");
                 let start = tokio::process::Command::new("container")
                     .args(["start", &name])
                     .output()
                     .await?;
                 if !start.status.success() {
                     let stderr = String::from_utf8_lossy(&start.stderr);
-                    anyhow::bail!("container start failed: {}", stderr.trim());
+                    warn!(name, %stderr, "container start failed, removing and recreating");
+                    // Remove the broken container and fall through to create a new one.
+                    let _ = tokio::process::Command::new("container")
+                        .args(["rm", &name])
+                        .output()
+                        .await;
+                } else {
+                    info!(name, "apple container restarted");
+                    return Ok(());
                 }
             } else {
                 debug!(name, "apple container already running");
+                return Ok(());
             }
-            return Ok(());
+        } else {
+            debug!(name, "apple container not found, creating");
         }
 
         // Container doesn't exist — create it.
-        // Must pass `sleep infinity` so the container stays alive for `exec` calls
-        // (the default entrypoint is /bin/bash which exits immediately without a TTY).
+        // Must pass `sleep infinity` so the container stays alive for subsequent
+        // exec calls (the default entrypoint /bin/bash exits immediately without a TTY).
+        info!(name, image, "creating apple container");
         let args = vec![
             "run".to_string(),
             "-d".to_string(),
             "--name".to_string(),
             name.clone(),
-            image_override.unwrap_or_else(|| self.image()).to_string(),
+            image.to_string(),
             "sleep".to_string(),
             "infinity".to_string(),
         ];
@@ -528,16 +546,21 @@ impl Sandbox for AppleContainerSandbox {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("container run failed: {}", stderr.trim());
+            anyhow::bail!(
+                "container run failed for {name} (image={image}): {}",
+                stderr.trim()
+            );
         }
 
+        info!(name, image, "apple container created and running");
         Ok(())
     }
 
     async fn exec(&self, id: &SandboxId, command: &str, opts: &ExecOpts) -> Result<ExecResult> {
         let name = self.container_name(id);
+        debug!(name, command, "apple container exec");
 
-        let mut args = vec!["exec".to_string(), name];
+        let mut args = vec!["exec".to_string(), name.clone()];
 
         if let Some(ref dir) = opts.working_dir {
             args.extend([
@@ -560,6 +583,7 @@ impl Sandbox for AppleContainerSandbox {
 
         match result {
             Ok(Ok(output)) => {
+                let exit_code = output.status.code().unwrap_or(-1);
                 let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
                 let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
@@ -572,19 +596,40 @@ impl Sandbox for AppleContainerSandbox {
                     stderr.push_str("\n... [output truncated]");
                 }
 
+                debug!(
+                    name,
+                    exit_code,
+                    stdout_len = stdout.len(),
+                    stderr_len = stderr.len(),
+                    "apple container exec complete"
+                );
                 Ok(ExecResult {
                     stdout,
                     stderr,
-                    exit_code: output.status.code().unwrap_or(-1),
+                    exit_code,
                 })
             },
-            Ok(Err(e)) => anyhow::bail!("container exec failed: {e}"),
-            Err(_) => anyhow::bail!("container exec timed out after {}s", opts.timeout.as_secs()),
+            Ok(Err(e)) => {
+                warn!(name, %e, "apple container exec spawn failed");
+                anyhow::bail!("container exec failed for {name}: {e}")
+            },
+            Err(_) => {
+                warn!(
+                    name,
+                    timeout_secs = opts.timeout.as_secs(),
+                    "apple container exec timed out"
+                );
+                anyhow::bail!(
+                    "container exec timed out for {name} after {}s",
+                    opts.timeout.as_secs()
+                )
+            },
         }
     }
 
     async fn cleanup(&self, id: &SandboxId) -> Result<()> {
         let name = self.container_name(id);
+        info!(name, "cleaning up apple container");
         let _ = tokio::process::Command::new("container")
             .args(["stop", &name])
             .output()

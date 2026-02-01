@@ -281,15 +281,20 @@ impl AgentTool for ExecTool {
                 let id = router.sandbox_id_for(sk);
                 let image = router.resolve_image(sk, None).await;
                 let backend = router.backend();
+                debug!(session = sk, sandbox_id = %id, backend = backend.backend_name(), image, "sandbox ensure_ready");
                 backend.ensure_ready(&id, Some(&image)).await?;
+                debug!(session = sk, sandbox_id = %id, command, "sandbox running command");
                 backend.exec(&id, command, &opts).await?
             } else {
+                debug!(session = sk, command, "running unsandboxed");
                 exec_command(command, &opts).await?
             }
         } else if let Some(ref id) = self.sandbox_id {
+            debug!(sandbox_id = %id, command, "static sandbox running command");
             self.sandbox.ensure_ready(id, None).await?;
             self.sandbox.exec(id, command, &opts).await?
         } else {
+            debug!(command, "running without sandbox");
             exec_command(command, &opts).await?
         };
 
