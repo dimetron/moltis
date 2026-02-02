@@ -74,6 +74,7 @@ pub struct LiveChatService {
     tool_registry: Arc<RwLock<ToolRegistry>>,
     session_store: Arc<SessionStore>,
     session_metadata: Arc<SqliteSessionMetadata>,
+    hook_registry: Option<Arc<moltis_common::hooks::HookRegistry>>,
 }
 
 impl LiveChatService {
@@ -90,11 +91,22 @@ impl LiveChatService {
             tool_registry: Arc::new(RwLock::new(ToolRegistry::new())),
             session_store,
             session_metadata,
+            hook_registry: None,
         }
     }
 
     pub fn with_tools(mut self, registry: Arc<RwLock<ToolRegistry>>) -> Self {
         self.tool_registry = registry;
+        self
+    }
+
+    pub fn with_hooks(mut self, registry: moltis_common::hooks::HookRegistry) -> Self {
+        self.hook_registry = Some(Arc::new(registry));
+        self
+    }
+
+    pub fn with_hooks_arc(mut self, registry: Arc<moltis_common::hooks::HookRegistry>) -> Self {
+        self.hook_registry = Some(registry);
         self
     }
 
@@ -105,6 +117,30 @@ impl LiveChatService {
             .try_read()
             .map(|r| !r.list_schemas().is_empty())
             .unwrap_or(true)
+    }
+
+    /// Resolve a provider from session metadata, history, or first registered.
+    async fn resolve_provider(
+        &self,
+        session_key: &str,
+        history: &[serde_json::Value],
+    ) -> Result<Arc<dyn moltis_agents::model::LlmProvider>, String> {
+        let reg = self.providers.read().await;
+        let session_model = self
+            .session_metadata
+            .get(session_key)
+            .await
+            .and_then(|e| e.model.clone());
+        let history_model = history
+            .iter()
+            .rev()
+            .find_map(|m| m.get("model").and_then(|v| v.as_str()).map(String::from));
+        let model_id = session_model.or(history_model);
+
+        model_id
+            .and_then(|id| reg.get(&id))
+            .or_else(|| reg.first())
+            .ok_or_else(|| "no LLM providers configured".to_string())
     }
 
     /// Resolve the active session key for a connection.
@@ -134,18 +170,16 @@ impl ChatService for LiveChatService {
             .map(String::from);
         let explicit_model = params.get("model").and_then(|v| v.as_str());
         // Use streaming-only mode if explicitly requested or if no tools are registered.
-        let stream_only = params
+        let explicit_stream_only = params
             .get("stream_only")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-            || !self.has_tools_sync();
+            .unwrap_or(false);
+        let stream_only = explicit_stream_only || !self.has_tools_sync();
 
-        // Resolve session key: explicit override (used by cron callbacks) or
-        // connection-scoped lookup.
-        let session_key = if let Some(sk) = params.get("_session_key").and_then(|v| v.as_str()) {
-            sk.to_string()
-        } else {
-            self.session_key_for(conn_id.as_deref()).await
+        // Resolve session key: explicit override (used by cron callbacks) or connection-scoped lookup.
+        let session_key = match params.get("_session_key").and_then(|v| v.as_str()) {
+            Some(sk) => sk.to_string(),
+            None => self.session_key_for(conn_id.as_deref()).await,
         };
 
         // Resolve model: explicit param → session metadata → first registered.
@@ -287,6 +321,7 @@ impl ChatService for LiveChatService {
         let is_web_message = conn_id.is_some()
             && params.get("_session_key").is_none()
             && params.get("channel").is_none();
+
         if is_web_message
             && let Some(entry) = self.session_metadata.get(&session_key).await
             && let Some(ref binding_json) = entry.channel_binding
@@ -299,11 +334,10 @@ impl ChatService for LiveChatService {
                 .get_active_session(&target.channel_type, &target.account_id, &target.chat_id)
                 .await
                 .map(|k| k == session_key)
-                .unwrap_or(true); // no override → deterministic key is active
+                .unwrap_or(true);
 
             if is_active {
-                // Push reply target so deliver_channel_replies sends the LLM
-                // response to the channel.
+                // Push reply target so deliver_channel_replies sends the LLM response.
                 self.state
                     .push_channel_reply(&session_key, target.clone())
                     .await;
@@ -340,6 +374,7 @@ impl ChatService for LiveChatService {
         let active_runs = Arc::clone(&self.active_runs);
         let run_id_clone = run_id.clone();
         let tool_registry = Arc::clone(&self.tool_registry);
+        let hook_registry = self.hook_registry.clone();
 
         // Warn if tool mode is active but the provider doesn't support tools.
         if !stream_only && !provider.supports_tools() {
@@ -369,20 +404,23 @@ impl ChatService for LiveChatService {
         let session_store = Arc::clone(&self.session_store);
         let session_metadata = Arc::clone(&self.session_metadata);
         let session_key_clone = session_key.clone();
+        let accept_language = params
+            .get("_accept_language")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         // Compute session context stats for the system prompt.
         let session_stats = {
             let msg_count = history.len() + 1; // +1 for the current user message
-            let mut total_input: u64 = 0;
-            let mut total_output: u64 = 0;
-            for msg in &history {
-                if let Some(t) = msg.get("inputTokens").and_then(|v| v.as_u64()) {
-                    total_input += t;
-                }
-                if let Some(t) = msg.get("outputTokens").and_then(|v| v.as_u64()) {
-                    total_output += t;
-                }
-            }
+            let total_input: u64 = history
+                .iter()
+                .filter_map(|m| m.get("inputTokens").and_then(|v| v.as_u64()))
+                .sum();
+            let total_output: u64 = history
+                .iter()
+                .filter_map(|m| m.get("outputTokens").and_then(|v| v.as_u64()))
+                .sum();
             let total_tokens = total_input + total_output;
+
             format!(
                 "Session \"{session_key}\": {msg_count} messages, {total_tokens} tokens used ({total_input} input / {total_output} output)."
             )
@@ -394,7 +432,9 @@ impl ChatService for LiveChatService {
             .iter()
             .filter_map(|m| m.get("inputTokens").and_then(|v| v.as_u64()))
             .sum();
-        if total_input >= context_window * 95 / 100 {
+        let compact_threshold = (context_window * 95) / 100;
+
+        if total_input >= compact_threshold {
             let pre_compact_msg_count = history.len();
             let total_output: u64 = history
                 .iter()
@@ -499,6 +539,8 @@ impl ChatService for LiveChatService {
                     stats_ref,
                     user_message_index,
                     &discovered_skills,
+                    hook_registry,
+                    accept_language.clone(),
                 )
                 .await
             };
@@ -603,6 +645,42 @@ impl ChatService for LiveChatService {
             return Err("nothing to compact".into());
         }
 
+        // Dispatch BeforeCompaction hook.
+        if let Some(ref hooks) = self.hook_registry {
+            let payload = moltis_common::hooks::HookPayload::BeforeCompaction {
+                session_key: session_key.clone(),
+                message_count: history.len(),
+            };
+            if let Err(e) = hooks.dispatch(&payload).await {
+                warn!(session = %session_key, error = %e, "BeforeCompaction hook failed");
+            }
+        }
+
+        // Run silent memory turn before summarization — saves important memories to disk.
+        if let Some(ref mm) = self.state.memory_manager {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            if let Ok(provider) = self.resolve_provider(&session_key, &history).await {
+                match moltis_agents::silent_turn::run_silent_memory_turn(provider, &history, &cwd)
+                    .await
+                {
+                    Ok(paths) => {
+                        for path in &paths {
+                            if let Err(e) = mm.sync_path(path).await {
+                                warn!(path = %path.display(), error = %e, "compact: memory sync of written file failed");
+                            }
+                        }
+                        if !paths.is_empty() {
+                            info!(
+                                files = paths.len(),
+                                "compact: silent memory turn wrote files"
+                            );
+                        }
+                    },
+                    Err(e) => warn!(error = %e, "compact: silent memory turn failed"),
+                }
+            }
+        }
+
         // Build a summary prompt from the conversation.
         let mut summary_messages: Vec<serde_json::Value> = Vec::new();
         summary_messages.push(serde_json::json!({
@@ -626,26 +704,7 @@ impl ChatService for LiveChatService {
 
         // Use the session's model if available, otherwise fall back to the model
         // from the last assistant message, then to the first registered provider.
-        let provider = {
-            let reg = self.providers.read().await;
-            let session_model = self
-                .session_metadata
-                .get(&session_key)
-                .await
-                .and_then(|e| e.model.clone());
-            let history_model = history
-                .iter()
-                .rev()
-                .find_map(|m| m.get("model").and_then(|v| v.as_str()).map(String::from));
-            let model_id = session_model.or(history_model);
-            if let Some(ref id) = model_id {
-                reg.get(id)
-            } else {
-                None
-            }
-            .or_else(|| reg.first())
-            .ok_or_else(|| "no LLM providers configured".to_string())?
-        };
+        let provider = self.resolve_provider(&session_key, &history).await?;
 
         info!(session = %session_key, messages = history.len(), "chat.compact: summarizing");
 
@@ -676,6 +735,46 @@ impl ChatService for LiveChatService {
             .map_err(|e| e.to_string())?;
 
         self.session_metadata.touch(&session_key, 1).await;
+
+        // Save compaction summary to memory file and trigger sync.
+        if let Some(ref mm) = self.state.memory_manager {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let memory_dir = cwd.join("memory");
+            if let Err(e) = tokio::fs::create_dir_all(&memory_dir).await {
+                warn!(error = %e, "compact: failed to create memory dir");
+            } else {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let filename = format!("compaction-{}-{ts}.md", session_key);
+                let path = memory_dir.join(&filename);
+                let content = format!(
+                    "# Compaction Summary\n\n- **Session**: {session_key}\n- **Timestamp**: {ts}\n\n{summary}"
+                );
+                if let Err(e) = tokio::fs::write(&path, &content).await {
+                    warn!(error = %e, "compact: failed to write memory file");
+                } else {
+                    let mm = Arc::clone(mm);
+                    tokio::spawn(async move {
+                        if let Err(e) = mm.sync().await {
+                            tracing::warn!("compact: memory sync failed: {e}");
+                        }
+                    });
+                }
+            }
+        }
+
+        // Dispatch AfterCompaction hook.
+        if let Some(ref hooks) = self.hook_registry {
+            let payload = moltis_common::hooks::HookPayload::AfterCompaction {
+                session_key: session_key.clone(),
+                summary_len: summary.len(),
+            };
+            if let Err(e) = hooks.dispatch(&payload).await {
+                warn!(session = %session_key, error = %e, "AfterCompaction hook failed");
+            }
+        }
 
         info!(session = %session_key, "chat.compact: done");
         Ok(serde_json::json!(compacted))
@@ -786,16 +885,14 @@ impl ChatService for LiveChatService {
             .read(&session_key)
             .await
             .unwrap_or_default();
-        let mut total_input: u64 = 0;
-        let mut total_output: u64 = 0;
-        for msg in &messages {
-            if let Some(t) = msg.get("inputTokens").and_then(|v| v.as_u64()) {
-                total_input += t;
-            }
-            if let Some(t) = msg.get("outputTokens").and_then(|v| v.as_u64()) {
-                total_output += t;
-            }
-        }
+        let total_input: u64 = messages
+            .iter()
+            .filter_map(|m| m.get("inputTokens").and_then(|v| v.as_u64()))
+            .sum();
+        let total_output: u64 = messages
+            .iter()
+            .filter_map(|m| m.get("outputTokens").and_then(|v| v.as_u64()))
+            .sum();
         let total_tokens = total_input + total_output;
 
         // Context window from the session's provider
@@ -818,6 +915,17 @@ impl ChatService for LiveChatService {
                 Some(img) if !img.is_empty() => img,
                 _ => router.default_image().await,
             };
+            let container_name = {
+                let id = router.sandbox_id_for(&session_key);
+                format!(
+                    "{}-{}",
+                    config
+                        .container_prefix
+                        .as_deref()
+                        .unwrap_or("moltis-sandbox"),
+                    id.key
+                )
+            };
             serde_json::json!({
                 "enabled": is_sandboxed,
                 "backend": router.backend_name(),
@@ -825,6 +933,7 @@ impl ChatService for LiveChatService {
                 "scope": config.scope,
                 "workspaceMount": config.workspace_mount,
                 "image": effective_image,
+                "containerName": container_name,
             })
         } else {
             serde_json::json!({
@@ -892,6 +1001,8 @@ async fn run_with_tools(
     session_context: Option<&str>,
     user_message_index: usize,
     skills: &[moltis_skills::types::SkillMetadata],
+    hook_registry: Option<Arc<moltis_common::hooks::HookRegistry>>,
+    accept_language: Option<String>,
 ) -> Option<(String, u32, u32)> {
     // Load identity and user profile from config so the LLM knows who it is.
     let config = moltis_config::discover_and_load();
@@ -1008,8 +1119,12 @@ async fn run_with_tools(
         Some(history.to_vec())
     };
 
-    // Inject session key into tool call params so tools can resolve per-session state.
-    let tool_context = serde_json::json!({ "_session_key": session_key });
+    // Inject session key and accept-language into tool call params so tools can
+    // resolve per-session state and forward the user's locale to web requests.
+    let mut tool_context = serde_json::json!({ "_session_key": session_key });
+    if let Some(lang) = accept_language.as_deref() {
+        tool_context["_accept_language"] = serde_json::json!(lang);
+    }
 
     let provider_ref = provider.clone();
     let registry_guard = tool_registry.read().await;
@@ -1021,6 +1136,7 @@ async fn run_with_tools(
         Some(&on_event),
         hist,
         Some(tool_context),
+        hook_registry,
     )
     .await
     {

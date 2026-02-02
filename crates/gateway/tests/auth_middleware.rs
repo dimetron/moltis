@@ -51,6 +51,8 @@ async fn start_auth_server_impl(
         Some(Arc::clone(&cred_store)),
         None,
         localhost_only,
+        None,
+        None,
     );
     let state_clone = Arc::clone(&state);
     let methods = Arc::new(MethodRegistry::new());

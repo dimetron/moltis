@@ -257,6 +257,25 @@ impl MemoryStore for SqliteMemoryStore {
         Ok(())
     }
 
+    async fn count_cached_embeddings(&self) -> anyhow::Result<usize> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM embedding_cache")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count as usize)
+    }
+
+    async fn evict_embedding_cache(&self, keep: usize) -> anyhow::Result<usize> {
+        let result = sqlx::query(
+            "DELETE FROM embedding_cache WHERE rowid IN (
+                SELECT rowid FROM embedding_cache ORDER BY updated_at ASC LIMIT MAX(0, (SELECT COUNT(*) FROM embedding_cache) - ?)
+            )",
+        )
+        .bind(keep as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as usize)
+    }
+
     async fn vector_search(
         &self,
         query_embedding: &[f32],

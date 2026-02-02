@@ -3,20 +3,28 @@ edition.workspace = true
 name              = "moltis-memory"
 version.workspace = true
 
+[features]
+default          = ["file-watcher"]
+file-watcher     = ["dep:notify-debouncer-full"]
+local-embeddings = ["dep:llama-cpp-2"]
+
 [dependencies]
-anyhow        = { workspace = true }
-async-trait   = "0.1"
-moltis-agents = { workspace = true }
-moltis-common = { workspace = true }
-reqwest       = { workspace = true }
-secrecy       = { workspace = true }
-serde         = { workspace = true }
-serde_json    = { workspace = true }
-sha2          = { workspace = true }
-sqlx          = { workspace = true }
-tokio         = { workspace = true }
-tracing       = { workspace = true }
-walkdir       = "2"
+anyhow                = { workspace = true }
+async-trait           = "0.1"
+directories.workspace = true
+llama-cpp-2           = { optional = true, version = "0.1" }
+moltis-agents         = { workspace = true }
+moltis-common         = { workspace = true }
+notify-debouncer-full = { optional = true, version = "0.7" }
+reqwest               = { workspace = true }
+secrecy               = { workspace = true }
+serde                 = { workspace = true }
+serde_json            = { workspace = true }
+sha2                  = { workspace = true }
+sqlx                  = { workspace = true }
+tokio                 = { workspace = true }
+tracing               = { workspace = true }
+walkdir               = "2"
 
 [dev-dependencies]
 tempfile = "3"

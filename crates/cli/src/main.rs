@@ -1,4 +1,6 @@
 mod auth_commands;
+mod hooks_commands;
+mod sandbox_commands;
 
 use {
     clap::{Parser, Subcommand},
@@ -81,6 +83,16 @@ enum Commands {
     Skills {
         #[command(subcommand)]
         action: SkillAction,
+    },
+    /// Hook management.
+    Hooks {
+        #[command(subcommand)]
+        action: hooks_commands::HookAction,
+    },
+    /// Sandbox image management.
+    Sandbox {
+        #[command(subcommand)]
+        action: sandbox_commands::SandboxAction,
     },
     /// Install the Moltis CA certificate into the system trust store.
     #[cfg(feature = "tls")]
@@ -266,7 +278,9 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Onboard => moltis_onboarding::wizard::run_onboarding().await,
         Commands::Auth { action } => auth_commands::handle_auth(action).await,
+        Commands::Sandbox { action } => sandbox_commands::handle_sandbox(action).await,
         Commands::Skills { action } => handle_skills(action).await,
+        Commands::Hooks { action } => hooks_commands::handle_hooks(action).await,
         #[cfg(feature = "tls")]
         Commands::TrustCa => trust_ca().await,
         _ => {

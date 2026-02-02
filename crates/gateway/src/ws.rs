@@ -27,6 +27,7 @@ pub async fn handle_connection(
     state: Arc<GatewayState>,
     methods: Arc<MethodRegistry>,
     remote_addr: SocketAddr,
+    accept_language: Option<String>,
 ) {
     let conn_id = uuid::Uuid::new_v4().to_string();
     let remote_ip = remote_addr.ip().to_string();
@@ -228,6 +229,7 @@ pub async fn handle_connection(
         sender: client_tx.clone(),
         connected_at: now,
         last_activity: now,
+        accept_language,
     };
     state.register_client(client).await;
 

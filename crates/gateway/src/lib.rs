@@ -22,6 +22,7 @@ pub mod channel_store;
 pub mod chat;
 pub mod chat_error;
 pub mod cron;
+pub mod env_routes;
 pub mod logs;
 pub mod mcp_health;
 pub mod mcp_service;

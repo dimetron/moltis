@@ -37,6 +37,12 @@ pub trait MemoryStore: Send + Sync {
         embedding: &[f32],
     ) -> anyhow::Result<()>;
 
+    /// Count the number of rows in the embedding cache.
+    async fn count_cached_embeddings(&self) -> anyhow::Result<usize>;
+
+    /// Evict the oldest cache rows, keeping at most `keep` entries.
+    async fn evict_embedding_cache(&self, keep: usize) -> anyhow::Result<usize>;
+
     // ---- search ----
     async fn vector_search(
         &self,

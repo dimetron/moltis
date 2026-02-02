@@ -5,6 +5,8 @@ use {
     tracing::{debug, info, trace, warn},
 };
 
+use moltis_common::hooks::{HookAction, HookPayload, HookRegistry};
+
 use crate::{
     model::{CompletionResponse, LlmProvider, ToolCall, Usage},
     tool_registry::ToolRegistry,
@@ -82,16 +84,16 @@ fn parse_tool_call_from_text(text: &str) -> Option<(ToolCall, Option<String>)> {
     // Collect any text outside the tool_call block.
     let before = text[..start].trim();
     let after_end = after_marker + end + 3; // skip closing ```
-    let after = if after_end < text.len() {
-        text[after_end..].trim()
+    let after = text.get(after_end..).unwrap_or("").trim();
+
+    let remaining = if before.is_empty() && after.is_empty() {
+        None
+    } else if before.is_empty() {
+        Some(after.to_string())
+    } else if after.is_empty() {
+        Some(before.to_string())
     } else {
-        ""
-    };
-    let remaining = match (before.is_empty(), after.is_empty()) {
-        (true, true) => None,
-        (false, true) => Some(before.to_string()),
-        (true, false) => Some(after.to_string()),
-        (false, false) => Some(format!("{before}\n{after}")),
+        Some(format!("{before}\n{after}"))
     };
 
     Some((
@@ -124,6 +126,7 @@ pub async fn run_agent_loop(
         on_event,
         history,
         None,
+        None,
     )
     .await
 }
@@ -138,6 +141,7 @@ pub async fn run_agent_loop_with_context(
     on_event: Option<&OnEvent>,
     history: Option<Vec<serde_json::Value>>,
     tool_context: Option<serde_json::Value>,
+    hook_registry: Option<Arc<HookRegistry>>,
 ) -> Result<AgentRunResult> {
     let native_tools = provider.supports_tools();
     let tool_schemas = tools.list_schemas();
@@ -292,6 +296,14 @@ pub async fn run_agent_loop_with_context(
         }
         messages.push(assistant_msg);
 
+        // Extract session key from tool_context for hook payloads.
+        let session_key = tool_context
+            .as_ref()
+            .and_then(|ctx| ctx.get("_session_key"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
         // Execute tool calls concurrently.
         total_tool_calls += response.tool_calls.len();
 
@@ -307,13 +319,20 @@ pub async fn run_agent_loop_with_context(
             info!(tool = %tc.name, id = %tc.id, args = %tc.arguments, "executing tool");
         }
 
-        // Build futures for all tool calls.
+        // Build futures for all tool calls (executed concurrently).
         let tool_futures: Vec<_> = response
             .tool_calls
             .iter()
             .map(|tc| {
                 let tool = tools.get(&tc.name);
                 let mut args = tc.arguments.clone();
+
+                // Dispatch BeforeToolCall hook — may block or modify arguments.
+                let hook_registry = hook_registry.clone();
+                let session_key = session_key.clone();
+                let tc_name = tc.name.clone();
+                let _tc_id = tc.id.clone();
+
                 if let Some(ref ctx) = tool_context
                     && let (Some(args_obj), Some(ctx_obj)) = (args.as_object_mut(), ctx.as_object())
                 {
@@ -322,17 +341,73 @@ pub async fn run_agent_loop_with_context(
                     }
                 }
                 async move {
+                    // Run BeforeToolCall hook.
+                    if let Some(ref hooks) = hook_registry {
+                        let payload = HookPayload::BeforeToolCall {
+                            session_key: session_key.clone(),
+                            tool_name: tc_name.clone(),
+                            arguments: args.clone(),
+                        };
+                        match hooks.dispatch(&payload).await {
+                            Ok(HookAction::Block(reason)) => {
+                                warn!(tool = %tc_name, reason = %reason, "tool call blocked by hook");
+                                let err_str = format!("blocked by hook: {reason}");
+                                return (
+                                    false,
+                                    serde_json::json!({ "error": err_str }),
+                                    Some(err_str),
+                                );
+                            },
+                            Ok(HookAction::ModifyPayload(v)) => {
+                                args = v;
+                            },
+                            Ok(HookAction::Continue) => {},
+                            Err(e) => {
+                                warn!(tool = %tc_name, error = %e, "BeforeToolCall hook dispatch failed");
+                            },
+                        }
+                    }
+
                     if let Some(tool) = tool {
                         match tool.execute(args).await {
-                            Ok(val) => (true, serde_json::json!({ "result": val }), None),
-                            Err(e) => (
-                                false,
-                                serde_json::json!({ "error": e.to_string() }),
-                                Some(e.to_string()),
-                            ),
+                            Ok(val) => {
+                                // Dispatch AfterToolCall hook on success.
+                                if let Some(ref hooks) = hook_registry {
+                                    let payload = HookPayload::AfterToolCall {
+                                        session_key: session_key.clone(),
+                                        tool_name: tc_name.clone(),
+                                        success: true,
+                                        result: Some(val.clone()),
+                                    };
+                                    if let Err(e) = hooks.dispatch(&payload).await {
+                                        warn!(tool = %tc_name, error = %e, "AfterToolCall hook dispatch failed");
+                                    }
+                                }
+                                (true, serde_json::json!({ "result": val }), None)
+                            },
+                            Err(e) => {
+                                let err_str = e.to_string();
+                                // Dispatch AfterToolCall hook on failure.
+                                if let Some(ref hooks) = hook_registry {
+                                    let payload = HookPayload::AfterToolCall {
+                                        session_key: session_key.clone(),
+                                        tool_name: tc_name.clone(),
+                                        success: false,
+                                        result: None,
+                                    };
+                                    if let Err(e) = hooks.dispatch(&payload).await {
+                                        warn!(tool = %tc_name, error = %e, "AfterToolCall hook dispatch failed");
+                                    }
+                                }
+                                (
+                                    false,
+                                    serde_json::json!({ "error": err_str }),
+                                    Some(err_str),
+                                )
+                            },
                         }
                     } else {
-                        let err_str = format!("unknown tool: {}", tc.name);
+                        let err_str = format!("unknown tool: {tc_name}");
                         (
                             false,
                             serde_json::json!({ "error": err_str }),

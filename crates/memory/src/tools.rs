@@ -169,6 +169,10 @@ mod tests {
         fn dimensions(&self) -> usize {
             8
         }
+
+        fn provider_key(&self) -> &str {
+            "mock"
+        }
     }
 
     async fn setup_manager() -> (Arc<MemoryManager>, TempDir) {
@@ -186,6 +190,7 @@ mod tests {
             chunk_overlap: 10,
             vector_weight: 0.7,
             keyword_weight: 0.3,
+            ..Default::default()
         };
 
         let store = Box::new(SqliteMemoryStore::new(pool));

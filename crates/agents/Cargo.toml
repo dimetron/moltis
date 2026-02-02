@@ -36,5 +36,6 @@ genai        = { optional = true, workspace = true }
 moltis-oauth = { optional = true, workspace = true }
 
 [dev-dependencies]
-axum = { workspace = true }
-http = "1"
+axum     = { workspace = true }
+http     = "1"
+tempfile = "3"
