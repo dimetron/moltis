@@ -28,6 +28,27 @@ pub struct MemoryStatus {
     pub total_files: usize,
     pub total_chunks: usize,
     pub embedding_model: String,
+    /// SQLite database file size in bytes (0 for in-memory DBs).
+    pub db_size_bytes: u64,
+}
+
+impl MemoryStatus {
+    /// Human-readable database size (e.g. "12.3 MB").
+    pub fn db_size_display(&self) -> String {
+        format_bytes(self.db_size_bytes)
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    match bytes {
+        b if b >= GB => format!("{:.1} GB", b as f64 / GB as f64),
+        b if b >= MB => format!("{:.1} MB", b as f64 / MB as f64),
+        b if b >= KB => format!("{:.1} KB", b as f64 / KB as f64),
+        b => format!("{b} B"),
+    }
 }
 
 impl MemoryManager {
@@ -324,6 +345,9 @@ impl MemoryManager {
             let chunks = self.store.get_chunks_for_file(&file.path).await?;
             total_chunks += chunks.len();
         }
+        let db_size_bytes = std::fs::metadata(&self.config.db_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
         Ok(MemoryStatus {
             total_files: files.len(),
             total_chunks,
@@ -332,6 +356,7 @@ impl MemoryManager {
                 .as_ref()
                 .map(|e| e.model_name().to_string())
                 .unwrap_or_else(|| "none (keyword-only)".into()),
+            db_size_bytes,
         })
     }
 }

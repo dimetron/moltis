@@ -839,15 +839,27 @@ pub async fn start_gateway(
                     let sync_manager = Arc::clone(&manager);
                     tokio::spawn(async move {
                         match sync_manager.sync().await {
-                            Ok(report) => info!(
-                                updated = report.files_updated,
-                                unchanged = report.files_unchanged,
-                                removed = report.files_removed,
-                                errors = report.errors,
-                                cache_hits = report.cache_hits,
-                                cache_misses = report.cache_misses,
-                                "memory: initial sync complete"
-                            ),
+                            Ok(report) => {
+                                info!(
+                                    updated = report.files_updated,
+                                    unchanged = report.files_unchanged,
+                                    removed = report.files_removed,
+                                    errors = report.errors,
+                                    cache_hits = report.cache_hits,
+                                    cache_misses = report.cache_misses,
+                                    "memory: initial sync complete"
+                                );
+                                match sync_manager.status().await {
+                                    Ok(status) => info!(
+                                        files = status.total_files,
+                                        chunks = status.total_chunks,
+                                        db_size = %status.db_size_display(),
+                                        model = %status.embedding_model,
+                                        "memory: status"
+                                    ),
+                                    Err(e) => tracing::warn!("memory: failed to get status: {e}"),
+                                }
+                            },
                             Err(e) => tracing::warn!("memory: initial sync failed: {e}"),
                         }
 
