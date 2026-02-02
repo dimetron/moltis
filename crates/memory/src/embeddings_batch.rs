@@ -6,6 +6,7 @@
 use anyhow::Result;
 use {
     async_trait::async_trait,
+    secrecy::{ExposeSecret, Secret},
     serde::Deserialize,
     tracing::{debug, info, warn},
 };
@@ -16,7 +17,7 @@ use crate::embeddings::EmbeddingProvider;
 pub struct BatchEmbeddingProvider {
     inner: Box<dyn EmbeddingProvider>,
     client: reqwest::Client,
-    api_key: String,
+    api_key: Secret<String>,
     base_url: String,
     batch_threshold: usize,
 }
@@ -24,7 +25,7 @@ pub struct BatchEmbeddingProvider {
 impl BatchEmbeddingProvider {
     pub fn new(
         inner: Box<dyn EmbeddingProvider>,
-        api_key: String,
+        api_key: Secret<String>,
         base_url: String,
         batch_threshold: usize,
     ) -> Self {
@@ -69,7 +70,7 @@ impl BatchEmbeddingProvider {
         let file_resp: FileUploadResponse = self
             .client
             .post(format!("{}/v1/files", self.base_url))
-            .bearer_auth(&self.api_key)
+            .bearer_auth(self.api_key.expose_secret())
             .multipart(form)
             .send()
             .await?
@@ -89,7 +90,7 @@ impl BatchEmbeddingProvider {
         let batch_resp: BatchResponse = self
             .client
             .post(format!("{}/v1/batches", self.base_url))
-            .bearer_auth(&self.api_key)
+            .bearer_auth(self.api_key.expose_secret())
             .json(&batch_req)
             .send()
             .await?
@@ -115,7 +116,7 @@ impl BatchEmbeddingProvider {
             let status: BatchResponse = self
                 .client
                 .get(format!("{}/v1/batches/{}", self.base_url, batch_id))
-                .bearer_auth(&self.api_key)
+                .bearer_auth(self.api_key.expose_secret())
                 .send()
                 .await?
                 .error_for_status()?
@@ -137,7 +138,7 @@ impl BatchEmbeddingProvider {
                             "{}/v1/files/{}/content",
                             self.base_url, output_file_id
                         ))
-                        .bearer_auth(&self.api_key)
+                        .bearer_auth(self.api_key.expose_secret())
                         .send()
                         .await?
                         .error_for_status()?
@@ -293,7 +294,7 @@ mod tests {
     async fn test_below_threshold_uses_inner() {
         let provider = BatchEmbeddingProvider::new(
             Box::new(MockInner),
-            "test-key".into(),
+            Secret::new("test-key".into()),
             "https://api.openai.com".into(),
             50, // threshold
         );
@@ -309,7 +310,7 @@ mod tests {
     async fn test_single_embed_uses_inner() {
         let provider = BatchEmbeddingProvider::new(
             Box::new(MockInner),
-            "test-key".into(),
+            Secret::new("test-key".into()),
             "https://api.openai.com".into(),
             50,
         );

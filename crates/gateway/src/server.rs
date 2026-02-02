@@ -626,7 +626,8 @@ pub async fn start_gateway(
                         });
                     let api_key = mem_cfg
                         .api_key
-                        .clone()
+                        .as_ref()
+                        .map(|k| k.expose_secret().clone())
                         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
                         .unwrap_or_default();
                     let mut e =

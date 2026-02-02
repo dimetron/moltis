@@ -95,7 +95,12 @@ pub struct MemoryEmbeddingConfig {
     /// Model name (e.g. "nomic-embed-text" for Ollama, "text-embedding-3-small" for OpenAI).
     pub model: Option<String>,
     /// API key (optional for local endpoints like Ollama).
-    pub api_key: Option<String>,
+    #[serde(
+        default,
+        serialize_with = "serialize_option_secret",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_key: Option<Secret<String>>,
 }
 
 /// Hooks configuration section (shell hooks defined in config file).
