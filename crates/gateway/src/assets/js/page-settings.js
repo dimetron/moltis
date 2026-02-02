@@ -1264,7 +1264,7 @@ function TailscaleSection() {
 		if (tsLoading) {
 			var loadEl = document.createElement("div");
 			loadEl.className = "text-xs text-[var(--muted)]";
-			loadEl.textContent = "Loading\u2026";
+			loadEl.textContent = "Loading\u2026 this can take a few seconds.";
 			container.appendChild(loadEl);
 			return;
 		}
