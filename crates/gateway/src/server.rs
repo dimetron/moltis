@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use secrecy::ExposeSecret;
+
 #[cfg(feature = "tls")]
 use std::path::PathBuf;
 
@@ -681,7 +683,7 @@ pub async fn start_gateway(
         for (config_name, env_key, default_base) in EMBEDDING_CANDIDATES {
             let key = effective_providers
                 .get(config_name)
-                .and_then(|e| e.api_key.clone())
+                .and_then(|e| e.api_key.as_ref().map(|k| k.expose_secret().clone()))
                 .or_else(|| std::env::var(env_key).ok())
                 .filter(|k| !k.is_empty());
             if let Some(api_key) = key {
@@ -860,7 +862,7 @@ pub async fn start_gateway(
     let setup_code_display =
         if !credential_store.is_setup_complete() && !credential_store.is_auth_disabled() {
             let code = crate::auth_routes::generate_setup_code();
-            *state.setup_code.write().await = Some(code.clone());
+            *state.setup_code.write().await = Some(secrecy::Secret::new(code.clone()));
             Some(code)
         } else {
             None

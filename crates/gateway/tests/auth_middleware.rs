@@ -2,6 +2,8 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
+use secrecy::ExposeSecret;
+
 use tokio::net::TcpListener;
 
 use moltis_gateway::{
@@ -283,7 +285,14 @@ async fn reenable_auth_after_reset() {
     assert_eq!(resp.status(), 200);
 
     // Reset should have generated a new setup code.
-    let code = state.setup_code.read().await.clone().unwrap();
+    let code = state
+        .setup_code
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .expose_secret()
+        .clone();
 
     // Setup without code should fail.
     let resp = client
@@ -364,7 +373,7 @@ async fn revoked_api_key_returns_401() {
 #[tokio::test]
 async fn setup_without_code_when_required_returns_403() {
     let (addr, _store, state) = start_auth_server_with_state().await;
-    *state.setup_code.write().await = Some("123456".to_string());
+    *state.setup_code.write().await = Some(secrecy::Secret::new("123456".to_string()));
 
     let client = reqwest::Client::new();
     let resp = client
@@ -382,7 +391,7 @@ async fn setup_without_code_when_required_returns_403() {
 #[tokio::test]
 async fn setup_with_wrong_code_returns_403() {
     let (addr, _store, state) = start_auth_server_with_state().await;
-    *state.setup_code.write().await = Some("123456".to_string());
+    *state.setup_code.write().await = Some(secrecy::Secret::new("123456".to_string()));
 
     let client = reqwest::Client::new();
     let resp = client
@@ -400,7 +409,7 @@ async fn setup_with_wrong_code_returns_403() {
 #[tokio::test]
 async fn setup_with_correct_code_succeeds() {
     let (addr, _store, state) = start_auth_server_with_state().await;
-    *state.setup_code.write().await = Some("123456".to_string());
+    *state.setup_code.write().await = Some(secrecy::Secret::new("123456".to_string()));
 
     let client = reqwest::Client::new();
     let resp = client
@@ -435,7 +444,7 @@ async fn setup_code_not_required_when_already_setup() {
 #[tokio::test]
 async fn status_reports_setup_code_required() {
     let (addr, _store, state) = start_auth_server_with_state().await;
-    *state.setup_code.write().await = Some("654321".to_string());
+    *state.setup_code.write().await = Some(secrecy::Secret::new("654321".to_string()));
 
     let resp = reqwest::get(format!("http://{addr}/api/auth/status"))
         .await
