@@ -1445,6 +1445,13 @@ async fn ws_upgrade_handler(
 /// Extracts the host portion of the origin URL and compares it to the Host
 /// header.  Accepts `localhost`, `127.0.0.1`, and `[::1]` interchangeably
 /// so that `http://localhost:8080` matches a Host of `127.0.0.1:8080`.
+/// Minimal HTML text-content escaping (prevents XSS in injected text nodes).
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn is_same_origin(origin: &str, host: &str) -> bool {
     // Origin is a full URL (e.g. "https://localhost:8080"), Host is just
     // "host:port" or "host".
@@ -1557,6 +1564,27 @@ async fn spa_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> im
 
     // Inject gon data into <head> so it's available before any module scripts run.
     let body = body.replace("</head>", &format!("{gon_script}\n</head>"));
+
+    // Replace identity placeholders in HTML so the header renders correctly
+    // on first paint, avoiding a flash of default "moltis" text.
+    let emoji_html = match &gon.identity.emoji {
+        Some(e) if !e.is_empty() => format!("{} ", escape_html(e)),
+        _ => String::new(),
+    };
+    let name_html = if gon.identity.name.is_empty() {
+        "moltis".to_string()
+    } else {
+        escape_html(&gon.identity.name)
+    };
+    let body = body
+        .replace(
+            r#"<span id="titleEmoji"></span>"#,
+            &format!(r#"<span id="titleEmoji">{emoji_html}</span>"#),
+        )
+        .replace(
+            r#"<span id="titleName">moltis</span>"#,
+            &format!(r#"<span id="titleName">{name_html}</span>"#),
+        );
 
     ([("cache-control", "no-cache, no-store")], Html(body)).into_response()
 }
