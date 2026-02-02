@@ -177,7 +177,7 @@ pub struct GatewayState {
     pub memory_manager: Option<Arc<moltis_memory::manager::MemoryManager>>,
     /// One-time setup code displayed at startup, required during initial setup.
     /// Cleared after successful setup.
-    pub setup_code: RwLock<Option<String>>,
+    pub setup_code: RwLock<Option<secrecy::Secret<String>>>,
     /// Whether the server is bound to a loopback address (localhost/127.0.0.1/::1).
     pub localhost_only: bool,
 }
