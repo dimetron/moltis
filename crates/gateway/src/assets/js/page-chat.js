@@ -5,7 +5,7 @@ import { formatBytes, formatTokens, renderMarkdown, sendRpc } from "./helpers.js
 import { bindModelComboEvents, setSessionModel } from "./models.js";
 import { registerPrefix, sessionPath } from "./router.js";
 import { bindSandboxImageEvents, bindSandboxToggleEvents, updateSandboxImageUI, updateSandboxUI } from "./sandbox.js";
-import { bumpSessionCount, setSessionReplying, switchSession } from "./sessions.js";
+import { bumpSessionCount, setSessionReplying, switchSession, updateChatSessionHeader } from "./sessions.js";
 import * as S from "./state.js";
 
 // ── Slash commands ───────────────────────────────────────
@@ -538,6 +538,11 @@ var chatPageHTML =
 	"</button>" +
 	'<div id="sandboxImageDropdown" class="hidden" style="position:absolute;top:100%;left:0;z-index:50;margin-top:4px;min-width:200px;max-height:300px;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.15);"></div>' +
 	"</div>" +
+	'<div class="ml-auto flex items-center gap-1.5">' +
+	'<span id="chatSessionName" class="text-xs text-[var(--muted)] cursor-default" title="Click to rename"></span>' +
+	'<input id="chatSessionRenameInput" class="hidden text-xs text-[var(--text)] bg-[var(--surface2)] border border-[var(--border)] rounded-[var(--radius-sm)] px-1.5 py-0.5 outline-none max-w-[200px]" style="width:0" />' +
+	'<button id="chatSessionDelete" class="provider-btn provider-btn-danger provider-btn-sm hidden">Delete</button>' +
+	"</div>" +
 	"</div>" +
 	'<div class="p-4 flex flex-col gap-2" id="messages" style="overflow-y:auto;min-height:0"></div>' +
 	'<div id="tokenBar" class="token-bar"></div>' +
@@ -578,6 +583,7 @@ registerPrefix(
 		S.setSandboxImageDropdown(S.$("sandboxImageDropdown"));
 		bindSandboxImageEvents();
 		updateSandboxImageUI(null);
+		updateChatSessionHeader();
 
 		if (S.models.length > 0 && S.modelComboLabel) {
 			var found = S.models.find((m) => m.id === S.selectedModelId);

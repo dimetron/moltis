@@ -26,7 +26,6 @@ struct ConfigureRequest {
 pub fn tailscale_router() -> Router<AppState> {
     Router::new()
         .route("/status", get(status_handler))
-
         .route("/configure", post(configure_handler))
 }
 

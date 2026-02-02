@@ -15,6 +15,7 @@ import { updateSessionProjectSelect } from "./project-combo.js";
 import { currentPrefix, navigate, sessionPath } from "./router.js";
 import { updateSandboxImageUI, updateSandboxUI } from "./sandbox.js";
 import * as S from "./state.js";
+import { confirmDialog } from "./ui.js";
 
 // ── Fetch & render ──────────────────────────────────────────
 
@@ -23,6 +24,7 @@ export function fetchSessions() {
 		if (!res?.ok) return;
 		S.setSessions(res.payload || []);
 		renderSessionList();
+		updateChatSessionHeader();
 	});
 }
 
@@ -39,8 +41,8 @@ export function refreshActiveSession() {
 function createSessionIcon(s) {
 	var iconWrap = document.createElement("span");
 	iconWrap.className = "session-icon";
-	var isTelegram = false;
-	if (s.channelBinding) {
+	var isTelegram = s.key.startsWith("telegram:");
+	if (!isTelegram && s.channelBinding) {
 		try {
 			var binding = JSON.parse(s.channelBinding);
 			if (binding.channel_type === "telegram") isTelegram = true;
@@ -84,51 +86,9 @@ function createSessionMeta(s) {
 	return meta;
 }
 
-function createSessionActions(s, sessionList) {
+function createSessionActions() {
 	var actions = document.createElement("div");
 	actions.className = "session-actions";
-
-	if (s.key !== "main") {
-		if (!s.channelBinding) {
-			var renameBtn = document.createElement("button");
-			renameBtn.className = "session-action-btn";
-			renameBtn.textContent = "\u270F";
-			renameBtn.title = "Rename";
-			renameBtn.addEventListener("click", (e) => {
-				e.stopPropagation();
-				var newLabel = prompt("Rename session:", s.label || s.key);
-				if (newLabel !== null) {
-					sendRpc("sessions.patch", { key: s.key, label: newLabel }).then(fetchSessions);
-				}
-			});
-			actions.appendChild(renameBtn);
-		}
-
-		var deleteBtn = document.createElement("button");
-		deleteBtn.className = "session-action-btn session-delete";
-		deleteBtn.textContent = "\u2715";
-		deleteBtn.title = "Delete";
-		deleteBtn.addEventListener("click", (e) => {
-			e.stopPropagation();
-			var metaEl = sessionList.querySelector(`.session-meta[data-session-key="${s.key}"]`);
-			var msgCount = metaEl ? parseInt(metaEl.textContent, 10) || 0 : s.messageCount || 0;
-			if (msgCount > 0 && !confirm("Delete this session?")) return;
-			sendRpc("sessions.delete", { key: s.key }).then((res) => {
-				if (res && !res.ok && res.error && res.error.indexOf("uncommitted changes") !== -1) {
-					if (confirm("Worktree has uncommitted changes. Force delete?")) {
-						sendRpc("sessions.delete", { key: s.key, force: true }).then(() => {
-							if (S.activeSessionKey === s.key) switchSession("main");
-							fetchSessions();
-						});
-					}
-					return;
-				}
-				if (S.activeSessionKey === s.key) switchSession("main");
-				fetchSessions();
-			});
-		});
-		actions.appendChild(deleteBtn);
-	}
 	return actions;
 }
 
@@ -156,7 +116,7 @@ export function renderSessionList() {
 		meta.replaceWith(newMeta);
 
 		var actionsSlot = item.querySelector(".session-actions");
-		actionsSlot.replaceWith(createSessionActions(s, sessionList));
+		actionsSlot.replaceWith(createSessionActions());
 
 		item.addEventListener("click", () => {
 			if (currentPrefix !== "/chats") {
@@ -235,6 +195,7 @@ function restoreSessionState(entry, projectId) {
 	}
 	updateSandboxUI(entry.sandbox_enabled !== false);
 	updateSandboxImageUI(entry.sandbox_image || null);
+	updateChatSessionHeader();
 }
 
 function renderHistoryUserMessage(msg) {
@@ -327,6 +288,92 @@ function postHistoryLoadActions(key, searchContext, msgEls, sessionList) {
 	}
 	if (!sessionList.querySelector(`.session-meta[data-session-key="${key}"]`)) {
 		fetchSessions();
+	}
+}
+
+export function updateChatSessionHeader() {
+	var nameEl = S.$("chatSessionName");
+	var inputEl = S.$("chatSessionRenameInput");
+	var deleteBtn = S.$("chatSessionDelete");
+	if (!nameEl) return;
+
+	var s = S.sessions.find((x) => x.key === S.activeSessionKey);
+	var fullName = s ? s.label || s.key : S.activeSessionKey;
+	nameEl.textContent = fullName.length > 20 ? `${fullName.slice(0, 20)}\u2026` : fullName;
+	nameEl.dataset.fullName = fullName;
+
+	var isMain = S.activeSessionKey === "main";
+	var isChannel = s?.channelBinding || S.activeSessionKey.startsWith("telegram:");
+	var canRename = !(isMain || isChannel);
+
+	nameEl.style.cursor = canRename ? "pointer" : "default";
+	nameEl.title = canRename ? "Click to rename" : "";
+	nameEl.onclick = canRename
+		? () => {
+				inputEl.style.width = `${nameEl.offsetWidth + 16}px`;
+				nameEl.classList.add("hidden");
+				inputEl.classList.remove("hidden");
+				inputEl.value = nameEl.dataset.fullName || nameEl.textContent;
+				inputEl.focus();
+				inputEl.select();
+			}
+		: null;
+
+	if (inputEl) {
+		var commitRename = () => {
+			var val = inputEl.value.trim();
+			inputEl.classList.add("hidden");
+			nameEl.classList.remove("hidden");
+			if (val && val !== (nameEl.dataset.fullName || nameEl.textContent)) {
+				sendRpc("sessions.patch", { key: S.activeSessionKey, label: val }).then((res) => {
+					if (res?.ok) {
+						nameEl.textContent = val;
+						fetchSessions();
+					}
+				});
+			}
+		};
+		inputEl.onblur = commitRename;
+		inputEl.onkeydown = (e) => {
+			if (e.key === "Enter") {
+				e.preventDefault();
+				inputEl.blur();
+			}
+			if (e.key === "Escape") {
+				inputEl.value = nameEl.dataset.fullName || nameEl.textContent;
+				inputEl.blur();
+			}
+		};
+	}
+
+	if (deleteBtn) {
+		deleteBtn.classList.toggle("hidden", isMain);
+		deleteBtn.onclick = () => {
+			var msgCount = s ? s.messageCount || 0 : 0;
+			var doDelete = () => {
+				sendRpc("sessions.delete", { key: S.activeSessionKey }).then((res) => {
+					if (res && !res.ok && res.error && res.error.indexOf("uncommitted changes") !== -1) {
+						confirmDialog("Worktree has uncommitted changes. Force delete?").then((yes) => {
+							if (!yes) return;
+							sendRpc("sessions.delete", { key: S.activeSessionKey, force: true }).then(() => {
+								switchSession("main");
+								fetchSessions();
+							});
+						});
+						return;
+					}
+					switchSession("main");
+					fetchSessions();
+				});
+			};
+			if (msgCount > 0) {
+				confirmDialog("Delete this session?").then((yes) => {
+					if (yes) doDelete();
+				});
+			} else {
+				doDelete();
+			}
+		};
 	}
 }
 
