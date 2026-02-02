@@ -23,14 +23,22 @@ multiple LLM providers and communication channels, inspired by
   for read-only events, circuit breaker, dry-run mode, HOOK.md-based discovery,
   eligibility checks, bundled hooks (boot-md, session-memory, command-logger),
   and CLI management (`moltis hooks list/info`)
+- **Web browsing** — web search (Brave, Perplexity) and URL fetching with
+  readability extraction and SSRF protection
 - **Scheduled tasks** — cron-based task execution
 - **OAuth flows** — built-in OAuth2 for provider authentication
 - **TLS support** — automatic self-signed certificate generation
 - **Observability** — OpenTelemetry tracing with OTLP export
+- **Sandboxed execution** — Docker and Apple Container backends with pre-built
+  images, configurable packages, and per-session isolation
 - **Authentication** — password and passkey (WebAuthn) authentication with
   session cookies, API key support, and a first-run setup code flow
+- **WebSocket security** — Origin validation to prevent Cross-Site WebSocket
+  Hijacking (CSWSH)
 - **Onboarding wizard** — guided setup for agent identity (name, emoji,
   creature, vibe, soul) and user profile
+- **Default config on first run** — writes a complete `moltis.toml` with all
+  defaults so you can edit packages and settings without recompiling
 - **Configurable directories** — `--config-dir` / `--data-dir` CLI flags and
   `MOLTIS_CONFIG_DIR` / `MOLTIS_DATA_DIR` environment variables
 
@@ -150,6 +158,20 @@ env = { DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/..." }
 
 See `examples/hooks/` for ready-to-use scripts (logging, blocking dangerous
 commands, Slack/Discord notifications, secret redaction, session saving).
+
+### Sandbox Image Management
+
+```bash
+moltis sandbox list          # List pre-built sandbox images
+moltis sandbox build         # Build image from configured base + packages
+moltis sandbox clean         # Remove all pre-built sandbox images
+moltis sandbox remove <tag>  # Remove a specific image
+```
+
+The gateway pre-builds a sandbox image at startup from the base image
+(`ubuntu:25.10`) plus the packages listed in `moltis.toml`. Edit the
+`[tools.exec.sandbox] packages` list and restart — a new image with a
+different tag is built automatically.
 
 ## Project Structure
 

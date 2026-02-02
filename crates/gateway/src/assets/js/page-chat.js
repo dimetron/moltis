@@ -259,6 +259,7 @@ function renderContextSandboxSection(card, data) {
 		if (sb.scope) sandboxSection.appendChild(ctxRow("Scope", sb.scope));
 		if (sb.workspaceMount) sandboxSection.appendChild(ctxRow("Workspace Mount", sb.workspaceMount));
 		if (sb.image) sandboxSection.appendChild(ctxRow("Image", sb.image, true));
+		if (sb.containerName) sandboxSection.appendChild(ctxRow("Container", sb.containerName));
 	}
 	card.appendChild(sandboxSection);
 }

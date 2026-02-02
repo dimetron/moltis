@@ -15,7 +15,7 @@ use {
         routing::get,
     },
     tower_http::cors::{Any, CorsLayer},
-    tracing::{info, warn},
+    tracing::{debug, info, warn},
 };
 
 #[cfg(feature = "web-ui")]
@@ -381,39 +381,92 @@ pub async fn start_gateway(
     services = services.with_cron(live_cron);
 
     // Build sandbox router from config (shared across sessions).
-    let sandbox_config = moltis_tools::sandbox::SandboxConfig {
-        mode: match config.tools.exec.sandbox.mode.as_str() {
-            "all" => moltis_tools::sandbox::SandboxMode::All,
-            "non-main" | "nonmain" => moltis_tools::sandbox::SandboxMode::NonMain,
-            _ => moltis_tools::sandbox::SandboxMode::Off,
-        },
-        scope: match config.tools.exec.sandbox.scope.as_str() {
-            "agent" => moltis_tools::sandbox::SandboxScope::Agent,
-            "shared" => moltis_tools::sandbox::SandboxScope::Shared,
-            _ => moltis_tools::sandbox::SandboxScope::Session,
-        },
-        workspace_mount: match config.tools.exec.sandbox.workspace_mount.as_str() {
-            "rw" => moltis_tools::sandbox::WorkspaceMount::Rw,
-            "none" => moltis_tools::sandbox::WorkspaceMount::None,
-            _ => moltis_tools::sandbox::WorkspaceMount::Ro,
-        },
-        image: config.tools.exec.sandbox.image.clone(),
-        container_prefix: config.tools.exec.sandbox.container_prefix.clone(),
-        no_network: config.tools.exec.sandbox.no_network,
-        backend: config.tools.exec.sandbox.backend.clone(),
-        resource_limits: moltis_tools::sandbox::ResourceLimits {
-            memory_limit: config
-                .tools
-                .exec
-                .sandbox
-                .resource_limits
-                .memory_limit
-                .clone(),
-            cpu_quota: config.tools.exec.sandbox.resource_limits.cpu_quota,
-            pids_max: config.tools.exec.sandbox.resource_limits.pids_max,
-        },
-    };
+    let sandbox_config = moltis_tools::sandbox::SandboxConfig::from(&config.tools.exec.sandbox);
     let sandbox_router = Arc::new(moltis_tools::sandbox::SandboxRouter::new(sandbox_config));
+
+    // Spawn background image pre-build. This bakes configured packages into a
+    // container image so container creation is instant. Backends that don't
+    // support image building return Ok(None) and the spawn is harmless.
+    {
+        let router = Arc::clone(&sandbox_router);
+        let backend = Arc::clone(router.backend());
+        let packages = router.config().packages.clone();
+        let base_image = router
+            .config()
+            .image
+            .clone()
+            .unwrap_or_else(|| moltis_tools::sandbox::DEFAULT_SANDBOX_IMAGE.to_string());
+
+        if !packages.is_empty() {
+            let deferred_for_build = Arc::clone(&deferred_state);
+            tokio::spawn(async move {
+                // Broadcast build start event.
+                if let Some(state) = deferred_for_build.get() {
+                    crate::broadcast::broadcast(
+                        state,
+                        "sandbox.image.build",
+                        serde_json::json!({ "phase": "start", "packages": packages }),
+                        crate::broadcast::BroadcastOpts {
+                            drop_if_slow: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+                }
+
+                match backend.build_image(&base_image, &packages).await {
+                    Ok(Some(result)) => {
+                        info!(
+                            tag = %result.tag,
+                            built = result.built,
+                            "sandbox image pre-build complete"
+                        );
+                        router.set_global_image(Some(result.tag.clone())).await;
+
+                        if let Some(state) = deferred_for_build.get() {
+                            crate::broadcast::broadcast(
+                                state,
+                                "sandbox.image.build",
+                                serde_json::json!({
+                                    "phase": "done",
+                                    "tag": result.tag,
+                                    "built": result.built,
+                                }),
+                                crate::broadcast::BroadcastOpts {
+                                    drop_if_slow: true,
+                                    ..Default::default()
+                                },
+                            )
+                            .await;
+                        }
+                    },
+                    Ok(None) => {
+                        debug!(
+                            "sandbox image pre-build: no-op (no packages or unsupported backend)"
+                        );
+                    },
+                    Err(e) => {
+                        tracing::warn!("sandbox image pre-build failed: {e}");
+                        if let Some(state) = deferred_for_build.get() {
+                            crate::broadcast::broadcast(
+                                state,
+                                "sandbox.image.build",
+                                serde_json::json!({
+                                    "phase": "error",
+                                    "error": e.to_string(),
+                                }),
+                                crate::broadcast::BroadcastOpts {
+                                    drop_if_slow: true,
+                                    ..Default::default()
+                                },
+                            )
+                            .await;
+                        }
+                    },
+                }
+            });
+        }
+    }
 
     // Load any persisted sandbox overrides from session metadata.
     {
@@ -884,6 +937,15 @@ pub async fn start_gateway(
         let mut tool_registry = moltis_agents::tool_registry::ToolRegistry::new();
         tool_registry.register(Box::new(exec_tool));
         tool_registry.register(Box::new(cron_tool));
+        if let Some(t) =
+            moltis_tools::web_search::WebSearchTool::from_config(&config.tools.web.search)
+        {
+            tool_registry.register(Box::new(t));
+        }
+        if let Some(t) = moltis_tools::web_fetch::WebFetchTool::from_config(&config.tools.web.fetch)
+        {
+            tool_registry.register(Box::new(t));
+        }
 
         // Register memory tools if the memory system is available.
         if let Some(ref mm) = memory_manager {
@@ -1087,6 +1149,63 @@ pub async fn start_gateway(
         }
     });
 
+    // Spawn sandbox event broadcast task: forwards provision events to WS clients.
+    {
+        let event_state = Arc::clone(&state);
+        let mut event_rx = sandbox_router.subscribe_events();
+        tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        let (event_name, payload) = match event {
+                            moltis_tools::sandbox::SandboxEvent::Provisioning {
+                                container,
+                                packages,
+                            } => (
+                                "sandbox.image.provision",
+                                serde_json::json!({
+                                    "phase": "start",
+                                    "container": container,
+                                    "packages": packages,
+                                }),
+                            ),
+                            moltis_tools::sandbox::SandboxEvent::Provisioned { container } => (
+                                "sandbox.image.provision",
+                                serde_json::json!({
+                                    "phase": "done",
+                                    "container": container,
+                                }),
+                            ),
+                            moltis_tools::sandbox::SandboxEvent::ProvisionFailed {
+                                container,
+                                error,
+                            } => (
+                                "sandbox.image.provision",
+                                serde_json::json!({
+                                    "phase": "error",
+                                    "container": container,
+                                    "error": error,
+                                }),
+                            ),
+                        };
+                        crate::broadcast::broadcast(
+                            &event_state,
+                            event_name,
+                            payload,
+                            crate::broadcast::BroadcastOpts {
+                                drop_if_slow: true,
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+                    },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     // Spawn log broadcast task: forwards captured tracing events to WS clients.
     if let Some(buf) = log_buffer {
         let log_state = Arc::clone(&state);
@@ -1170,10 +1289,87 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn ws_upgrade_handler(
     ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_connection(socket, state.gateway, state.methods, addr))
+    // ── CSWSH protection ────────────────────────────────────────────────
+    // Reject cross-origin WebSocket upgrades.  Browsers always send an
+    // Origin header on cross-origin requests; non-browser clients (CLI,
+    // SDKs) typically omit it — those are allowed through.
+    if let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        let host = headers
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !is_same_origin(origin, host) {
+            tracing::warn!(origin, host, remote = %addr, "rejected cross-origin WebSocket upgrade");
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                "cross-origin WebSocket connections are not allowed",
+            )
+                .into_response();
+        }
+    }
+
+    let accept_language = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    ws.on_upgrade(move |socket| {
+        handle_connection(socket, state.gateway, state.methods, addr, accept_language)
+    })
+    .into_response()
+}
+
+/// Check whether a WebSocket `Origin` header matches the request `Host`.
+///
+/// Extracts the host portion of the origin URL and compares it to the Host
+/// header.  Accepts `localhost`, `127.0.0.1`, and `[::1]` interchangeably
+/// so that `http://localhost:8080` matches a Host of `127.0.0.1:8080`.
+fn is_same_origin(origin: &str, host: &str) -> bool {
+    // Origin is a full URL (e.g. "https://localhost:8080"), Host is just
+    // "host:port" or "host".
+    let origin_host = origin
+        .split("://")
+        .nth(1)
+        .unwrap_or(origin)
+        .split('/')
+        .next()
+        .unwrap_or("");
+
+    fn strip_port(h: &str) -> &str {
+        if h.starts_with('[') {
+            // IPv6: [::1]:port
+            h.rsplit_once("]:")
+                .map_or(h, |(addr, _)| addr)
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+        } else {
+            h.rsplit_once(':').map_or(h, |(addr, _)| addr)
+        }
+    }
+    fn get_port(h: &str) -> Option<&str> {
+        if h.starts_with('[') {
+            h.rsplit_once("]:").map(|(_, p)| p)
+        } else {
+            h.rsplit_once(':').map(|(_, p)| p)
+        }
+    }
+
+    let origin_port = get_port(origin_host);
+    let host_port = get_port(host);
+
+    let oh = strip_port(origin_host);
+    let hh = strip_port(host);
+
+    // Normalise loopback variants so 127.0.0.1 == localhost == ::1.
+    let is_loopback = |h: &str| matches!(h, "localhost" | "127.0.0.1" | "::1");
+
+    (oh == hh || (is_loopback(oh) && is_loopback(hh))) && origin_port == host_port
 }
 
 /// SPA fallback: serve `index.html` for any path not matched by an explicit
@@ -1815,5 +2011,57 @@ fn serve_asset(path: &str, cache_control: &'static str) -> axum::response::Respo
         )
             .into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_origin_exact_match() {
+        assert!(is_same_origin(
+            "https://example.com:8080",
+            "example.com:8080"
+        ));
+        assert!(is_same_origin(
+            "http://example.com:3000",
+            "example.com:3000"
+        ));
+    }
+
+    #[test]
+    fn same_origin_localhost_variants() {
+        // localhost ↔ 127.0.0.1
+        assert!(is_same_origin("http://localhost:8080", "127.0.0.1:8080"));
+        assert!(is_same_origin("https://127.0.0.1:8080", "localhost:8080"));
+        // localhost ↔ ::1
+        assert!(is_same_origin("http://localhost:8080", "[::1]:8080"));
+        assert!(is_same_origin("http://[::1]:8080", "localhost:8080"));
+        // 127.0.0.1 ↔ ::1
+        assert!(is_same_origin("http://127.0.0.1:8080", "[::1]:8080"));
+    }
+
+    #[test]
+    fn cross_origin_rejected() {
+        // Different host
+        assert!(!is_same_origin("https://attacker.com", "localhost:8080"));
+        assert!(!is_same_origin("https://evil.com:8080", "localhost:8080"));
+        // Different port
+        assert!(!is_same_origin("http://localhost:9999", "localhost:8080"));
+    }
+
+    #[test]
+    fn same_origin_no_port() {
+        assert!(is_same_origin("https://example.com", "example.com"));
+        assert!(is_same_origin("http://localhost", "localhost"));
+        assert!(is_same_origin("http://localhost", "127.0.0.1"));
+    }
+
+    #[test]
+    fn cross_origin_port_mismatch() {
+        // One has port, other doesn't — different origins.
+        assert!(!is_same_origin("http://localhost:8080", "localhost"));
+        assert!(!is_same_origin("http://localhost", "localhost:8080"));
     }
 }

@@ -63,6 +63,21 @@ function handleChatThinkingDone(_p, isActive, isChatPage) {
 	if (isActive && isChatPage) removeThinking();
 }
 
+/** Build a short summary string for a tool call card. */
+function toolCallSummary(name, args) {
+	if (!args) return name || "tool";
+	switch (name) {
+		case "exec":
+			return args.command || "exec";
+		case "web_fetch":
+			return `web_fetch ${args.url || ""}`.trim();
+		case "web_search":
+			return `web_search "${args.query || ""}"`;
+		default:
+			return name || "tool";
+	}
+}
+
 function handleChatToolCallStart(p, isActive, isChatPage) {
 	if (!(isActive && isChatPage)) return;
 	removeThinking();
@@ -70,7 +85,7 @@ function handleChatToolCallStart(p, isActive, isChatPage) {
 	var frag = tpl.content.cloneNode(true);
 	var card = frag.firstElementChild;
 	card.id = `tool-${p.toolCallId}`;
-	var cmd = p.toolName === "exec" && p.arguments && p.arguments.command ? p.arguments.command : p.toolName || "tool";
+	var cmd = toolCallSummary(p.toolName, p.arguments);
 	card.querySelector("[data-cmd]").textContent = ` ${cmd}`;
 	S.chatMsgBox.appendChild(card);
 	S.chatMsgBox.scrollTop = S.chatMsgBox.scrollHeight;
@@ -280,10 +295,41 @@ function handleLogEntry(payload) {
 	}
 }
 
+function handleSandboxImageBuild(payload) {
+	var isChatPage = currentPrefix === "/chats";
+	if (!isChatPage) return;
+	if (payload.phase === "start") {
+		chatAddMsg("system", "Building sandbox image (installing packages)\u2026");
+	} else if (payload.phase === "done") {
+		if (S.chatMsgBox?.lastChild) S.chatMsgBox.removeChild(S.chatMsgBox.lastChild);
+		var msg = payload.built ? `Sandbox image ready: ${payload.tag}` : `Sandbox image already cached: ${payload.tag}`;
+		chatAddMsg("system", msg);
+	} else if (payload.phase === "error") {
+		if (S.chatMsgBox?.lastChild) S.chatMsgBox.removeChild(S.chatMsgBox.lastChild);
+		chatAddMsg("error", `Sandbox image build failed: ${payload.error || "unknown"}`);
+	}
+}
+
+function handleSandboxImageProvision(payload) {
+	var isChatPage = currentPrefix === "/chats";
+	if (!isChatPage) return;
+	if (payload.phase === "start") {
+		chatAddMsg("system", "Provisioning sandbox packages\u2026");
+	} else if (payload.phase === "done") {
+		if (S.chatMsgBox?.lastChild) S.chatMsgBox.removeChild(S.chatMsgBox.lastChild);
+		chatAddMsg("system", "Sandbox packages provisioned");
+	} else if (payload.phase === "error") {
+		if (S.chatMsgBox?.lastChild) S.chatMsgBox.removeChild(S.chatMsgBox.lastChild);
+		chatAddMsg("error", `Sandbox provisioning failed: ${payload.error || "unknown"}`);
+	}
+}
+
 var eventHandlers = {
 	chat: handleChatEvent,
 	"exec.approval.requested": handleApprovalEvent,
 	"logs.entry": handleLogEntry,
+	"sandbox.image.build": handleSandboxImageBuild,
+	"sandbox.image.provision": handleSandboxImageProvision,
 };
 
 function dispatchFrame(frame) {

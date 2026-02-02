@@ -63,7 +63,12 @@ pub fn discover_and_load() -> MoltisConfig {
             },
         }
     } else {
-        debug!("no config file found, using defaults");
+        debug!("no config file found, writing default config");
+        let config = MoltisConfig::default();
+        if let Err(e) = write_default_config(&config) {
+            warn!(error = %e, "failed to write default config file");
+        }
+        return config;
     }
     MoltisConfig::default()
 }
@@ -168,6 +173,23 @@ fn save_config_inner(config: &MoltisConfig) -> anyhow::Result<PathBuf> {
     std::fs::write(&path, toml_str)?;
     debug!(path = %path.display(), "saved config");
     Ok(path)
+}
+
+/// Write the default config file to the user-global config path.
+/// Only called when no config file exists yet.
+fn write_default_config(config: &MoltisConfig) -> anyhow::Result<()> {
+    let path = find_or_default_config_path();
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let toml_str =
+        toml::to_string_pretty(config).map_err(|e| anyhow::anyhow!("serialize config: {e}"))?;
+    std::fs::write(&path, &toml_str)?;
+    debug!(path = %path.display(), "wrote default config file");
+    Ok(())
 }
 
 fn parse_config(raw: &str, path: &Path) -> anyhow::Result<MoltisConfig> {

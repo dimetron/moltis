@@ -1485,13 +1485,24 @@ impl MethodRegistry {
         );
 
         // Chat (uses chat_override if set, otherwise falls back to services.chat)
-        // Inject _conn_id so the chat service can resolve the active session.
+        // Inject _conn_id and _accept_language so the chat service can resolve
+        // the active session and forward the user's locale to web tools.
         self.register(
             "chat.send",
             Box::new(|ctx| {
                 Box::pin(async move {
                     let mut params = ctx.params.clone();
                     params["_conn_id"] = serde_json::json!(ctx.client_conn_id);
+                    // Forward client Accept-Language to web tools.
+                    let accept_language = {
+                        let clients = ctx.state.clients.read().await;
+                        clients
+                            .get(&ctx.client_conn_id)
+                            .and_then(|c| c.accept_language.clone())
+                    };
+                    if let Some(lang) = accept_language {
+                        params["_accept_language"] = serde_json::json!(lang);
+                    }
                     ctx.state
                         .chat()
                         .await

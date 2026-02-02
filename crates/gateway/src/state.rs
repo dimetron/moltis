@@ -33,6 +33,9 @@ pub struct ConnectedClient {
     pub sender: mpsc::UnboundedSender<String>,
     pub connected_at: Instant,
     pub last_activity: Instant,
+    /// The `Accept-Language` header from the WebSocket upgrade request, forwarded
+    /// to web tools so fetched pages and search results match the user's locale.
+    pub accept_language: Option<String>,
 }
 
 impl ConnectedClient {

@@ -142,6 +142,61 @@ biome check --write      # Lint & format JavaScript files (installed via mise)
 When editing `Cargo.toml` or other TOML files, run `taplo fmt` to format them
 according to the project's `taplo.toml` configuration.
 
+## Sandbox Architecture
+
+The gateway runs user commands inside isolated containers (Docker or Apple
+Container). Key files:
+
+- `crates/tools/src/sandbox.rs` — `Sandbox` trait, `DockerSandbox`,
+  `AppleContainerSandbox`, `SandboxRouter`, image build/list/clean helpers
+- `crates/tools/src/exec.rs` — `ExecTool` that routes commands through the
+  sandbox
+- `crates/cli/src/sandbox_commands.rs` — `moltis sandbox` CLI subcommands
+- `crates/config/src/schema.rs` — `SandboxConfig` with default packages list
+
+### Pre-built images
+
+Both backends support `build_image`: generate a Dockerfile with `FROM <base>`
++ `RUN apt-get install ...`, then run `docker build` / `container build`.
+The image tag is a deterministic hash of the base image + sorted package
+list (`sandbox_image_tag`). The gateway pre-builds at startup; if the image
+already exists it's a no-op.
+
+### Config-driven packages
+
+Default packages are defined in `default_sandbox_packages()` in `schema.rs`.
+On first run (no config file), a `moltis.toml` is written with all defaults
+including the full packages list. Users edit that file to add/remove packages
+and restart — the image tag changes automatically, triggering a rebuild.
+
+### Shared helpers
+
+`sandbox_image_tag`, `sandbox_image_exists`, `list_sandbox_images`,
+`remove_sandbox_image`, `clean_sandbox_images` are module-level public
+functions in `sandbox.rs`, parameterised by CLI binary name. The
+`SandboxConfig::from(&config_schema::SandboxConfig)` impl converts the
+config-crate types to tools-crate types — use it instead of manual
+field-by-field conversion.
+
+## Security
+
+### WebSocket Origin validation (CSWSH protection)
+
+The WebSocket upgrade handler in `server.rs` validates the `Origin` header.
+Cross-origin requests are rejected with 403. Loopback variants (`localhost`,
+`127.0.0.1`, `::1`) are treated as equivalent. Non-browser clients (no
+Origin header) are allowed through.
+
+This prevents the attack class from GHSA-g8p2-7wf7-98mq where a malicious
+webpage could connect to the local gateway WebSocket from the victim's
+browser.
+
+### SSRF protection
+
+`web_fetch.rs` resolves DNS and checks the resulting IP against blocked
+ranges (loopback, private, link-local, CGNAT) before making HTTP requests.
+Any changes to web_fetch must preserve this check.
+
 ## CLI Auth Commands
 
 The `auth` subcommand (`crates/cli/src/auth_commands.rs`) provides:
@@ -149,6 +204,15 @@ The `auth` subcommand (`crates/cli/src/auth_commands.rs`) provides:
 - `moltis auth reset-password` — clear the stored password
 - `moltis auth reset-identity` — clear identity and user profile (triggers
   onboarding on next load)
+
+## CLI Sandbox Commands
+
+The `sandbox` subcommand (`crates/cli/src/sandbox_commands.rs`) provides:
+
+- `moltis sandbox list` — list pre-built `moltis-sandbox:*` images
+- `moltis sandbox build` — build image from config (base + packages)
+- `moltis sandbox remove <tag>` — remove a specific image
+- `moltis sandbox clean` — remove all sandbox images
 
 ## Sensitive Data Handling
 
@@ -185,7 +249,6 @@ Rules:
 - **RwLock guards**: when a `RwLock<Option<Secret<String>>>` read guard is
   followed by a write in the same function, scope the read guard in a block
   `{ let guard = lock.read().await; ... }` to avoid deadlocks.
-
 ## Provider Implementation Guidelines
 
 ### Async all the way down

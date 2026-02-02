@@ -201,12 +201,115 @@ impl Default for TlsConfig {
     }
 }
 
-/// Tools configuration (exec, sandbox, policy).
+/// Tools configuration (exec, sandbox, policy, web).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
     pub exec: ExecConfig,
     pub policy: ToolPolicyConfig,
+    pub web: WebConfig,
+}
+
+/// Web tools configuration (search, fetch).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    pub search: WebSearchConfig,
+    pub fetch: WebFetchConfig,
+}
+
+/// Search provider selection.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchProvider {
+    #[default]
+    Brave,
+    Perplexity,
+}
+
+/// Web search tool configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebSearchConfig {
+    pub enabled: bool,
+    /// Search provider.
+    pub provider: SearchProvider,
+    /// Brave Search API key (overrides `BRAVE_API_KEY` env var).
+    #[serde(
+        default,
+        serialize_with = "serialize_option_secret",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_key: Option<Secret<String>>,
+    /// Maximum number of results to return (1-10).
+    pub max_results: u8,
+    /// HTTP request timeout in seconds.
+    pub timeout_seconds: u64,
+    /// In-memory cache TTL in minutes (0 to disable).
+    pub cache_ttl_minutes: u64,
+    /// Perplexity-specific settings.
+    pub perplexity: PerplexityConfig,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: SearchProvider::default(),
+            api_key: None,
+            max_results: 5,
+            timeout_seconds: 30,
+            cache_ttl_minutes: 15,
+            perplexity: PerplexityConfig::default(),
+        }
+    }
+}
+
+/// Perplexity search provider configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PerplexityConfig {
+    /// API key (overrides `PERPLEXITY_API_KEY` / `OPENROUTER_API_KEY` env vars).
+    #[serde(
+        default,
+        serialize_with = "serialize_option_secret",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_key: Option<Secret<String>>,
+    /// Base URL override. Auto-detected from key prefix if empty.
+    pub base_url: Option<String>,
+    /// Model to use.
+    pub model: Option<String>,
+}
+
+/// Web fetch tool configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebFetchConfig {
+    pub enabled: bool,
+    /// Maximum characters to return from fetched content.
+    pub max_chars: usize,
+    /// HTTP request timeout in seconds.
+    pub timeout_seconds: u64,
+    /// In-memory cache TTL in minutes (0 to disable).
+    pub cache_ttl_minutes: u64,
+    /// Maximum number of HTTP redirects to follow.
+    pub max_redirects: u8,
+    /// Use readability extraction for HTML pages.
+    pub readability: bool,
+}
+
+impl Default for WebFetchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_chars: 50_000,
+            timeout_seconds: 30,
+            cache_ttl_minutes: 15,
+            max_redirects: 3,
+            readability: true,
+        }
+    }
 }
 
 /// Exec tool configuration.
@@ -260,6 +363,82 @@ pub struct SandboxConfig {
     /// "auto" prefers Apple Container on macOS when available, falls back to Docker.
     pub backend: String,
     pub resource_limits: ResourceLimitsConfig,
+    /// Packages to install via `apt-get` in the sandbox image.
+    /// Set to an empty list to skip provisioning.
+    #[serde(default = "default_sandbox_packages")]
+    pub packages: Vec<String>,
+}
+
+/// Default packages installed in sandbox containers.
+/// Inspired by GitHub Actions runner images — covers commonly needed
+/// CLI tools, language runtimes, and utilities for LLM-driven tasks.
+fn default_sandbox_packages() -> Vec<String> {
+    [
+        // Networking & HTTP
+        "curl",
+        "wget",
+        "ca-certificates",
+        "dnsutils",
+        "netcat-openbsd",
+        "openssh-client",
+        "iproute2",
+        "net-tools",
+        // Language runtimes
+        "python3",
+        "python3-dev",
+        "python3-pip",
+        "python3-venv",
+        "python-is-python3",
+        "nodejs",
+        "npm",
+        "ruby",
+        "ruby-dev",
+        // Build toolchain & native deps
+        "build-essential",
+        "clang",
+        "libclang-dev",
+        "llvm-dev",
+        "pkg-config",
+        "libssl-dev",
+        "libsqlite3-dev",
+        "libyaml-dev",
+        "liblzma-dev",
+        "autoconf",
+        "automake",
+        "libtool",
+        "bison",
+        "flex",
+        "dpkg-dev",
+        "fakeroot",
+        // Compression & archiving
+        "zip",
+        "unzip",
+        "bzip2",
+        "xz-utils",
+        "p7zip-full",
+        "tar",
+        "zstd",
+        "lz4",
+        "pigz",
+        // Common CLI utilities (mirrors GitHub runner image)
+        "git",
+        "gnupg2",
+        "jq",
+        "rsync",
+        "file",
+        "tree",
+        "sqlite3",
+        "sudo",
+        "locales",
+        "tzdata",
+        "shellcheck",
+        "patchelf",
+        // Text processing & search
+        "ripgrep",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
 }
 
 impl Default for SandboxConfig {
@@ -273,6 +452,7 @@ impl Default for SandboxConfig {
             no_network: true,
             backend: "auto".into(),
             resource_limits: ResourceLimitsConfig::default(),
+            packages: default_sandbox_packages(),
         }
     }
 }
