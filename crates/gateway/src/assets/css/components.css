@@ -963,7 +963,7 @@
     background: var(--surface2);
     font-size: 0.75rem;
     white-space: nowrap;
-    overflow-x: auto;
+    width: fit-content;
   }
 
   .ts-status-bar .ts-field {
