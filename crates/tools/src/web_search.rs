@@ -211,7 +211,10 @@ impl WebSearchTool {
             .get(&url)
             .header("Accept", "application/json")
             .header("Accept-Encoding", "gzip")
-            .header("X-Subscription-Token", self.api_key.expose_secret().as_str());
+            .header(
+                "X-Subscription-Token",
+                self.api_key.expose_secret().as_str(),
+            );
         if let Some(lang) = accept_language {
             req = req.header("Accept-Language", lang);
         }
@@ -269,7 +272,10 @@ impl WebSearchTool {
 
         let resp = client
             .post(format!("{base_url}/chat/completions"))
-            .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.api_key.expose_secret()),
+            )
             .json(&body)
             .send()
             .await?;
