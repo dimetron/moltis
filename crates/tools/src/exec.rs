@@ -302,7 +302,7 @@ impl AgentTool for ExecTool {
             timeout: Duration::from_secs(timeout_secs),
             max_output_bytes: self.max_output_bytes,
             working_dir,
-            env,
+            env: env.clone(),
         };
 
         // Resolve sandbox: dynamic per-session router takes priority over static sandbox.
@@ -327,6 +327,15 @@ impl AgentTool for ExecTool {
         } else {
             exec_command(command, &opts).await?
         };
+
+        // Redact env var values from output so secrets don't leak to the LLM.
+        let mut result = result;
+        for (_, v) in &env {
+            if !v.is_empty() {
+                result.stdout = result.stdout.replace(v, "[REDACTED]");
+                result.stderr = result.stderr.replace(v, "[REDACTED]");
+            }
+        }
 
         info!(
             command,
@@ -539,7 +548,8 @@ mod tests {
             .execute(serde_json::json!({ "command": "echo $TEST_INJECTED" }))
             .await
             .unwrap();
-        assert_eq!(result["stdout"].as_str().unwrap().trim(), "hello_from_env");
+        // The value is redacted in output.
+        assert_eq!(result["stdout"].as_str().unwrap().trim(), "[REDACTED]");
     }
 
     #[tokio::test]
