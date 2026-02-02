@@ -26,6 +26,7 @@ struct ConfigureRequest {
 pub fn tailscale_router() -> Router<AppState> {
     Router::new()
         .route("/status", get(status_handler))
+        .route("/up", post(up_handler))
         .route("/configure", post(configure_handler))
 }
 
@@ -57,6 +58,42 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
         },
         Err(e) => {
             error!("tailscale status failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        },
+    }
+}
+
+async fn up_handler(State(_state): State<AppState>) -> impl IntoResponse {
+    info!("tailscale up requested");
+    let manager = CliTailscaleManager::new();
+    match manager.up().await {
+        Ok(()) => {
+            info!("tailscale up succeeded, fetching status");
+            match manager.status().await {
+                Ok(status) => Json(serde_json::json!({
+                    "ok": true,
+                    "status": {
+                        "mode": status.mode,
+                        "hostname": status.hostname,
+                        "url": status.url,
+                        "tailscale_up": status.tailscale_up,
+                        "installed": status.installed,
+                        "tailnet": status.tailnet,
+                        "version": status.version,
+                        "login_name": status.login_name,
+                        "tailscale_ip": status.tailscale_ip,
+                    }
+                }))
+                .into_response(),
+                Err(_) => Json(serde_json::json!({ "ok": true })).into_response(),
+            }
+        },
+        Err(e) => {
+            error!("tailscale up failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": e.to_string() })),

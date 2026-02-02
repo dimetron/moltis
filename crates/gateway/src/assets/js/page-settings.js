@@ -1229,7 +1229,36 @@ function TailscaleSection() {
 	function renderInstalledState(container) {
 		if (tsStatus?.tailscale_up === false) {
 			var warn = cloneHidden("ts-not-running");
-			if (warn) container.appendChild(warn);
+			if (warn) {
+				var startBtn = warn.querySelector("[data-ts-start]");
+				if (startBtn) {
+					startBtn.addEventListener("click", () => {
+						startBtn.disabled = true;
+						startBtn.textContent = "Starting\u2026";
+						fetch("/api/tailscale/up", { method: "POST" })
+							.then((r) => r.json())
+							.then((data) => {
+								if (data.ok) {
+									fetchTsStatus();
+								} else {
+									startBtn.textContent = "Failed";
+									setTimeout(() => {
+										startBtn.disabled = false;
+										startBtn.textContent = "Start Tailscale";
+									}, 2000);
+								}
+							})
+							.catch(() => {
+								startBtn.textContent = "Failed";
+								setTimeout(() => {
+									startBtn.disabled = false;
+									startBtn.textContent = "Start Tailscale";
+								}, 2000);
+							});
+					});
+				}
+				container.appendChild(warn);
+			}
 		}
 		var currentMode = renderModeButtons(container, tsStatus);
 		renderHostnameAndUrl(container, currentMode);
