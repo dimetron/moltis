@@ -98,10 +98,12 @@ impl HookHandler for ShellHookHandler {
             .spawn()
             .with_context(|| format!("failed to spawn hook command: {}", self.command))?;
 
-        // Write payload to stdin.
+        // Write payload to stdin (ignore broken pipe if child doesn't read it).
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(payload_json.as_bytes()).await?;
-            // Drop stdin to signal EOF.
+            match stdin.write_all(payload_json.as_bytes()).await {
+                Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e.into()),
+                _ => {}, // OK or BrokenPipe (child didn't read stdin)
+            }
         }
 
         // Wait with timeout.
