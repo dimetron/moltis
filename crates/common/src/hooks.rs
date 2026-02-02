@@ -379,7 +379,9 @@ impl HookRegistry {
 
     /// Check if a handler is circuit-broken and potentially re-enable it.
     fn check_circuit_breaker(&self, entry: &HandlerEntry) -> bool {
-        if !entry.stats.disabled.load(Ordering::Relaxed) {
+        let is_disabled = entry.stats.disabled.load(Ordering::Relaxed);
+
+        if !is_disabled {
             // Check if we should trip the breaker.
             let consecutive_failures = entry.stats.consecutive_failures.load(Ordering::Relaxed);
             if consecutive_failures >= self.circuit_breaker_threshold {
@@ -395,7 +397,7 @@ impl HookRegistry {
             return false;
         }
 
-        // Already disabled — check cooldown.
+        // Already disabled — check if cooldown period has elapsed.
         let disabled_at = entry.stats.disabled_at.lock().unwrap();
         if let Some(at) = *disabled_at
             && at.elapsed() >= self.circuit_breaker_cooldown

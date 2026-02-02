@@ -158,10 +158,9 @@ impl MemoryManager {
         }
 
         // Determine source from path
-        let source = if path_str.contains("MEMORY") {
-            "longterm"
-        } else {
-            "daily"
+        let source = match path_str.contains("MEMORY") {
+            true => "longterm",
+            false => "daily",
         };
 
         // Update file record
@@ -220,7 +219,7 @@ impl MemoryManager {
                     miss_indices.iter().map(|&i| texts[i].clone()).collect();
                 let new_embs = embedder.embed_batch(&miss_texts).await?;
 
-                for (idx, emb) in miss_indices.iter().zip(new_embs.into_iter()) {
+                for (idx, emb) in miss_indices.iter().zip(new_embs) {
                     self.store
                         .put_cached_embedding(
                             provider_key,

@@ -99,11 +99,11 @@ impl HookHandler for ShellHookHandler {
             .with_context(|| format!("failed to spawn hook command: {}", self.command))?;
 
         // Write payload to stdin (ignore broken pipe if child doesn't read it).
-        if let Some(mut stdin) = child.stdin.take() {
-            match stdin.write_all(payload_json.as_bytes()).await {
-                Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e.into()),
-                _ => {}, // OK or BrokenPipe (child didn't read stdin)
-            }
+        if let Some(mut stdin) = child.stdin.take()
+            && let Err(e) = stdin.write_all(payload_json.as_bytes()).await
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(e.into());
         }
 
         // Wait with timeout.
@@ -130,10 +130,9 @@ impl HookHandler for ShellHookHandler {
         );
 
         if exit_code == 1 {
-            let reason = if stderr.is_empty() {
-                format!("hook '{}' blocked the action", self.hook_name)
-            } else {
-                stderr.trim().to_string()
+            let reason = match stderr.is_empty() {
+                true => format!("hook '{}' blocked the action", self.hook_name),
+                false => stderr.trim().to_string(),
             };
             return Ok(HookAction::Block(reason));
         }

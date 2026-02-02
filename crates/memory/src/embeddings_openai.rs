@@ -74,8 +74,8 @@ struct EmbeddingData {
 #[async_trait]
 impl EmbeddingProvider for OpenAiEmbeddingProvider {
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        let mut results = self.embed_batch(&[text.to_string()]).await?;
-        results
+        self.embed_batch(&[text.to_string()])
+            .await?
             .pop()
             .ok_or_else(|| anyhow::anyhow!("empty embedding response"))
     }

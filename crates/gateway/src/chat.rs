@@ -114,6 +114,30 @@ impl LiveChatService {
         !self.tool_registry.list_schemas().is_empty()
     }
 
+    /// Resolve a provider from session metadata, history, or first registered.
+    async fn resolve_provider(
+        &self,
+        session_key: &str,
+        history: &[serde_json::Value],
+    ) -> Result<Arc<dyn moltis_agents::model::LlmProvider>, String> {
+        let reg = self.providers.read().await;
+        let session_model = self
+            .session_metadata
+            .get(session_key)
+            .await
+            .and_then(|e| e.model.clone());
+        let history_model = history
+            .iter()
+            .rev()
+            .find_map(|m| m.get("model").and_then(|v| v.as_str()).map(String::from));
+        let model_id = session_model.or(history_model);
+
+        model_id
+            .and_then(|id| reg.get(&id))
+            .or_else(|| reg.first())
+            .ok_or_else(|| "no LLM providers configured".to_string())
+    }
+
     /// Resolve the active session key for a connection.
     async fn session_key_for(&self, conn_id: Option<&str>) -> String {
         if let Some(cid) = conn_id {
@@ -147,12 +171,10 @@ impl ChatService for LiveChatService {
             .unwrap_or(false);
         let stream_only = explicit_stream_only || !self.has_tools();
 
-        // Resolve session key: explicit override (used by cron callbacks) or
-        // connection-scoped lookup.
-        let session_key = if let Some(sk) = params.get("_session_key").and_then(|v| v.as_str()) {
-            sk.to_string()
-        } else {
-            self.session_key_for(conn_id.as_deref()).await
+        // Resolve session key: explicit override (used by cron callbacks) or connection-scoped lookup.
+        let session_key = match params.get("_session_key").and_then(|v| v.as_str()) {
+            Some(sk) => sk.to_string(),
+            None => self.session_key_for(conn_id.as_deref()).await,
         };
 
         // Resolve model: explicit param → session metadata → first registered.
@@ -632,26 +654,7 @@ impl ChatService for LiveChatService {
         // Run silent memory turn before summarization — saves important memories to disk.
         if let Some(ref mm) = self.state.memory_manager {
             let cwd = std::env::current_dir().unwrap_or_default();
-            let provider_for_memory = {
-                let reg = self.providers.read().await;
-                let session_model = self
-                    .session_metadata
-                    .get(&session_key)
-                    .await
-                    .and_then(|e| e.model.clone());
-                let history_model = history
-                    .iter()
-                    .rev()
-                    .find_map(|m| m.get("model").and_then(|v| v.as_str()).map(String::from));
-                let model_id = session_model.or(history_model);
-                if let Some(ref id) = model_id {
-                    reg.get(id)
-                } else {
-                    None
-                }
-                .or_else(|| reg.first())
-            };
-            if let Some(provider) = provider_for_memory {
+            if let Ok(provider) = self.resolve_provider(&session_key, &history).await {
                 match moltis_agents::silent_turn::run_silent_memory_turn(provider, &history, &cwd)
                     .await
                 {
@@ -696,26 +699,7 @@ impl ChatService for LiveChatService {
 
         // Use the session's model if available, otherwise fall back to the model
         // from the last assistant message, then to the first registered provider.
-        let provider = {
-            let reg = self.providers.read().await;
-            let session_model = self
-                .session_metadata
-                .get(&session_key)
-                .await
-                .and_then(|e| e.model.clone());
-            let history_model = history
-                .iter()
-                .rev()
-                .find_map(|m| m.get("model").and_then(|v| v.as_str()).map(String::from));
-            let model_id = session_model.or(history_model);
-            if let Some(ref id) = model_id {
-                reg.get(id)
-            } else {
-                None
-            }
-            .or_else(|| reg.first())
-            .ok_or_else(|| "no LLM providers configured".to_string())?
-        };
+        let provider = self.resolve_provider(&session_key, &history).await?;
 
         info!(session = %session_key, messages = history.len(), "chat.compact: summarizing");
 
