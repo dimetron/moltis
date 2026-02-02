@@ -367,8 +367,7 @@ function RepoCard(props) {
            style="font-family:var(--font-mono);font-size:.82rem;font-weight:500;color:var(--text-strong);text-decoration:none">${repo.source}</a>
         <span style="font-size:.72rem;color:var(--muted)">${repo.enabled_count}/${repo.skill_count} enabled</span>
       </div>
-      <button onClick=${removeRepo}
-        style="background:none;border:1px solid var(--border);color:var(--error, #e55);border-radius:var(--radius-sm);font-size:.72rem;padding:3px 8px;cursor:pointer">Remove Repo</button>
+      <button class="provider-btn provider-btn-sm provider-btn-danger" onClick=${removeRepo}>Remove</button>
     </div>
     ${
 			expanded.value &&
