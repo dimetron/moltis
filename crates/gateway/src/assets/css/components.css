@@ -963,7 +963,6 @@
     background: var(--surface2);
     font-size: 0.75rem;
     white-space: nowrap;
-    width: fit-content;
   }
 
   .info-bar .info-field {
