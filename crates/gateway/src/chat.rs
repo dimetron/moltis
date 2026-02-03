@@ -421,18 +421,6 @@ impl ChatService for LiveChatService {
                     .push_channel_reply(&session_key, target.clone())
                     .await;
 
-                // Echo user message to the channel prefixed with [Web].
-                if let Some(outbound) = self.state.services.channel_outbound_arc() {
-                    let echo_text = format!("[Web] {text}");
-                    let account_id = target.account_id.clone();
-                    let chat_id = target.chat_id.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = outbound.send_text(&account_id, &chat_id, &echo_text).await
-                        {
-                            warn!("failed to echo web message to channel: {e}");
-                        }
-                    });
-                }
             }
         }
 
