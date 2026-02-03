@@ -442,35 +442,15 @@ impl ChatService for LiveChatService {
         let tool_registry = Arc::clone(&self.tool_registry);
         let hook_registry = self.hook_registry.clone();
 
-        // Warn if tool mode is active but the provider doesn't support tools.
-        // Notify the user so they understand why some features are unavailable.
+        // Log if tool mode is active but the provider doesn't support tools.
+        // Note: We don't broadcast to the user here - they chose the model knowing
+        // its limitations. The UI should show capabilities when selecting a model.
         if !stream_only && !provider.supports_tools() {
-            warn!(
+            debug!(
                 provider = provider.name(),
                 model = provider.id(),
-                "selected provider does not support tool calling; \
-                 LLM will not be able to use tools"
+                "selected provider does not support tool calling"
             );
-            // Broadcast notice to the user
-            broadcast(
-                &self.state,
-                "chat",
-                serde_json::json!({
-                    "runId": run_id,
-                    "sessionKey": session_key,
-                    "state": "notice",
-                    "type": "tools_disabled",
-                    "title": "Tools unavailable",
-                    "message": format!(
-                        "The {} model doesn't support tool calling. \
-                         Features like file operations, shell commands, and memory search are disabled. \
-                         The assistant will respond in chat-only mode.",
-                        provider.id()
-                    ),
-                }),
-                BroadcastOpts::default(),
-            )
-            .await;
         }
 
         info!(
