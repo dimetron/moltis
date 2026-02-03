@@ -21,10 +21,24 @@ use crate::{
     state::GatewayState,
 };
 
-/// Check if the mlx-lm Python package is installed.
+/// Check if mlx-lm is installed (either via pip or brew).
 fn is_mlx_installed() -> bool {
-    std::process::Command::new("python3")
+    // Check for Python import (pip install)
+    let python_import = std::process::Command::new("python3")
         .args(["-c", "import mlx_lm"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if python_import {
+        return true;
+    }
+
+    // Check for mlx_lm CLI command (brew install)
+    std::process::Command::new("mlx_lm.generate")
+        .arg("--help")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
