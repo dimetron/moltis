@@ -1,13 +1,22 @@
 # Moltis
 
 [![CI](https://github.com/penso/moltis/actions/workflows/ci.yml/badge.svg)](https://github.com/penso/moltis/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/moltis.svg)](https://crates.io/crates/moltis)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
 
 A personal AI gateway written in Rust, inspired by
 [OpenClaw](https://docs.openclaw.ai). One binary, no runtime, no npm — just
 build it and run it.
+
+## Installation
+
+```bash
+# macOS / Linux via Homebrew
+brew install penso/tap/moltis
+
+# Or build from source
+cargo install moltis-cli --git https://github.com/penso/moltis
+```
 
 Moltis compiles your entire AI gateway — web UI, LLM providers, tools, and
 all assets — into a single self-contained executable. There is no Node.js
