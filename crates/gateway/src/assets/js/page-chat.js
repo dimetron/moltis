@@ -455,6 +455,63 @@ export function renderCompactCard(data) {
 	S.chatMsgBox.scrollTop = S.chatMsgBox.scrollHeight;
 }
 
+// ── Model change notice ──────────────────────────────────
+export function showModelNotice(model) {
+	if (!S.chatMsgBox) return;
+	if (model.supportsTools !== false) return; // Only show for models without tool support
+
+	slashInjectStyles();
+
+	var card = ctxEl("div", "ctx-card");
+	card.style.maxWidth = "400px";
+
+	var header = ctxEl("div", "ctx-header");
+	// Warning icon
+	var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.setAttribute("width", "16");
+	svg.setAttribute("height", "16");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("fill", "none");
+	svg.setAttribute("stroke", "currentColor");
+	svg.setAttribute("stroke-width", "2");
+	svg.setAttribute("stroke-linecap", "round");
+	svg.setAttribute("stroke-linejoin", "round");
+	svg.style.color = "var(--warning, #eab308)";
+	var tri = document.createElementNS("http://www.w3.org/2000/svg", "path");
+	tri.setAttribute("d", "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z");
+	var line1 = document.createElementNS("http://www.w3.org/2000/svg", "line");
+	line1.setAttribute("x1", "12");
+	line1.setAttribute("y1", "9");
+	line1.setAttribute("x2", "12");
+	line1.setAttribute("y2", "13");
+	var line2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
+	line2.setAttribute("x1", "12");
+	line2.setAttribute("y1", "17");
+	line2.setAttribute("x2", "12.01");
+	line2.setAttribute("y2", "17");
+	svg.appendChild(tri);
+	svg.appendChild(line1);
+	svg.appendChild(line2);
+	header.appendChild(svg);
+	header.appendChild(ctxEl("span", "ctx-header-title", "Chat-only mode"));
+	card.appendChild(header);
+
+	var section = ctxEl("div", "ctx-section");
+	var modelName = model.displayName || model.id;
+	section.appendChild(ctxRow("Model", modelName));
+	section.appendChild(ctxRow("Provider", model.provider || "local"));
+
+	var disabledEl = ctxEl("div", "ctx-disabled");
+	disabledEl.textContent = "Tools disabled — file operations, shell commands, and memory search are not available.";
+	disabledEl.style.marginTop = "8px";
+	section.appendChild(disabledEl);
+
+	card.appendChild(section);
+
+	S.chatMsgBox.appendChild(card);
+	S.chatMsgBox.scrollTop = S.chatMsgBox.scrollHeight;
+}
+
 // ── Slash command handlers ───────────────────────────────
 function handleSlashCommand(cmdName) {
 	if (cmdName === "clear") {

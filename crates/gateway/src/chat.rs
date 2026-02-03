@@ -60,10 +60,14 @@ impl ModelService for LiveModelService {
             .list_models()
             .iter()
             .map(|m| {
+                let supports_tools = reg
+                    .get(&m.id)
+                    .is_some_and(|p| p.supports_tools());
                 serde_json::json!({
                     "id": m.id,
                     "provider": m.provider,
                     "displayName": m.display_name,
+                    "supportsTools": supports_tools,
                 })
             })
             .collect();
