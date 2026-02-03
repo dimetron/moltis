@@ -158,7 +158,7 @@ function FeaturedCard(props) {
 function FeaturedSection() {
 	if (featuredPlugins.length === 0) return null;
 	return html`<div class="skills-section">
-    <h3 class="skills-section-title">Featured Plugins</h3>
+    <h3 class="skills-section-title">Featured Repositories</h3>
     <div class="skills-featured-grid">
       ${featuredPlugins.map((f) => html`<${FeaturedCard} key=${f.repo} plugin=${f} />`)}
     </div>
@@ -426,7 +426,7 @@ function RepoCard(props) {
 function ReposSection() {
 	var r = repos.value;
 	return html`<div class="skills-section">
-    <h3 class="skills-section-title">Installed Plugin Repositories</h3>
+    <h3 class="skills-section-title">Installed Repositories</h3>
     <div class="skills-section">
       ${(!r || r.length === 0) && html`<div style="padding:12px;color:var(--muted);font-size:.82rem">No plugin repositories installed. Install one from the featured list or enter a repo above.</div>`}
       ${r.map((repo) => html`<${RepoCard} key=${repo.source} repo=${repo} />`)}
@@ -446,7 +446,7 @@ function EnabledPluginsTable() {
 		});
 	}
 
-	return html`<div>
+	return html`<div class="skills-section">
     <h3 class="skills-section-title">Enabled Plugins</h3>
     <div class="skills-table-wrap">
       <table style="width:100%;border-collapse:collapse;font-size:.82rem">

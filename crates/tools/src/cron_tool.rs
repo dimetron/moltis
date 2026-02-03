@@ -206,7 +206,15 @@ mod tests {
     }
 
     fn noop_agent() -> AgentTurnFn {
-        Arc::new(|_| Box::pin(async { Ok("ok".into()) }))
+        Arc::new(|_| {
+            Box::pin(async {
+                Ok(moltis_cron::service::AgentTurnResult {
+                    output: "ok".into(),
+                    input_tokens: None,
+                    output_tokens: None,
+                })
+            })
+        })
     }
 
     fn make_tool() -> CronTool {

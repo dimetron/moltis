@@ -94,6 +94,8 @@ mod tests {
             payload: CronPayload::SystemEvent { text: "hi".into() },
             session_target: SessionTarget::Main,
             state: CronJobState::default(),
+            sandbox: CronSandboxConfig::default(),
+            system: false,
             created_at_ms: 1000,
             updated_at_ms: 1000,
         }
@@ -153,6 +155,8 @@ mod tests {
                 error: None,
                 duration_ms: 500,
                 output: None,
+                input_tokens: None,
+                output_tokens: None,
             };
             store.append_run("j1", &run).await.unwrap();
         }

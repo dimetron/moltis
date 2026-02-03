@@ -191,7 +191,7 @@ function FeaturedCard(props) {
 
 function FeaturedSection() {
 	return html`<div class="skills-section">
-    <h3 class="skills-section-title">Featured Skills</h3>
+    <h3 class="skills-section-title">Featured Repositories</h3>
     <div class="skills-featured-grid">
       ${featuredSkills.map((f) => html`<${FeaturedCard} key=${f.repo} skill=${f} />`)}
     </div>
@@ -466,7 +466,7 @@ function EnabledSkillsTable() {
 		});
 	}
 
-	return html`<div>
+	return html`<div class="skills-section">
     <h3 class="skills-section-title">Enabled Skills</h3>
     <div class="skills-table-wrap">
       <table style="width:100%;border-collapse:collapse;font-size:.82rem">

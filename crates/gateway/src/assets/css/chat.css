@@ -43,6 +43,7 @@
   align-self: flex-start;
 }
 
+
 .msg.system {
   color: var(--muted);
   background: 0 0;

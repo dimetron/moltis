@@ -14,6 +14,23 @@ export function makeTelegramIcon() {
 	return svg;
 }
 
+export function makeCronIcon() {
+	var ns = "http://www.w3.org/2000/svg";
+	var svg = document.createElementNS(ns, "svg");
+	svg.setAttribute("width", "16");
+	svg.setAttribute("height", "16");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("fill", "none");
+	svg.setAttribute("stroke", "currentColor");
+	svg.setAttribute("stroke-width", "1.5");
+	var path = document.createElementNS(ns, "path");
+	path.setAttribute("stroke-linecap", "round");
+	path.setAttribute("stroke-linejoin", "round");
+	path.setAttribute("d", "M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z");
+	svg.appendChild(path);
+	return svg;
+}
+
 export function makeChatIcon() {
 	var ns = "http://www.w3.org/2000/svg";
 	var svg = document.createElementNS(ns, "svg");

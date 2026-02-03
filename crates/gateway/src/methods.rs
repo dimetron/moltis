@@ -65,6 +65,8 @@ const READ_METHODS: &[&str] = &[
     "cron.list",
     "cron.status",
     "cron.runs",
+    "heartbeat.status",
+    "heartbeat.runs",
     "system-presence",
     "last-heartbeat",
     "node.list",
@@ -125,6 +127,8 @@ const WRITE_METHODS: &[&str] = &[
     "mcp.disable",
     "mcp.restart",
     "mcp.update",
+    "heartbeat.update",
+    "heartbeat.run",
 ];
 
 const APPROVAL_METHODS: &[&str] = &["exec.approval.request", "exec.approval.resolve"];
@@ -1487,6 +1491,175 @@ impl MethodRegistry {
                         .services
                         .cron
                         .runs(ctx.params.clone())
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
+                })
+            }),
+        );
+
+        // Heartbeat
+        self.register(
+            "heartbeat.status",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    let config = ctx.state.heartbeat_config.read().await.clone();
+                    // Find the heartbeat job to get its state.
+                    let jobs_val = ctx
+                        .state
+                        .services
+                        .cron
+                        .list()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))?;
+                    let jobs: Vec<moltis_cron::types::CronJob> =
+                        serde_json::from_value(jobs_val).unwrap_or_default();
+                    let hb_job = jobs.iter().find(|j| j.name == "__heartbeat__");
+                    Ok(serde_json::json!({
+                        "config": config,
+                        "job": hb_job,
+                    }))
+                })
+            }),
+        );
+        self.register(
+            "heartbeat.update",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    let patch: moltis_config::schema::HeartbeatConfig =
+                        serde_json::from_value(ctx.params.clone()).map_err(|e| {
+                            ErrorShape::new(
+                                error_codes::INVALID_REQUEST,
+                                format!("invalid heartbeat config: {e}"),
+                            )
+                        })?;
+                    *ctx.state.heartbeat_config.write().await = patch.clone();
+
+                    // Persist to moltis.toml so the config survives restarts.
+                    if let Err(e) = moltis_config::update_config(|cfg| {
+                        cfg.heartbeat = patch.clone();
+                    }) {
+                        tracing::warn!(error = %e, "failed to persist heartbeat config");
+                    }
+
+                    // Update the heartbeat cron job in-place.
+                    let jobs_val = ctx
+                        .state
+                        .services
+                        .cron
+                        .list()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))?;
+                    let jobs: Vec<moltis_cron::types::CronJob> =
+                        serde_json::from_value(jobs_val).unwrap_or_default();
+                    if let Some(hb_job) = jobs.iter().find(|j| j.name == "__heartbeat__") {
+                        let interval_ms = moltis_cron::heartbeat::parse_interval_ms(&patch.every)
+                            .unwrap_or(moltis_cron::heartbeat::DEFAULT_INTERVAL_MS);
+                        let prompt = moltis_cron::heartbeat::resolve_heartbeat_prompt(
+                            patch.prompt.as_deref(),
+                        );
+                        let job_patch = moltis_cron::types::CronJobPatch {
+                            schedule: Some(moltis_cron::types::CronSchedule::Every {
+                                every_ms: interval_ms,
+                                anchor_ms: None,
+                            }),
+                            payload: Some(moltis_cron::types::CronPayload::AgentTurn {
+                                message: prompt,
+                                model: patch.model.clone(),
+                                timeout_secs: None,
+                                deliver: false,
+                                channel: None,
+                                to: None,
+                            }),
+                            enabled: Some(patch.enabled),
+                            sandbox: Some(moltis_cron::types::CronSandboxConfig {
+                                enabled: patch.sandbox_enabled,
+                                image: patch.sandbox_image.clone(),
+                            }),
+                            ..Default::default()
+                        };
+                        ctx.state
+                            .services
+                            .cron
+                            .update(serde_json::json!({
+                                "id": hb_job.id,
+                                "patch": job_patch,
+                            }))
+                            .await
+                            .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))?;
+                    }
+                    Ok(serde_json::json!({ "updated": true }))
+                })
+            }),
+        );
+        self.register(
+            "heartbeat.run",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    let jobs_val = ctx
+                        .state
+                        .services
+                        .cron
+                        .list()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))?;
+                    let jobs: Vec<moltis_cron::types::CronJob> =
+                        serde_json::from_value(jobs_val).unwrap_or_default();
+                    let hb_job =
+                        jobs.iter()
+                            .find(|j| j.name == "__heartbeat__")
+                            .ok_or_else(|| {
+                                ErrorShape::new(
+                                    error_codes::INVALID_REQUEST,
+                                    "heartbeat job not found",
+                                )
+                            })?;
+                    ctx.state
+                        .services
+                        .cron
+                        .run(serde_json::json!({
+                            "id": hb_job.id,
+                            "force": true,
+                        }))
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))?;
+                    Ok(serde_json::json!({ "triggered": true }))
+                })
+            }),
+        );
+        self.register(
+            "heartbeat.runs",
+            Box::new(|ctx| {
+                Box::pin(async move {
+                    let jobs_val = ctx
+                        .state
+                        .services
+                        .cron
+                        .list()
+                        .await
+                        .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))?;
+                    let jobs: Vec<moltis_cron::types::CronJob> =
+                        serde_json::from_value(jobs_val).unwrap_or_default();
+                    let hb_job =
+                        jobs.iter()
+                            .find(|j| j.name == "__heartbeat__")
+                            .ok_or_else(|| {
+                                ErrorShape::new(
+                                    error_codes::INVALID_REQUEST,
+                                    "heartbeat job not found",
+                                )
+                            })?;
+                    let limit = ctx
+                        .params
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(20);
+                    ctx.state
+                        .services
+                        .cron
+                        .runs(serde_json::json!({
+                            "id": hb_job.id,
+                            "limit": limit,
+                        }))
                         .await
                         .map_err(|e| ErrorShape::new(error_codes::UNAVAILABLE, e))
                 })

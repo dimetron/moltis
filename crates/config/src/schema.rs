@@ -83,6 +83,7 @@ pub struct MoltisConfig {
     pub memory: MemoryEmbeddingConfig,
     pub tailscale: TailscaleConfig,
     pub failover: FailoverConfig,
+    pub heartbeat: HeartbeatConfig,
 }
 
 /// Failover configuration for automatic model/provider failover.
@@ -102,6 +103,66 @@ impl Default for FailoverConfig {
         Self {
             enabled: true,
             fallback_models: Vec::new(),
+        }
+    }
+}
+
+/// Heartbeat configuration — periodic health-check agent turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeartbeatConfig {
+    /// Whether the heartbeat is enabled. Defaults to true.
+    pub enabled: bool,
+    /// Interval between heartbeats (e.g. "30m", "1h"). Defaults to "30m".
+    pub every: String,
+    /// Provider/model override for heartbeat turns (e.g. "anthropic/claude-sonnet-4-20250514").
+    pub model: Option<String>,
+    /// Custom prompt override. If empty, the built-in default is used.
+    pub prompt: Option<String>,
+    /// Max characters for an acknowledgment reply before truncation. Defaults to 300.
+    pub ack_max_chars: usize,
+    /// Active hours window — heartbeats only run during this window.
+    pub active_hours: ActiveHoursConfig,
+    /// Whether heartbeat runs inside a sandbox. Defaults to true.
+    #[serde(default = "default_true")]
+    pub sandbox_enabled: bool,
+    /// Override sandbox image for heartbeat. If `None`, uses the default image.
+    pub sandbox_image: Option<String>,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            every: "30m".into(),
+            model: None,
+            prompt: None,
+            ack_max_chars: 300,
+            active_hours: ActiveHoursConfig::default(),
+            sandbox_enabled: true,
+            sandbox_image: None,
+        }
+    }
+}
+
+/// Active hours window for heartbeats.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ActiveHoursConfig {
+    /// Start time in HH:MM format. Defaults to "08:00".
+    pub start: String,
+    /// End time in HH:MM format. Defaults to "24:00" (midnight = always on until end of day).
+    pub end: String,
+    /// IANA timezone (e.g. "Europe/Paris") or "local". Defaults to "local".
+    pub timezone: String,
+}
+
+impl Default for ActiveHoursConfig {
+    fn default() -> Self {
+        Self {
+            start: "08:00".into(),
+            end: "24:00".into(),
+            timezone: "local".into(),
         }
     }
 }

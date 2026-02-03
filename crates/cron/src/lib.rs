@@ -2,6 +2,7 @@
 //! Persistent storage at ~/.clawdbot/cron-jobs.json.
 //! Isolated agent execution (no session), optional delivery to a channel.
 
+pub mod heartbeat;
 pub mod parse;
 pub mod schedule;
 pub mod service;

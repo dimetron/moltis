@@ -45,7 +45,7 @@ pub enum CronPayload {
 }
 
 /// Where the job executes.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionTarget {
     /// Inject into the main conversation session.
@@ -53,6 +53,8 @@ pub enum SessionTarget {
     /// Run in an isolated, throwaway session.
     #[default]
     Isolated,
+    /// Run in a named session that persists across runs (e.g. "heartbeat").
+    Named(String),
 }
 
 /// Outcome of a single job run.
@@ -98,6 +100,13 @@ pub struct CronJob {
     pub session_target: SessionTarget,
     #[serde(default)]
     pub state: CronJobState,
+    /// Sandbox configuration for this job.
+    #[serde(default)]
+    pub sandbox: CronSandboxConfig,
+    /// Whether this is a system-managed job (e.g. heartbeat). System jobs are
+    /// hidden from the normal jobs table in the UI.
+    #[serde(default)]
+    pub system: bool,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -115,12 +124,41 @@ pub struct CronRunRecord {
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+}
+
+/// Sandbox configuration for a cron job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CronSandboxConfig {
+    /// Whether to run the job inside a sandbox. Defaults to true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Override the sandbox image. If `None`, uses the default image.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+impl Default for CronSandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            image: None,
+        }
+    }
 }
 
 /// Input for creating a new job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronJobCreate {
+    /// Optional ID for the job. If not provided, a UUID will be generated.
+    /// Use a fixed ID for system jobs to preserve run history across restarts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     pub schedule: CronSchedule,
     pub payload: CronPayload,
@@ -130,6 +168,10 @@ pub struct CronJobCreate {
     pub delete_after_run: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub system: bool,
+    #[serde(default)]
+    pub sandbox: CronSandboxConfig,
 }
 
 fn default_true() -> bool {
@@ -152,6 +194,8 @@ pub struct CronJobPatch {
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delete_after_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<CronSandboxConfig>,
 }
 
 /// Summary status of the cron system.
@@ -240,6 +284,8 @@ mod tests {
             },
             session_target: SessionTarget::Main,
             state: CronJobState::default(),
+            sandbox: CronSandboxConfig::default(),
+            system: false,
             created_at_ms: 1000,
             updated_at_ms: 1000,
         };
@@ -263,10 +309,44 @@ mod tests {
             error: None,
             duration_ms: 1000,
             output: Some("done".into()),
+            input_tokens: None,
+            output_tokens: None,
         };
         let json = serde_json::to_string(&rec).unwrap();
         let back: CronRunRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(rec, back);
+        // Tokens should be absent from JSON when None.
+        assert!(!json.contains("inputTokens"));
+        assert!(!json.contains("outputTokens"));
+    }
+
+    #[test]
+    fn test_run_record_with_tokens() {
+        let rec = CronRunRecord {
+            job_id: "j1".into(),
+            started_at_ms: 1000,
+            finished_at_ms: 2000,
+            status: RunStatus::Ok,
+            error: None,
+            duration_ms: 1000,
+            output: Some("done".into()),
+            input_tokens: Some(150),
+            output_tokens: Some(42),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let back: CronRunRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(rec, back);
+        assert_eq!(back.input_tokens, Some(150));
+        assert_eq!(back.output_tokens, Some(42));
+    }
+
+    #[test]
+    fn test_run_record_deserialize_without_tokens() {
+        // Old records without token fields should deserialize with None.
+        let json = r#"{"jobId":"j1","startedAtMs":1000,"finishedAtMs":2000,"status":"ok","durationMs":1000}"#;
+        let rec: CronRunRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.input_tokens, None);
+        assert_eq!(rec.output_tokens, None);
     }
 
     #[test]
@@ -277,9 +357,73 @@ mod tests {
             "payload": { "kind": "systemEvent", "text": "hi" }
         }"#;
         let create: CronJobCreate = serde_json::from_str(json).unwrap();
+        assert!(create.id.is_none());
         assert!(create.enabled);
         assert!(!create.delete_after_run);
         assert_eq!(create.session_target, SessionTarget::Isolated);
+        assert!(create.sandbox.enabled);
+        assert!(create.sandbox.image.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_config_default() {
+        let cfg = CronSandboxConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.image.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_config_roundtrip() {
+        let cfg = CronSandboxConfig {
+            enabled: false,
+            image: Some("custom:latest".into()),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: CronSandboxConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn test_sandbox_config_deserialize_missing_defaults() {
+        let cfg: CronSandboxConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.enabled);
+        assert!(cfg.image.is_none());
+    }
+
+    #[test]
+    fn test_cronjob_with_sandbox_roundtrip() {
+        let job = CronJob {
+            id: "abc".into(),
+            name: "test".into(),
+            enabled: true,
+            delete_after_run: false,
+            schedule: CronSchedule::Every {
+                every_ms: 60_000,
+                anchor_ms: None,
+            },
+            payload: CronPayload::AgentTurn {
+                message: "go".into(),
+                model: None,
+                timeout_secs: None,
+                deliver: false,
+                channel: None,
+                to: None,
+            },
+            session_target: SessionTarget::Isolated,
+            state: CronJobState::default(),
+            sandbox: CronSandboxConfig {
+                enabled: false,
+                image: Some("my-image:v1".into()),
+            },
+            system: false,
+            created_at_ms: 1000,
+            updated_at_ms: 1000,
+        };
+        let json = serde_json::to_string(&job).unwrap();
+        let back: CronJob = serde_json::from_str(&json).unwrap();
+        assert_eq!(job, back);
+        assert!(!back.sandbox.enabled);
+        assert_eq!(back.sandbox.image.as_deref(), Some("my-image:v1"));
     }
 
     #[test]

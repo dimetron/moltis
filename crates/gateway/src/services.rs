@@ -248,6 +248,11 @@ impl CronService for NoopCronService {
 #[async_trait]
 pub trait ChatService: Send + Sync {
     async fn send(&self, params: Value) -> ServiceResult;
+    /// Run a chat send synchronously (inline, no spawn) and return token usage.
+    /// Returns `{ "text": "...", "inputTokens": N, "outputTokens": N }`.
+    async fn send_sync(&self, params: Value) -> ServiceResult {
+        self.send(params).await
+    }
     async fn abort(&self, params: Value) -> ServiceResult;
     async fn history(&self, params: Value) -> ServiceResult;
     async fn inject(&self, params: Value) -> ServiceResult;

@@ -431,7 +431,7 @@ pub async fn start_gateway(
         });
     });
 
-    // Agent turn: run an isolated LLM turn (no session history) and return the output.
+    // Agent turn: run an LLM turn in a session determined by the job's session_target.
     let agent_state = Arc::clone(&deferred_state);
     let on_agent_turn: moltis_cron::service::AgentTurnFn = Arc::new(move |req| {
         let st = Arc::clone(&agent_state);
@@ -440,15 +440,59 @@ pub async fn start_gateway(
                 .get()
                 .ok_or_else(|| anyhow::anyhow!("gateway not ready"))?;
             let chat = state.chat().await;
-            // Send into an isolated session keyed by a unique id so it doesn't
-            // pollute the main conversation.
-            let session_key = format!("cron:{}", uuid::Uuid::new_v4());
-            let params = serde_json::json!({
+            let session_key = match &req.session_target {
+                moltis_cron::types::SessionTarget::Named(name) => {
+                    format!("cron:{name}")
+                },
+                _ => format!("cron:{}", uuid::Uuid::new_v4()),
+            };
+
+            // Clear session history for named cron sessions before execution
+            // so the run starts fresh but the history remains readable for debugging.
+            if matches!(
+                req.session_target,
+                moltis_cron::types::SessionTarget::Named(_)
+            ) {
+                let _ = chat
+                    .clear(serde_json::json!({ "_session_key": session_key }))
+                    .await;
+            }
+
+            // Apply sandbox overrides for this cron session.
+            if let Some(ref router) = state.sandbox_router {
+                router.set_override(&session_key, req.sandbox.enabled).await;
+                if let Some(ref image) = req.sandbox.image {
+                    router.set_image_override(&session_key, image.clone()).await;
+                }
+            }
+
+            let mut params = serde_json::json!({
                 "text": req.message,
                 "_session_key": session_key,
             });
-            chat.send(params).await.map_err(|e| anyhow::anyhow!(e))?;
-            Ok("agent turn dispatched".into())
+            if let Some(ref model) = req.model {
+                params["model"] = serde_json::Value::String(model.clone());
+            }
+            let result = chat.send_sync(params).await.map_err(|e| anyhow::anyhow!(e));
+
+            // Clean up sandbox overrides.
+            if let Some(ref router) = state.sandbox_router {
+                router.remove_override(&session_key).await;
+            }
+
+            let val = result?;
+            let input_tokens = val.get("inputTokens").and_then(|v| v.as_u64());
+            let output_tokens = val.get("outputTokens").and_then(|v| v.as_u64());
+            let text = val
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(moltis_cron::service::AgentTurnResult {
+                output: text,
+                input_tokens,
+                output_tokens,
+            })
         })
     });
 
@@ -1049,6 +1093,9 @@ pub async fn start_gateway(
     // Populate the deferred reference so cron callbacks can reach the gateway.
     let _ = deferred_state.set(Arc::clone(&state));
 
+    // Store heartbeat config on state for gon data and RPC methods.
+    *state.heartbeat_config.write().await = config.heartbeat.clone();
+
     // Wire live chat service (needs state reference, so done after state creation).
     if !registry.read().await.is_empty() {
         let broadcaster = Arc::new(GatewayApprovalBroadcaster::new(Arc::clone(&state)));
@@ -1486,6 +1533,88 @@ pub async fn start_gateway(
         tracing::warn!("failed to start cron scheduler: {e}");
     }
 
+    // Upsert the built-in heartbeat job from config.
+    // Use a fixed ID so run history persists across restarts.
+    {
+        use moltis_cron::{
+            heartbeat::{DEFAULT_INTERVAL_MS, parse_interval_ms, resolve_heartbeat_prompt},
+            types::{CronJobCreate, CronJobPatch, CronPayload, CronSchedule, SessionTarget},
+        };
+        const HEARTBEAT_JOB_ID: &str = "__heartbeat__";
+
+        let hb = &config.heartbeat;
+        let interval_ms = parse_interval_ms(&hb.every).unwrap_or(DEFAULT_INTERVAL_MS);
+        let prompt = resolve_heartbeat_prompt(hb.prompt.as_deref());
+
+        // Check if heartbeat job already exists.
+        let existing = cron_service.list().await;
+        let existing_job = existing.iter().find(|j| j.id == HEARTBEAT_JOB_ID);
+
+        if hb.enabled {
+            if existing_job.is_some() {
+                // Update existing job to match config.
+                let patch = CronJobPatch {
+                    schedule: Some(CronSchedule::Every {
+                        every_ms: interval_ms,
+                        anchor_ms: None,
+                    }),
+                    payload: Some(CronPayload::AgentTurn {
+                        message: prompt,
+                        model: hb.model.clone(),
+                        timeout_secs: None,
+                        deliver: false,
+                        channel: None,
+                        to: None,
+                    }),
+                    enabled: Some(true),
+                    sandbox: Some(moltis_cron::types::CronSandboxConfig {
+                        enabled: hb.sandbox_enabled,
+                        image: hb.sandbox_image.clone(),
+                    }),
+                    ..Default::default()
+                };
+                match cron_service.update(HEARTBEAT_JOB_ID, patch).await {
+                    Ok(job) => tracing::info!(id = %job.id, "heartbeat job updated"),
+                    Err(e) => tracing::warn!("failed to update heartbeat job: {e}"),
+                }
+            } else {
+                // Create new job with fixed ID.
+                let create = CronJobCreate {
+                    id: Some(HEARTBEAT_JOB_ID.into()),
+                    name: "__heartbeat__".into(),
+                    schedule: CronSchedule::Every {
+                        every_ms: interval_ms,
+                        anchor_ms: None,
+                    },
+                    payload: CronPayload::AgentTurn {
+                        message: prompt,
+                        model: hb.model.clone(),
+                        timeout_secs: None,
+                        deliver: false,
+                        channel: None,
+                        to: None,
+                    },
+                    session_target: SessionTarget::Named("heartbeat".into()),
+                    delete_after_run: false,
+                    enabled: true,
+                    system: true,
+                    sandbox: moltis_cron::types::CronSandboxConfig {
+                        enabled: hb.sandbox_enabled,
+                        image: hb.sandbox_image.clone(),
+                    },
+                };
+                match cron_service.add(create).await {
+                    Ok(job) => tracing::info!(id = %job.id, "heartbeat job created"),
+                    Err(e) => tracing::warn!("failed to create heartbeat job: {e}"),
+                }
+            }
+        } else if existing_job.is_some() {
+            // Heartbeat is disabled, remove the job.
+            let _ = cron_service.remove(HEARTBEAT_JOB_ID).await;
+            tracing::info!("heartbeat job removed (disabled)");
+        }
+    }
+
     #[cfg(feature = "tls")]
     if tls_active {
         // Spawn HTTP redirect server on secondary port.
@@ -1640,6 +1769,8 @@ struct GonData {
     counts: NavCounts,
     crons: Vec<moltis_cron::types::CronJob>,
     cron_status: moltis_cron::types::CronStatus,
+    heartbeat_config: moltis_config::schema::HeartbeatConfig,
+    heartbeat_runs: Vec<moltis_cron::types::CronRunRecord>,
 }
 
 /// Counts shown as badges in the sidebar navigation.
@@ -1678,12 +1809,27 @@ async fn build_gon_data(gw: &GatewayState) -> GonData {
         .ok()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
+    let heartbeat_config = gw.heartbeat_config.read().await.clone();
+
+    // Get heartbeat runs using the fixed heartbeat job ID.
+    // This preserves run history across restarts.
+    let heartbeat_runs: Vec<moltis_cron::types::CronRunRecord> = gw
+        .services
+        .cron
+        .runs(serde_json::json!({ "id": "__heartbeat__", "limit": 10 }))
+        .await
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
     GonData {
         identity,
         port,
         counts,
         crons,
         cron_status,
+        heartbeat_config,
+        heartbeat_runs,
     }
 }
 
@@ -1730,14 +1876,12 @@ async fn build_nav_counts(gw: &GatewayState) -> NavCounts {
         })
         .unwrap_or(0);
 
-    // Count enabled skills from both skills and plugins manifests (same logic as
-    // api_skills_handler) — the SkillsService::status() noop returns an empty list,
-    // so we read the manifests directly.
+    // Count enabled skills from skills manifest only.
     let mut skills = 0usize;
     if let Ok(path) = moltis_skills::manifest::ManifestStore::default_path() {
         let store = moltis_skills::manifest::ManifestStore::new(path);
         if let Ok(m) = store.load() {
-            skills += m
+            skills = m
                 .repos
                 .iter()
                 .flat_map(|r| &r.skills)
@@ -1745,10 +1889,13 @@ async fn build_nav_counts(gw: &GatewayState) -> NavCounts {
                 .count();
         }
     }
+
+    // Count enabled plugins from plugins manifest.
+    let mut plugins = 0usize;
     if let Ok(path) = moltis_plugins::install::default_manifest_path() {
         let store = moltis_skills::manifest::ManifestStore::new(path);
         if let Ok(m) = store.load() {
-            skills += m
+            plugins = m
                 .repos
                 .iter()
                 .flat_map(|r| &r.skills)
@@ -1756,17 +1903,6 @@ async fn build_nav_counts(gw: &GatewayState) -> NavCounts {
                 .count();
         }
     }
-    let plugins = 0usize;
-
-    // Count plugins repos separately.
-    let plugins = gw
-        .services
-        .plugins
-        .repos_list()
-        .await
-        .ok()
-        .and_then(|v| v.as_array().map(|a| a.len()))
-        .unwrap_or(plugins);
 
     let mcp = mcp
         .ok()
@@ -1779,12 +1915,17 @@ async fn build_nav_counts(gw: &GatewayState) -> NavCounts {
         })
         .unwrap_or(0);
 
+    // Count enabled user cron jobs (exclude system jobs like heartbeat).
     let crons = crons
         .ok()
         .and_then(|v| {
             v.as_array().map(|arr| {
                 arr.iter()
-                    .filter(|j| j.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false))
+                    .filter(|j| {
+                        let enabled = j.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false);
+                        let system = j.get("system").and_then(|s| s.as_bool()).unwrap_or(false);
+                        enabled && !system
+                    })
                     .count()
             })
         })

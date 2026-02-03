@@ -44,11 +44,21 @@ impl SqliteStore {
                 error TEXT,
                 duration_ms INTEGER NOT NULL,
                 output TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
                 FOREIGN KEY (job_id) REFERENCES cron_jobs(id)
             )",
         )
         .execute(&pool)
         .await?;
+
+        // Migrate existing tables: add token columns if missing.
+        let _ = sqlx::query("ALTER TABLE cron_runs ADD COLUMN input_tokens INTEGER")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE cron_runs ADD COLUMN output_tokens INTEGER")
+            .execute(&pool)
+            .await;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_cron_runs_job_id ON cron_runs(job_id, started_at_ms DESC)",
@@ -116,8 +126,8 @@ impl CronStore for SqliteStore {
     async fn append_run(&self, job_id: &str, run: &CronRunRecord) -> Result<()> {
         let status = serde_json::to_string(&run.status)?;
         sqlx::query(
-            "INSERT INTO cron_runs (job_id, started_at_ms, finished_at_ms, status, error, duration_ms, output)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cron_runs (job_id, started_at_ms, finished_at_ms, status, error, duration_ms, output, input_tokens, output_tokens)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(job_id)
         .bind(run.started_at_ms as i64)
@@ -126,6 +136,8 @@ impl CronStore for SqliteStore {
         .bind(&run.error)
         .bind(run.duration_ms as i64)
         .bind(&run.output)
+        .bind(run.input_tokens.map(|v| v as i64))
+        .bind(run.output_tokens.map(|v| v as i64))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -133,7 +145,7 @@ impl CronStore for SqliteStore {
 
     async fn get_runs(&self, job_id: &str, limit: usize) -> Result<Vec<CronRunRecord>> {
         let rows = sqlx::query(
-            "SELECT job_id, started_at_ms, finished_at_ms, status, error, duration_ms, output
+            "SELECT job_id, started_at_ms, finished_at_ms, status, error, duration_ms, output, input_tokens, output_tokens
              FROM cron_runs
              WHERE job_id = ?
              ORDER BY started_at_ms DESC
@@ -156,6 +168,16 @@ impl CronStore for SqliteStore {
                 error: row.get("error"),
                 duration_ms: row.get::<i64, _>("duration_ms") as u64,
                 output: row.get("output"),
+                input_tokens: row
+                    .try_get::<Option<i64>, _>("input_tokens")
+                    .ok()
+                    .flatten()
+                    .map(|v| v as u64),
+                output_tokens: row
+                    .try_get::<Option<i64>, _>("output_tokens")
+                    .ok()
+                    .flatten()
+                    .map(|v| v as u64),
             });
         }
         // Reverse so oldest first (consistent with other stores).
@@ -182,6 +204,8 @@ mod tests {
             payload: CronPayload::SystemEvent { text: "hi".into() },
             session_target: SessionTarget::Main,
             state: CronJobState::default(),
+            sandbox: CronSandboxConfig::default(),
+            system: false,
             created_at_ms: 1000,
             updated_at_ms: 1000,
         }
@@ -252,6 +276,8 @@ mod tests {
                 error: None,
                 duration_ms: 500,
                 output: None,
+                input_tokens: None,
+                output_tokens: None,
             };
             store.append_run("j1", &run).await.unwrap();
         }

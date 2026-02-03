@@ -170,6 +170,8 @@ pub struct GatewayState {
     pub webauthn_state: Option<Arc<crate::auth_webauthn::WebAuthnState>>,
     /// Per-session sandbox router (None if sandbox is not configured).
     pub sandbox_router: Option<Arc<SandboxRouter>>,
+    /// Heartbeat configuration (for gon data and RPC methods).
+    pub heartbeat_config: RwLock<moltis_config::schema::HeartbeatConfig>,
     /// Pending channel reply targets: when a channel message triggers a chat
     /// send, we queue the reply target so the "final" response can be routed
     /// back to the originating channel.
@@ -187,6 +189,8 @@ pub struct GatewayState {
     pub tls_active: bool,
     /// The port the gateway is bound to.
     pub port: u16,
+    /// Last error per run_id (short-lived, for send_sync to retrieve).
+    pub run_errors: RwLock<HashMap<String, String>>,
 }
 
 impl GatewayState {
@@ -275,6 +279,8 @@ impl GatewayState {
             localhost_only,
             tls_active,
             port,
+            heartbeat_config: RwLock::new(moltis_config::schema::HeartbeatConfig::default()),
+            run_errors: RwLock::new(HashMap::new()),
         })
     }
 
@@ -324,6 +330,19 @@ impl GatewayState {
     pub async fn drain_channel_replies(&self, session_key: &str) -> Vec<ChannelReplyTarget> {
         let mut queue = self.channel_reply_queue.write().await;
         queue.remove(session_key).unwrap_or_default()
+    }
+
+    /// Record a run error (for send_sync to retrieve).
+    pub async fn set_run_error(&self, run_id: &str, error: String) {
+        self.run_errors
+            .write()
+            .await
+            .insert(run_id.to_string(), error);
+    }
+
+    /// Take (and remove) the last error for a run_id.
+    pub async fn last_run_error(&self, run_id: &str) -> Option<String> {
+        self.run_errors.write().await.remove(run_id)
     }
 
     /// Close a client: remove from registry, abort if needed.

@@ -10,7 +10,7 @@ import {
 	updateTokenBar,
 } from "./chat-ui.js";
 import { formatTokens, renderMarkdown, sendRpc } from "./helpers.js";
-import { makeChatIcon, makeTelegramIcon } from "./icons.js";
+import { makeChatIcon, makeCronIcon, makeTelegramIcon } from "./icons.js";
 import { updateSessionProjectSelect } from "./project-combo.js";
 import { currentPrefix, navigate, sessionPath } from "./router.js";
 import { updateSandboxImageUI, updateSandboxUI } from "./sandbox.js";
@@ -38,21 +38,24 @@ export function refreshActiveSession() {
 	});
 }
 
+function isTelegramSession(s) {
+	if (s.key.startsWith("telegram:")) return true;
+	if (!s.channelBinding) return false;
+	try {
+		return JSON.parse(s.channelBinding).channel_type === "telegram";
+	} catch (_e) {
+		return false;
+	}
+}
+
 function createSessionIcon(s) {
 	var iconWrap = document.createElement("span");
 	iconWrap.className = "session-icon";
-	var isTelegram = s.key.startsWith("telegram:");
-	if (!isTelegram && s.channelBinding) {
-		try {
-			var binding = JSON.parse(s.channelBinding);
-			if (binding.channel_type === "telegram") isTelegram = true;
-		} catch (_e) {
-			/* ignore bad JSON */
-		}
-	}
-	var icon = isTelegram ? makeTelegramIcon() : makeChatIcon();
+	var telegram = isTelegramSession(s);
+	var cron = s.key.startsWith("cron:");
+	var icon = cron ? makeCronIcon() : telegram ? makeTelegramIcon() : makeChatIcon();
 	iconWrap.appendChild(icon);
-	if (isTelegram) {
+	if (telegram) {
 		iconWrap.style.color = s.activeChannel ? "var(--accent)" : "var(--muted)";
 		iconWrap.style.opacity = s.activeChannel ? "1" : "0.5";
 		iconWrap.title = s.activeChannel ? "Active Telegram session" : "Telegram session (inactive)";
@@ -311,7 +314,8 @@ export function updateChatSessionHeader() {
 
 	var isMain = S.activeSessionKey === "main";
 	var isChannel = s?.channelBinding || S.activeSessionKey.startsWith("telegram:");
-	var canRename = !(isMain || isChannel);
+	var isCron = S.activeSessionKey.startsWith("cron:");
+	var canRename = !(isMain || isChannel || isCron);
 
 	nameEl.style.cursor = canRename ? "pointer" : "default";
 	nameEl.title = canRename ? "Click to rename" : "";
@@ -354,7 +358,7 @@ export function updateChatSessionHeader() {
 	}
 
 	if (deleteBtn) {
-		deleteBtn.classList.toggle("hidden", isMain);
+		deleteBtn.classList.toggle("hidden", isMain || isCron);
 		deleteBtn.onclick = () => {
 			var msgCount = s ? s.messageCount || 0 : 0;
 			var nextKey = nextSessionKey(S.activeSessionKey);

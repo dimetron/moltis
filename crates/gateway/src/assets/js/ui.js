@@ -242,3 +242,95 @@ export function ModelSelect({ models, value, onChange, placeholder }) {
 		}
   </div>`;
 }
+
+/**
+ * Generic searchable combo select for simple value/label options.
+ * @param {Array<{value: string, label: string}>} options
+ * @param {string} value - current selected value
+ * @param {function} onChange - callback with selected value
+ * @param {string} placeholder - placeholder when nothing selected
+ * @param {string} searchPlaceholder - placeholder for search input
+ */
+export function ComboSelect({ options, value, onChange, placeholder, searchPlaceholder }) {
+	var [open, setOpen] = useState(false);
+	var [query, setQuery] = useState("");
+	var [kbIndex, setKbIndex] = useState(-1);
+	var ref = useRef(null);
+	var searchRef = useRef(null);
+
+	var selected = options.find((o) => o.value === value);
+	var label = selected ? selected.label : placeholder || "(none)";
+
+	var filtered = options.filter((o) => {
+		if (!query) return true;
+		var q = query.toLowerCase();
+		return o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q);
+	});
+
+	useEffect(() => {
+		if (!open) return;
+		function onClick(e) {
+			if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+		}
+		document.addEventListener("mousedown", onClick);
+		return () => document.removeEventListener("mousedown", onClick);
+	}, [open]);
+
+	useEffect(() => {
+		if (open && searchRef.current) searchRef.current.focus();
+	}, [open]);
+
+	useEffect(() => {
+		setKbIndex(-1);
+	}, [query]);
+
+	function onKeyDown(e) {
+		if (e.key === "Escape") {
+			setOpen(false);
+		} else if (e.key === "ArrowDown") {
+			e.preventDefault();
+			setKbIndex((i) => Math.min(i + 1, filtered.length - 1));
+		} else if (e.key === "ArrowUp") {
+			e.preventDefault();
+			setKbIndex((i) => Math.max(i - 1, 0));
+		} else if (e.key === "Enter") {
+			e.preventDefault();
+			var idx = kbIndex >= 0 ? kbIndex : 0;
+			if (filtered[idx]) pick(filtered[idx]);
+		}
+	}
+
+	function pick(o) {
+		onChange(o ? o.value : "");
+		setOpen(false);
+		setQuery("");
+	}
+
+	return html`<div class="model-combo" ref=${ref} style="width:100%;">
+    <button type="button" class="model-combo-btn" style="width:100%;" onClick=${() => setOpen(!open)}>
+      <span class="model-item-label">${label}</span>
+      <svg class="model-combo-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5l3 3 3-3"/></svg>
+    </button>
+    ${
+			open &&
+			html`<div class="model-dropdown" style="width:100%;" onKeyDown=${onKeyDown}>
+      <input class="model-search-input" ref=${searchRef} placeholder=${searchPlaceholder || "Search\u2026"}
+        value=${query} onInput=${(e) => setQuery(e.target.value)} />
+      <div class="model-dropdown-list">
+        <div class="model-dropdown-item ${value ? "" : "selected"}"
+          onClick=${() => pick(null)}>
+          <span class="model-item-label">${placeholder || "(none)"}</span>
+        </div>
+        ${filtered.map(
+					(o, i) => html`<div key=${o.value}
+            class="model-dropdown-item ${o.value === value ? "selected" : ""} ${i === kbIndex ? "kb-active" : ""}"
+            onClick=${() => pick(o)}>
+            <span class="model-item-label">${o.label}</span>
+          </div>`,
+				)}
+        ${filtered.length === 0 && html`<div class="model-dropdown-empty">No matches</div>`}
+      </div>
+    </div>`
+		}
+  </div>`;
+}

@@ -559,6 +559,31 @@ var chatPageHTML =
 	'class="provider-btn min-h-[40px] disabled:opacity-40 disabled:cursor-default">Send</button>' +
 	"</div></div>";
 
+function msgRole(el) {
+	if (el.classList.contains("user")) return "You";
+	if (el.classList.contains("assistant")) return "Assistant";
+	return null;
+}
+
+/** Intercept copy to prepend role labels when multiple messages are selected. */
+function handleChatCopy(e) {
+	var sel = window.getSelection();
+	if (!sel || sel.isCollapsed || !S.chatMsgBox) return;
+
+	var lines = [];
+	for (var msg of S.chatMsgBox.querySelectorAll(".msg")) {
+		if (!sel.containsNode(msg, true)) continue;
+		var role = msgRole(msg);
+		if (!role) continue;
+		var text = sel.containsNode(msg, false) ? msg.textContent.trim() : sel.toString().trim();
+		if (text) lines.push(`${role}:\n${text}`);
+	}
+	if (lines.length > 1) {
+		e.preventDefault();
+		e.clipboardData.setData("text/plain", lines.join("\n\n"));
+	}
+}
+
 registerPrefix(
 	"/chats",
 	function initChat(container, sessionKeyFromUrl) {
@@ -637,6 +662,8 @@ registerPrefix(
 			}
 		});
 		S.chatSendBtn.addEventListener("click", sendChat);
+
+		S.chatMsgBox.addEventListener("copy", handleChatCopy);
 
 		S.chatInput.focus();
 	},

@@ -18,9 +18,19 @@ use {
 
 use crate::{schedule::compute_next_run, store::CronStore, types::*};
 
+/// Result of an agent turn, including optional token usage.
+#[derive(Debug, Clone)]
+pub struct AgentTurnResult {
+    pub output: String,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
 /// Callback for running an isolated agent turn.
 pub type AgentTurnFn = Arc<
-    dyn Fn(AgentTurnRequest) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> + Send + Sync,
+    dyn Fn(AgentTurnRequest) -> Pin<Box<dyn Future<Output = Result<AgentTurnResult>> + Send>>
+        + Send
+        + Sync,
 >;
 
 /// Callback for injecting a system event into the main session.
@@ -35,6 +45,8 @@ pub struct AgentTurnRequest {
     pub deliver: bool,
     pub channel: Option<String>,
     pub to: Option<String>,
+    pub session_target: SessionTarget,
+    pub sandbox: CronSandboxConfig,
 }
 
 /// The cron scheduler.
@@ -115,7 +127,9 @@ impl CronService {
     pub async fn add(&self, create: CronJobCreate) -> Result<CronJob> {
         let now = now_ms();
         let mut job = CronJob {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: create
+                .id
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name: create.name,
             enabled: create.enabled,
             delete_after_run: create.delete_after_run,
@@ -123,6 +137,8 @@ impl CronService {
             payload: create.payload,
             session_target: create.session_target,
             state: CronJobState::default(),
+            sandbox: create.sandbox,
+            system: create.system,
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -173,6 +189,9 @@ impl CronService {
         }
         if let Some(delete_after) = patch.delete_after_run {
             job.delete_after_run = delete_after;
+        }
+        if let Some(sandbox) = patch.sandbox {
+            job.sandbox = sandbox;
         }
 
         job.updated_at_ms = now;
@@ -233,14 +252,20 @@ impl CronService {
     }
 
     /// Get scheduler status.
+    /// Counts exclude system jobs (e.g. heartbeat) to match what the UI shows.
     pub async fn status(&self) -> CronStatus {
         let jobs = self.jobs.read().await;
         let running = *self.running.read().await;
-        let enabled_count = jobs.iter().filter(|j| j.enabled).count();
-        let next_run_at_ms = jobs.iter().filter_map(|j| j.state.next_run_at_ms).min();
+        // Exclude system jobs from counts (they're hidden in the UI).
+        let user_jobs: Vec<_> = jobs.iter().filter(|j| !j.system).collect();
+        let enabled_count = user_jobs.iter().filter(|j| j.enabled).count();
+        let next_run_at_ms = user_jobs
+            .iter()
+            .filter_map(|j| j.state.next_run_at_ms)
+            .min();
         CronStatus {
             running,
-            job_count: jobs.len(),
+            job_count: user_jobs.len(),
             enabled_count,
             next_run_at_ms,
         }
@@ -325,7 +350,11 @@ impl CronService {
         let result = match &job.payload {
             CronPayload::SystemEvent { text } => {
                 (self.on_system_event)(text.clone());
-                Ok("system event injected".to_string())
+                Ok(AgentTurnResult {
+                    output: "system event injected".to_string(),
+                    input_tokens: None,
+                    output_tokens: None,
+                })
             },
             CronPayload::AgentTurn {
                 message,
@@ -342,6 +371,8 @@ impl CronService {
                     deliver: *deliver,
                     channel: channel.clone(),
                     to: to.clone(),
+                    session_target: job.session_target.clone(),
+                    sandbox: job.sandbox.clone(),
                 };
                 (self.on_agent_turn)(req).await
             },
@@ -349,11 +380,17 @@ impl CronService {
 
         let finished = now_ms();
         let duration_ms = finished - started;
-        let (status, error_msg, output) = match &result {
-            Ok(out) => (RunStatus::Ok, None, Some(out.clone())),
+        let (status, error_msg, output, input_tokens, output_tokens) = match &result {
+            Ok(r) => (
+                RunStatus::Ok,
+                None,
+                Some(r.output.clone()),
+                r.input_tokens,
+                r.output_tokens,
+            ),
             Err(e) => {
                 error!(id = %job.id, error = %e, "cron job failed");
-                (RunStatus::Error, Some(e.to_string()), None)
+                (RunStatus::Error, Some(e.to_string()), None, None, None)
             },
         };
 
@@ -366,6 +403,8 @@ impl CronService {
             error: error_msg.clone(),
             duration_ms,
             output,
+            input_tokens,
+            output_tokens,
         };
         if let Err(e) = self.store.append_run(&job.id, &run).await {
             warn!(error = %e, "failed to record cron run");
@@ -452,8 +491,8 @@ fn validate_job_spec(job: &CronJob) -> Result<()> {
         (SessionTarget::Main, CronPayload::AgentTurn { .. }) => {
             bail!("sessionTarget=main requires payload kind=systemEvent");
         },
-        (SessionTarget::Isolated, CronPayload::SystemEvent { .. }) => {
-            bail!("sessionTarget=isolated requires payload kind=agentTurn");
+        (SessionTarget::Isolated | SessionTarget::Named(_), CronPayload::SystemEvent { .. }) => {
+            bail!("sessionTarget=isolated/named requires payload kind=agentTurn");
         },
         _ => Ok(()),
     }
@@ -470,7 +509,15 @@ mod tests {
     }
 
     fn noop_agent_turn() -> AgentTurnFn {
-        Arc::new(|_req| Box::pin(async { Ok("ok".into()) }))
+        Arc::new(|_req| {
+            Box::pin(async {
+                Ok(AgentTurnResult {
+                    output: "ok".into(),
+                    input_tokens: None,
+                    output_tokens: None,
+                })
+            })
+        })
     }
 
     fn counting_system_event(counter: Arc<AtomicUsize>) -> SystemEventFn {
@@ -484,7 +531,11 @@ mod tests {
             let c = Arc::clone(&counter);
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Ok("done".into())
+                Ok(AgentTurnResult {
+                    output: "done".into(),
+                    input_tokens: None,
+                    output_tokens: None,
+                })
             })
         })
     }
@@ -504,6 +555,7 @@ mod tests {
 
         let job = svc
             .add(CronJobCreate {
+                id: None,
                 name: "test".into(),
                 schedule: CronSchedule::Every {
                     every_ms: 60_000,
@@ -520,6 +572,8 @@ mod tests {
                 session_target: SessionTarget::Isolated,
                 delete_after_run: false,
                 enabled: true,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await
             .unwrap();
@@ -538,6 +592,7 @@ mod tests {
         // main + agentTurn should fail
         let result = svc
             .add(CronJobCreate {
+                id: None,
                 name: "bad".into(),
                 schedule: CronSchedule::At {
                     at_ms: 9999999999999,
@@ -553,6 +608,8 @@ mod tests {
                 session_target: SessionTarget::Main,
                 delete_after_run: false,
                 enabled: true,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await;
 
@@ -566,6 +623,7 @@ mod tests {
 
         let job = svc
             .add(CronJobCreate {
+                id: None,
                 name: "orig".into(),
                 schedule: CronSchedule::Every {
                     every_ms: 60_000,
@@ -582,6 +640,8 @@ mod tests {
                 session_target: SessionTarget::Isolated,
                 delete_after_run: false,
                 enabled: true,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await
             .unwrap();
@@ -604,6 +664,7 @@ mod tests {
 
         let job = svc
             .add(CronJobCreate {
+                id: None,
                 name: "del".into(),
                 schedule: CronSchedule::Every {
                     every_ms: 60_000,
@@ -620,6 +681,8 @@ mod tests {
                 session_target: SessionTarget::Isolated,
                 delete_after_run: false,
                 enabled: true,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await
             .unwrap();
@@ -650,6 +713,7 @@ mod tests {
 
         let job = svc
             .add(CronJobCreate {
+                id: None,
                 name: "force".into(),
                 schedule: CronSchedule::Every {
                     every_ms: 999_999_999,
@@ -666,6 +730,8 @@ mod tests {
                 session_target: SessionTarget::Isolated,
                 delete_after_run: false,
                 enabled: true,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await
             .unwrap();
@@ -683,6 +749,7 @@ mod tests {
 
         let job = svc
             .add(CronJobCreate {
+                id: None,
                 name: "disabled".into(),
                 schedule: CronSchedule::Every {
                     every_ms: 60_000,
@@ -699,6 +766,8 @@ mod tests {
                 session_target: SessionTarget::Isolated,
                 delete_after_run: false,
                 enabled: false,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await
             .unwrap();
@@ -719,6 +788,7 @@ mod tests {
 
         let job = svc
             .add(CronJobCreate {
+                id: None,
                 name: "sys".into(),
                 schedule: CronSchedule::Every {
                     every_ms: 60_000,
@@ -730,6 +800,8 @@ mod tests {
                 session_target: SessionTarget::Main,
                 delete_after_run: false,
                 enabled: true,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await
             .unwrap();
@@ -761,6 +833,7 @@ mod tests {
         // Use a past at_ms so compute_next_run returns None after execution.
         let job = svc
             .add(CronJobCreate {
+                id: None,
                 name: "oneshot".into(),
                 schedule: CronSchedule::At { at_ms: 1000 }, // far past
                 payload: CronPayload::AgentTurn {
@@ -774,6 +847,8 @@ mod tests {
                 session_target: SessionTarget::Isolated,
                 delete_after_run: false,
                 enabled: true,
+                system: false,
+                sandbox: CronSandboxConfig::default(),
             })
             .await
             .unwrap();

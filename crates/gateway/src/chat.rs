@@ -420,7 +420,6 @@ impl ChatService for LiveChatService {
                 self.state
                     .push_channel_reply(&session_key, target.clone())
                     .await;
-
             }
         }
 
@@ -765,6 +764,165 @@ impl ChatService for LiveChatService {
             .insert(run_id.clone(), handle.abort_handle());
 
         Ok(serde_json::json!({ "runId": run_id }))
+    }
+
+    async fn send_sync(&self, params: Value) -> ServiceResult {
+        let text = params
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing 'text' parameter".to_string())?
+            .to_string();
+
+        let explicit_model = params.get("model").and_then(|v| v.as_str());
+        let stream_only = !self.has_tools_sync();
+
+        // Resolve session key from explicit override.
+        let session_key = match params.get("_session_key").and_then(|v| v.as_str()) {
+            Some(sk) => sk.to_string(),
+            None => "main".to_string(),
+        };
+
+        // Resolve provider.
+        let provider: Arc<dyn moltis_agents::model::LlmProvider> = {
+            let reg = self.providers.read().await;
+            if let Some(id) = explicit_model {
+                reg.get(id)
+                    .ok_or_else(|| format!("model '{id}' not found"))?
+            } else if !stream_only {
+                reg.first_with_tools()
+                    .ok_or_else(|| "no LLM providers configured".to_string())?
+            } else {
+                reg.first()
+                    .ok_or_else(|| "no LLM providers configured".to_string())?
+            }
+        };
+
+        // Persist the user message.
+        let user_msg =
+            serde_json::json!({"role": "user", "content": &text, "created_at": now_ms()});
+        if let Err(e) = self.session_store.append(&session_key, &user_msg).await {
+            warn!("send_sync: failed to persist user message: {e}");
+        }
+
+        // Ensure this session appears in the sessions list.
+        let _ = self.session_metadata.upsert(&session_key, None).await;
+        self.session_metadata.touch(&session_key, 1).await;
+
+        // Load conversation history (excluding the message we just appended).
+        let mut history = self
+            .session_store
+            .read(&session_key)
+            .await
+            .unwrap_or_default();
+        if !history.is_empty() {
+            history.pop();
+        }
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let state = Arc::clone(&self.state);
+        let tool_registry = Arc::clone(&self.tool_registry);
+        let hook_registry = self.hook_registry.clone();
+        let provider_name = provider.name().to_string();
+        let model_id = provider.id().to_string();
+        let user_message_index = history.len();
+
+        info!(
+            run_id = %run_id,
+            user_message = %text,
+            model = %model_id,
+            stream_only,
+            session = %session_key,
+            "chat.send_sync"
+        );
+
+        let result = if stream_only {
+            run_streaming(
+                &state,
+                &run_id,
+                provider,
+                &text,
+                &provider_name,
+                &history,
+                &session_key,
+                None,
+                None,
+                user_message_index,
+                &[],
+            )
+            .await
+        } else {
+            run_with_tools(
+                &state,
+                &run_id,
+                provider,
+                &tool_registry,
+                &text,
+                &provider_name,
+                &history,
+                &session_key,
+                None,
+                None,
+                user_message_index,
+                &[],
+                hook_registry,
+                None,
+                Some(&self.session_store),
+            )
+            .await
+        };
+
+        // Persist assistant response.
+        if let Some((ref response_text, input_tokens, output_tokens)) = result {
+            let assistant_msg = serde_json::json!({
+                "role": "assistant",
+                "content": response_text,
+                "model": model_id,
+                "provider": provider_name,
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+                "created_at": now_ms(),
+            });
+            if let Err(e) = self
+                .session_store
+                .append(&session_key, &assistant_msg)
+                .await
+            {
+                warn!("send_sync: failed to persist assistant message: {e}");
+            }
+            // Update metadata message count.
+            if let Ok(count) = self.session_store.count(&session_key).await {
+                self.session_metadata.touch(&session_key, count).await;
+            }
+        }
+
+        match result {
+            Some((response_text, input_tokens, output_tokens)) => Ok(serde_json::json!({
+                "text": response_text,
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+            })),
+            None => {
+                // Check the last broadcast for this run to get the actual error message.
+                let error_msg = state
+                    .last_run_error(&run_id)
+                    .await
+                    .unwrap_or_else(|| "agent run failed (check server logs)".to_string());
+
+                // Persist the error in the session so it's visible in session history.
+                let error_entry = serde_json::json!({
+                    "role": "system",
+                    "content": format!("[error] {error_msg}"),
+                    "created_at": now_ms(),
+                });
+                let _ = self.session_store.append(&session_key, &error_entry).await;
+                // Update metadata so the session shows in the UI.
+                if let Ok(count) = self.session_store.count(&session_key).await {
+                    self.session_metadata.touch(&session_key, count).await;
+                }
+
+                Err(error_msg)
+            },
+        }
     }
 
     async fn abort(&self, params: Value) -> ServiceResult {
@@ -1488,8 +1646,10 @@ async fn run_with_tools(
             ))
         },
         Err(e) => {
-            warn!(run_id, error = %e, "agent run error");
-            let error_obj = parse_chat_error(&e.to_string(), Some(provider_name));
+            let error_str = e.to_string();
+            warn!(run_id, error = %error_str, "agent run error");
+            state.set_run_error(run_id, error_str.clone()).await;
+            let error_obj = parse_chat_error(&error_str, Some(provider_name));
             broadcast(
                 state,
                 "chat",
@@ -1661,6 +1821,7 @@ async fn run_streaming(
             },
             StreamEvent::Error(msg) => {
                 warn!(run_id, error = %msg, "chat stream error");
+                state.set_run_error(run_id, msg.clone()).await;
                 let error_obj = parse_chat_error(&msg, Some(provider_name));
                 broadcast(
                     state,
