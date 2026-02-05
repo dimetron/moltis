@@ -323,7 +323,10 @@ impl ProviderRegistry {
                 continue;
             }
 
-            let genai_provider_name = format!("genai/{provider_name}");
+            // Get alias if configured (for metrics differentiation).
+            let alias = config.get(provider_name).and_then(|e| e.alias.clone());
+            let genai_provider_name = alias.unwrap_or_else(|| format!("genai/{provider_name}"));
+
             let provider = Arc::new(genai_provider::GenaiProvider::new(
                 model_id.into(),
                 genai_provider_name.clone(),
@@ -365,15 +368,20 @@ impl ProviderRegistry {
             return;
         }
 
-        let provider = Arc::new(async_openai_provider::AsyncOpenAiProvider::new(
+        // Get alias if configured (for metrics differentiation).
+        let alias = config.get("openai").and_then(|e| e.alias.clone());
+        let provider_label = alias.clone().unwrap_or_else(|| "async-openai".into());
+
+        let provider = Arc::new(async_openai_provider::AsyncOpenAiProvider::with_alias(
             key,
             model_id.into(),
             base_url,
+            alias,
         ));
         self.register(
             ModelInfo {
                 id: model_id.into(),
-                provider: "async-openai".into(),
+                provider: provider_label,
                 display_name: "GPT-4o (async-openai)".into(),
             },
             provider,
@@ -611,6 +619,10 @@ impl ProviderRegistry {
                 .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
                 .unwrap_or_else(|| "https://api.anthropic.com".into());
 
+            // Get alias if configured (for metrics differentiation).
+            let alias = config.get("anthropic").and_then(|e| e.alias.clone());
+            let provider_label = alias.clone().unwrap_or_else(|| "anthropic".into());
+
             // If user configured a specific model, register only that one.
             if let Some(model_id) = config.get("anthropic").and_then(|e| e.model.as_deref()) {
                 if !self.providers.contains_key(model_id) {
@@ -619,15 +631,16 @@ impl ProviderRegistry {
                         .find(|(id, _)| *id == model_id)
                         .map(|(_, name)| name.to_string())
                         .unwrap_or_else(|| model_id.to_string());
-                    let provider = Arc::new(anthropic::AnthropicProvider::new(
+                    let provider = Arc::new(anthropic::AnthropicProvider::with_alias(
                         key.clone(),
                         model_id.into(),
                         base_url.clone(),
+                        alias.clone(),
                     ));
                     self.register(
                         ModelInfo {
                             id: model_id.into(),
-                            provider: "anthropic".into(),
+                            provider: provider_label.clone(),
                             display_name: display,
                         },
                         provider,
@@ -639,15 +652,16 @@ impl ProviderRegistry {
                     if self.providers.contains_key(model_id) {
                         continue;
                     }
-                    let provider = Arc::new(anthropic::AnthropicProvider::new(
+                    let provider = Arc::new(anthropic::AnthropicProvider::with_alias(
                         key.clone(),
                         model_id.into(),
                         base_url.clone(),
+                        alias.clone(),
                     ));
                     self.register(
                         ModelInfo {
                             id: model_id.into(),
-                            provider: "anthropic".into(),
+                            provider: provider_label.clone(),
                             display_name: display_name.into(),
                         },
                         provider,
@@ -666,6 +680,10 @@ impl ProviderRegistry {
                 .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
                 .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
+            // Get alias if configured (for metrics differentiation).
+            let alias = config.get("openai").and_then(|e| e.alias.clone());
+            let provider_label = alias.clone().unwrap_or_else(|| "openai".into());
+
             if let Some(model_id) = config.get("openai").and_then(|e| e.model.as_deref()) {
                 if !self.providers.contains_key(model_id) {
                     let display = OPENAI_MODELS
@@ -673,15 +691,16 @@ impl ProviderRegistry {
                         .find(|(id, _)| *id == model_id)
                         .map(|(_, name)| name.to_string())
                         .unwrap_or_else(|| model_id.to_string());
-                    let provider = Arc::new(openai::OpenAiProvider::new(
+                    let provider = Arc::new(openai::OpenAiProvider::new_with_name(
                         key.clone(),
                         model_id.into(),
                         base_url.clone(),
+                        provider_label.clone(),
                     ));
                     self.register(
                         ModelInfo {
                             id: model_id.into(),
-                            provider: "openai".into(),
+                            provider: provider_label.clone(),
                             display_name: display,
                         },
                         provider,
@@ -692,15 +711,16 @@ impl ProviderRegistry {
                     if self.providers.contains_key(model_id) {
                         continue;
                     }
-                    let provider = Arc::new(openai::OpenAiProvider::new(
+                    let provider = Arc::new(openai::OpenAiProvider::new_with_name(
                         key.clone(),
                         model_id.into(),
                         base_url.clone(),
+                        provider_label.clone(),
                     ));
                     self.register(
                         ModelInfo {
                             id: model_id.into(),
-                            provider: "openai".into(),
+                            provider: provider_label.clone(),
                             display_name: display_name.into(),
                         },
                         provider,
@@ -735,6 +755,10 @@ impl ProviderRegistry {
                 .or_else(|| std::env::var(def.env_base_url_key).ok())
                 .unwrap_or_else(|| def.default_base_url.into());
 
+            // Get alias if configured (for metrics differentiation).
+            let alias = config.get(def.config_name).and_then(|e| e.alias.clone());
+            let provider_label = alias.unwrap_or_else(|| def.config_name.into());
+
             // If user configured a specific model, register only that one.
             if let Some(model_id) = config.get(def.config_name).and_then(|e| e.model.as_deref()) {
                 if !self.providers.contains_key(model_id) {
@@ -748,12 +772,12 @@ impl ProviderRegistry {
                         key.clone(),
                         model_id.into(),
                         base_url.clone(),
-                        def.config_name.into(),
+                        provider_label.clone(),
                     ));
                     self.register(
                         ModelInfo {
                             id: model_id.into(),
-                            provider: def.config_name.into(),
+                            provider: provider_label.clone(),
                             display_name: display,
                         },
                         provider,
@@ -775,12 +799,12 @@ impl ProviderRegistry {
                     key.clone(),
                     model_id.into(),
                     base_url.clone(),
-                    def.config_name.into(),
+                    provider_label.clone(),
                 ));
                 self.register(
                     ModelInfo {
                         id: model_id.into(),
-                        provider: def.config_name.into(),
+                        provider: provider_label.clone(),
                         display_name: display_name.into(),
                     },
                     provider,
