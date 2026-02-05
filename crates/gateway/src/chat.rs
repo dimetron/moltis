@@ -1,7 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use {
     async_trait::async_trait,
+    serde::{Deserialize, Serialize},
     serde_json::Value,
     tokio::{
         sync::{OwnedSemaphorePermit, RwLock, Semaphore},
@@ -40,15 +45,65 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+// ── Disabled Models Store ────────────────────────────────────────────────────
+
+/// Persistent store for disabled model IDs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DisabledModelsStore {
+    #[serde(default)]
+    pub disabled: HashSet<String>,
+}
+
+impl DisabledModelsStore {
+    fn config_path() -> Option<PathBuf> {
+        moltis_config::config_dir().map(|d| d.join("disabled-models.json"))
+    }
+
+    /// Load disabled models from config file.
+    pub fn load() -> Self {
+        Self::config_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|content| serde_json::from_str(&content).ok())
+            .unwrap_or_default()
+    }
+
+    /// Save disabled models to config file.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_path().ok_or_else(|| anyhow::anyhow!("no config directory"))?;
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Disable a model by ID.
+    pub fn disable(&mut self, model_id: &str) -> bool {
+        self.disabled.insert(model_id.to_string())
+    }
+
+    /// Enable a model by ID (remove from disabled set).
+    pub fn enable(&mut self, model_id: &str) -> bool {
+        self.disabled.remove(model_id)
+    }
+
+    /// Check if a model is disabled.
+    pub fn is_disabled(&self, model_id: &str) -> bool {
+        self.disabled.contains(model_id)
+    }
+}
+
 // ── LiveModelService ────────────────────────────────────────────────────────
 
 pub struct LiveModelService {
     providers: Arc<RwLock<ProviderRegistry>>,
+    disabled: Arc<RwLock<DisabledModelsStore>>,
 }
 
 impl LiveModelService {
     pub fn new(providers: Arc<RwLock<ProviderRegistry>>) -> Self {
-        Self { providers }
+        Self {
+            providers,
+            disabled: Arc::new(RwLock::new(DisabledModelsStore::load())),
+        }
     }
 }
 
@@ -56,13 +111,13 @@ impl LiveModelService {
 impl ModelService for LiveModelService {
     async fn list(&self) -> ServiceResult {
         let reg = self.providers.read().await;
+        let disabled = self.disabled.read().await;
         let models: Vec<_> = reg
             .list_models()
             .iter()
+            .filter(|m| !disabled.is_disabled(&m.id))
             .map(|m| {
-                let supports_tools = reg
-                    .get(&m.id)
-                    .is_some_and(|p| p.supports_tools());
+                let supports_tools = reg.get(&m.id).is_some_and(|p| p.supports_tools());
                 serde_json::json!({
                     "id": m.id,
                     "provider": m.provider,
@@ -72,6 +127,46 @@ impl ModelService for LiveModelService {
             })
             .collect();
         Ok(serde_json::json!(models))
+    }
+
+    async fn disable(&self, params: Value) -> ServiceResult {
+        let model_id = params
+            .get("modelId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing 'modelId' parameter".to_string())?;
+
+        info!(model = %model_id, "disabling model");
+
+        let mut disabled = self.disabled.write().await;
+        disabled.disable(model_id);
+        disabled
+            .save()
+            .map_err(|e| format!("failed to save: {e}"))?;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "modelId": model_id,
+        }))
+    }
+
+    async fn enable(&self, params: Value) -> ServiceResult {
+        let model_id = params
+            .get("modelId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing 'modelId' parameter".to_string())?;
+
+        info!(model = %model_id, "enabling model");
+
+        let mut disabled = self.disabled.write().await;
+        disabled.enable(model_id);
+        disabled
+            .save()
+            .map_err(|e| format!("failed to save: {e}"))?;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "modelId": model_id,
+        }))
     }
 }
 

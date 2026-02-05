@@ -116,9 +116,9 @@ fn detect_mlx_installers() -> Vec<(&'static str, &'static str)> {
     installers
 }
 
-/// Configuration file for local-llm stored in the config directory.
+/// Single model entry in the local-llm config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalLlmConfig {
+pub struct LocalModelEntry {
     pub model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_path: Option<PathBuf>,
@@ -133,13 +133,54 @@ fn default_backend() -> String {
     "GGUF".to_string()
 }
 
+/// Configuration file for local-llm stored in the config directory.
+/// Supports multiple models.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalLlmConfig {
+    #[serde(default)]
+    pub models: Vec<LocalModelEntry>,
+}
+
+/// Legacy single-model config for migration.
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyLocalLlmConfig {
+    model_id: String,
+    model_path: Option<PathBuf>,
+    #[serde(default)]
+    gpu_layers: u32,
+    #[serde(default = "default_backend")]
+    backend: String,
+}
+
 impl LocalLlmConfig {
     /// Load config from the config directory.
+    /// Handles migration from legacy single-model format.
     pub fn load() -> Option<Self> {
         let config_dir = moltis_config::config_dir()?;
         let config_path = config_dir.join("local-llm.json");
         let content = std::fs::read_to_string(&config_path).ok()?;
-        serde_json::from_str(&content).ok()
+
+        // Try new multi-model format first
+        if let Ok(config) = serde_json::from_str::<Self>(&content) {
+            return Some(config);
+        }
+
+        // Try legacy single-model format and migrate
+        if let Ok(legacy) = serde_json::from_str::<LegacyLocalLlmConfig>(&content) {
+            let config = Self {
+                models: vec![LocalModelEntry {
+                    model_id: legacy.model_id,
+                    model_path: legacy.model_path,
+                    gpu_layers: legacy.gpu_layers,
+                    backend: legacy.backend,
+                }],
+            };
+            // Save migrated config
+            let _ = config.save();
+            return Some(config);
+        }
+
+        None
     }
 
     /// Save config to the config directory.
@@ -151,6 +192,25 @@ impl LocalLlmConfig {
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(config_path, content)?;
         Ok(())
+    }
+
+    /// Add a model to the config. Replaces if model_id already exists.
+    pub fn add_model(&mut self, entry: LocalModelEntry) {
+        // Remove existing entry with same model_id
+        self.models.retain(|m| m.model_id != entry.model_id);
+        self.models.push(entry);
+    }
+
+    /// Remove a model by ID. Returns true if model was found and removed.
+    pub fn remove_model(&mut self, model_id: &str) -> bool {
+        let len_before = self.models.len();
+        self.models.retain(|m| m.model_id != model_id);
+        self.models.len() < len_before
+    }
+
+    /// Get a model by ID.
+    pub fn get_model(&self, model_id: &str) -> Option<&LocalModelEntry> {
+        self.models.iter().find(|m| m.model_id == model_id)
     }
 }
 
@@ -187,9 +247,14 @@ impl LiveLocalLlmService {
     pub fn new(registry: Arc<RwLock<ProviderRegistry>>) -> Self {
         // Check if we have a saved config and set initial status
         let status = if let Some(config) = LocalLlmConfig::load() {
-            // Check if the model is already in the registry
-            let model_id = config.model_id.clone();
-            LocalLlmStatus::Ready { model_id }
+            // Use first model as the "active" one for status display
+            if let Some(first_model) = config.models.first() {
+                LocalLlmStatus::Ready {
+                    model_id: first_model.model_id.clone(),
+                }
+            } else {
+                LocalLlmStatus::Unconfigured
+            }
         } else {
             LocalLlmStatus::Unconfigured
         };
@@ -376,13 +441,14 @@ impl LocalLlmService for LiveLocalLlmService {
             };
         }
 
-        // Save configuration
-        let config = LocalLlmConfig {
+        // Save configuration (add to existing models)
+        let mut config = LocalLlmConfig::load().unwrap_or_default();
+        config.add_model(LocalModelEntry {
             model_id: model_id.clone(),
             model_path: None,
             gpu_layers: 0,
             backend: backend.clone(),
-        };
+        });
         config
             .save()
             .map_err(|e| format!("failed to save config: {e}"))?;
@@ -591,13 +657,14 @@ impl LocalLlmService for LiveLocalLlmService {
 
         info!(model = %model_id, repo = %hf_repo, backend = %backend, "configuring custom model");
 
-        // Save configuration
-        let config = LocalLlmConfig {
+        // Save configuration (add to existing models)
+        let mut config = LocalLlmConfig::load().unwrap_or_default();
+        config.add_model(LocalModelEntry {
             model_id: model_id.clone(),
             model_path: None,
             gpu_layers: 0,
             backend: backend.clone(),
-        };
+        });
         config
             .save()
             .map_err(|e| format!("failed to save config: {e}"))?;
@@ -625,6 +692,44 @@ impl LocalLlmService for LiveLocalLlmService {
             "modelId": model_id,
             "hfRepo": hf_repo,
             "backend": backend,
+        }))
+    }
+
+    async fn remove_model(&self, params: Value) -> ServiceResult {
+        let model_id = params
+            .get("modelId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing 'modelId' parameter".to_string())?;
+
+        info!(model = %model_id, "removing local-llm model");
+
+        // Remove from config
+        let mut config = LocalLlmConfig::load().unwrap_or_default();
+        let removed = config.remove_model(model_id);
+
+        if !removed {
+            return Err(format!("model '{model_id}' not found in config"));
+        }
+
+        config
+            .save()
+            .map_err(|e| format!("failed to save config: {e}"))?;
+
+        // Remove from provider registry
+        {
+            let mut reg = self.registry.write().await;
+            reg.unregister(model_id);
+        }
+
+        // Update status if we removed the last model
+        if config.models.is_empty() {
+            let mut status = self.status.write().await;
+            *status = LocalLlmStatus::Unconfigured;
+        }
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "modelId": model_id,
         }))
     }
 }
@@ -730,17 +835,55 @@ mod tests {
 
     #[test]
     fn test_local_llm_config_serialization() {
-        let config = LocalLlmConfig {
+        let mut config = LocalLlmConfig::default();
+        config.add_model(LocalModelEntry {
             model_id: "qwen2.5-coder-7b-q4_k_m".into(),
             model_path: None,
             gpu_layers: 0,
             backend: "GGUF".into(),
-        };
+        });
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("qwen2.5-coder-7b-q4_k_m"));
 
         let parsed: LocalLlmConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.model_id, "qwen2.5-coder-7b-q4_k_m");
+        assert_eq!(parsed.models.len(), 1);
+        assert_eq!(parsed.models[0].model_id, "qwen2.5-coder-7b-q4_k_m");
+    }
+
+    #[test]
+    fn test_local_llm_config_multi_model() {
+        let mut config = LocalLlmConfig::default();
+        config.add_model(LocalModelEntry {
+            model_id: "model-1".into(),
+            model_path: None,
+            gpu_layers: 0,
+            backend: "GGUF".into(),
+        });
+        config.add_model(LocalModelEntry {
+            model_id: "model-2".into(),
+            model_path: None,
+            gpu_layers: 0,
+            backend: "MLX".into(),
+        });
+        assert_eq!(config.models.len(), 2);
+
+        // Test remove_model
+        assert!(config.remove_model("model-1"));
+        assert_eq!(config.models.len(), 1);
+        assert_eq!(config.models[0].model_id, "model-2");
+
+        // Test remove non-existent model
+        assert!(!config.remove_model("model-1"));
+        assert_eq!(config.models.len(), 1);
+    }
+
+    #[test]
+    fn test_legacy_config_format_parsing() {
+        // Test that legacy single-model format can be deserialized
+        let legacy_json =
+            r#"{"model_id":"old-model","model_path":null,"gpu_layers":0,"backend":"GGUF"}"#;
+        let legacy: LegacyLocalLlmConfig = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy.model_id, "old-model");
     }
 
     #[test]
@@ -837,7 +980,10 @@ mod tests {
         assert_eq!(info.downloads, 20580);
         assert_eq!(info.likes, 9);
         assert!(info.created_at.is_some());
-        assert_eq!(info.created_at.as_ref().unwrap(), "2025-04-28T21:01:53.000Z");
+        assert_eq!(
+            info.created_at.as_ref().unwrap(),
+            "2025-04-28T21:01:53.000Z"
+        );
         assert!(info.tags.contains(&"mlx".to_string()));
         assert!(info.tags.contains(&"qwen3".to_string()));
     }

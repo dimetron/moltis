@@ -213,7 +213,10 @@ pub(crate) fn config_with_saved_keys(
             // Only merge if there's no model already configured in moltis.toml
             let entry = config.providers.entry("local".into()).or_default();
             if entry.model.is_none() {
-                entry.model = Some(local_config.model_id);
+                // Use the first configured model from the multi-model config
+                if let Some(first_model) = local_config.models.first() {
+                    entry.model = Some(first_model.model_id.clone());
+                }
             }
         }
     }

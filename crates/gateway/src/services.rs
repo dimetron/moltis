@@ -1196,6 +1196,10 @@ impl UpdateService for NoopUpdateService {
 #[async_trait]
 pub trait ModelService: Send + Sync {
     async fn list(&self) -> ServiceResult;
+    /// Disable a model (hide it from the list).
+    async fn disable(&self, params: Value) -> ServiceResult;
+    /// Enable a model (un-hide it).
+    async fn enable(&self, params: Value) -> ServiceResult;
 }
 
 pub struct NoopModelService;
@@ -1204,6 +1208,14 @@ pub struct NoopModelService;
 impl ModelService for NoopModelService {
     async fn list(&self) -> ServiceResult {
         Ok(serde_json::json!([]))
+    }
+
+    async fn disable(&self, _params: Value) -> ServiceResult {
+        Err("model service not configured".into())
+    }
+
+    async fn enable(&self, _params: Value) -> ServiceResult {
+        Err("model service not configured".into())
     }
 }
 
@@ -1318,6 +1330,8 @@ pub trait LocalLlmService: Send + Sync {
     async fn search_hf(&self, params: Value) -> ServiceResult;
     /// Configure a custom model from HuggingFace repo URL.
     async fn configure_custom(&self, params: Value) -> ServiceResult;
+    /// Remove a configured model by ID.
+    async fn remove_model(&self, params: Value) -> ServiceResult;
 }
 
 pub struct NoopLocalLlmService;
@@ -1345,6 +1359,10 @@ impl LocalLlmService for NoopLocalLlmService {
     }
 
     async fn configure_custom(&self, _params: Value) -> ServiceResult {
+        Err("local-llm feature not enabled".into())
+    }
+
+    async fn remove_model(&self, _params: Value) -> ServiceResult {
         Err("local-llm feature not enabled".into())
     }
 }

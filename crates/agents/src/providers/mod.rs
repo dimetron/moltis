@@ -203,6 +203,15 @@ impl ProviderRegistry {
         self.models.push(info);
     }
 
+    /// Unregister a provider by model ID. Returns true if it was removed.
+    pub fn unregister(&mut self, model_id: &str) -> bool {
+        let removed = self.providers.remove(model_id).is_some();
+        if removed {
+            self.models.retain(|m| m.id != model_id);
+        }
+        removed
+    }
+
     /// Auto-discover providers from environment variables.
     /// Uses default config (all providers enabled).
     pub fn from_env() -> Self {

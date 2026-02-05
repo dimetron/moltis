@@ -44,14 +44,24 @@ function ModelCard(props) {
 		var msg = `Remove ${m.displayName || m.id}?`;
 		requestConfirm(msg).then((yes) => {
 			if (!yes) return;
-			// For local models, we need a different RPC; for now use provider remove
-			var providerName = isLocal ? "local" : m.provider;
-			sendRpc("providers.remove_key", { provider: providerName }).then((res) => {
-				if (res?.ok) {
-					fetchModels();
-					fetchProviders();
-				}
-			});
+			// For local-llm models, actually remove from config
+			// For other providers, disable (hide) the model
+			if (isLocal) {
+				sendRpc("providers.local.remove_model", { modelId: m.id }).then((res) => {
+					if (res?.ok) {
+						fetchModels();
+						fetchProviders();
+					}
+				});
+			} else {
+				// Disable (hide) the model without removing the provider
+				sendRpc("models.disable", { modelId: m.id }).then((res) => {
+					if (res?.ok) {
+						fetchModels();
+						fetchProviders();
+					}
+				});
+			}
 		});
 	}
 
@@ -67,10 +77,10 @@ function ModelCard(props) {
 		<div style="flex:1;min-width:0;">
 			<div style="display:flex;align-items:center;gap:8px;">
 				<span class="provider-item-name">${displayName}</span>
-				<span class="provider-item-badge ${isLocal ? 'local' : 'api-key'}">
+				<span class="provider-item-badge ${isLocal ? "local" : "api-key"}">
 					${getProviderBadge()}
 				</span>
-				${!m.supportsTools ? html`<span class="provider-item-badge" style="background:var(--warning-bg,rgba(234,179,8,.15));color:var(--warning,#eab308);border-color:var(--warning,#eab308);">Chat only</span>` : null}
+				${m.supportsTools ? null : html`<span class="provider-item-badge" style="background:var(--warning-bg,rgba(234,179,8,.15));color:var(--warning,#eab308);border-color:var(--warning,#eab308);">Chat only</span>`}
 			</div>
 			<div style="font-size:.7rem;color:var(--muted);margin-top:4px;">
 				<span style="font-family:var(--font-mono);">${m.id}</span>
