@@ -19,6 +19,9 @@
 - [Hooks](hooks.md)
 - [Local LLMs](local-llm.md)
 - [Sandbox](sandbox.md)
+- [Session State](session-state.md)
+- [Session Branching](session-branching.md)
+- [Skill Self-Extension](skill-tools.md)
 
 ---
 
@@ -39,3 +42,4 @@
 - [Streaming](streaming.md)
 - [SQLite Migrations](sqlite-migration.md)
 - [Metrics & Tracing](metrics-and-tracing.md)
+- [Tool Registry](tool-registry.md)

@@ -799,6 +799,21 @@
     color: var(--text);
     background: var(--surface2);
   }
+  .session-fork-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+    display: inline-flex;
+    align-items: center;
+  }
+  .session-fork-btn:hover {
+    color: var(--accent);
+    background: var(--surface2);
+  }
   .session-delete:hover {
     color: var(--error);
   }

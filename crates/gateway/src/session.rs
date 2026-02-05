@@ -100,6 +100,7 @@ impl SessionService for LiveSessionService {
                 "activeChannel": active_channel,
                 "parentSessionKey": e.parent_session_key,
                 "forkPoint": e.fork_point,
+                "mcpDisabled": e.mcp_disabled,
             }));
         }
         Ok(serde_json::json!(entries))
@@ -159,6 +160,7 @@ impl SessionService for LiveSessionService {
                 "sandbox_enabled": entry.sandbox_enabled,
                 "sandbox_image": entry.sandbox_image,
                 "worktree_branch": entry.worktree_branch,
+                "mcpDisabled": entry.mcp_disabled,
             },
             "history": history,
         }))
@@ -232,6 +234,12 @@ impl SessionService for LiveSessionService {
             }
         }
 
+        // Update mcp_disabled if provided.
+        if params.get("mcp_disabled").is_some() {
+            let mcp_disabled = params.get("mcp_disabled").and_then(|v| v.as_bool());
+            self.metadata.set_mcp_disabled(key, mcp_disabled).await;
+        }
+
         // Update sandbox_enabled if provided.
         if params.get("sandbox_enabled").is_some() {
             let sandbox_enabled = params.get("sandbox_enabled").and_then(|v| v.as_bool());
@@ -257,6 +265,7 @@ impl SessionService for LiveSessionService {
             "sandbox_enabled": entry.sandbox_enabled,
             "sandbox_image": entry.sandbox_image,
             "worktree_branch": entry.worktree_branch,
+            "mcpDisabled": entry.mcp_disabled,
         }))
     }
 
@@ -404,7 +413,7 @@ impl SessionService for LiveSessionService {
 
         self.metadata.touch(&new_key, fork_point as u32).await;
 
-        // Inherit model and project from parent.
+        // Inherit model, project, and mcp_disabled from parent.
         if let Some(parent) = self.metadata.get(parent_key).await {
             if parent.model.is_some() {
                 self.metadata.set_model(&new_key, parent.model).await;
@@ -412,6 +421,11 @@ impl SessionService for LiveSessionService {
             if parent.project_id.is_some() {
                 self.metadata
                     .set_project_id(&new_key, parent.project_id)
+                    .await;
+            }
+            if parent.mcp_disabled.is_some() {
+                self.metadata
+                    .set_mcp_disabled(&new_key, parent.mcp_disabled)
                     .await;
             }
         }

@@ -1042,7 +1042,7 @@ function SecuritySection() {
 					}
 					<div>
 						<button type="button" class="provider-btn" onClick=${onCreateApiKey}
-							disabled=${!akLabel.trim() || !(akFullAccess || Object.values(akScopes).some((v) => v))}>
+							disabled=${!(akLabel.trim() && (akFullAccess || Object.values(akScopes).some((v) => v)))}>
 							Generate key
 						</button>
 					</div>

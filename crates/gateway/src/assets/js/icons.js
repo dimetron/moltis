@@ -31,6 +31,47 @@ export function makeCronIcon() {
 	return svg;
 }
 
+export function makeBranchIcon() {
+	var ns = "http://www.w3.org/2000/svg";
+	var svg = document.createElementNS(ns, "svg");
+	svg.setAttribute("width", "16");
+	svg.setAttribute("height", "16");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("fill", "none");
+	svg.setAttribute("stroke", "currentColor");
+	svg.setAttribute("stroke-width", "1.5");
+	var path = document.createElementNS(ns, "path");
+	path.setAttribute("stroke-linecap", "round");
+	path.setAttribute("stroke-linejoin", "round");
+	// Git-branch style: vertical line with a branch splitting off
+	path.setAttribute(
+		"d",
+		"M6 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3-3h6a3 3 0 0 0 3-3V3m0 0a3 3 0 1 0-3 3m3-3a3 3 0 0 1-3 3",
+	);
+	svg.appendChild(path);
+	return svg;
+}
+
+export function makeForkIcon() {
+	var ns = "http://www.w3.org/2000/svg";
+	var svg = document.createElementNS(ns, "svg");
+	svg.setAttribute("width", "14");
+	svg.setAttribute("height", "14");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("fill", "none");
+	svg.setAttribute("stroke", "currentColor");
+	svg.setAttribute("stroke-width", "1.5");
+	var path = document.createElementNS(ns, "path");
+	path.setAttribute("stroke-linecap", "round");
+	path.setAttribute("stroke-linejoin", "round");
+	path.setAttribute(
+		"d",
+		"M6 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3-3h6a3 3 0 0 0 3-3V3m0 0a3 3 0 1 0-3 3m3-3a3 3 0 0 1-3 3",
+	);
+	svg.appendChild(path);
+	return svg;
+}
+
 export function makeChatIcon() {
 	var ns = "http://www.w3.org/2000/svg";
 	var svg = document.createElementNS(ns, "svg");

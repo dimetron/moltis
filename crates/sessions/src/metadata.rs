@@ -37,6 +37,8 @@ pub struct SessionEntry {
     pub parent_session_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_point: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_disabled: Option<bool>,
 }
 
 /// JSON file-backed index mapping session key → SessionEntry.
@@ -108,6 +110,7 @@ impl SessionMetadata {
                 channel_binding: None,
                 parent_session_key: None,
                 fork_point: None,
+                mcp_disabled: None,
             })
     }
 
@@ -159,6 +162,14 @@ impl SessionMetadata {
         }
     }
 
+    /// Set the mcp_disabled override for a session.
+    pub fn set_mcp_disabled(&mut self, key: &str, disabled: Option<bool>) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.mcp_disabled = disabled;
+            entry.updated_at = now_ms();
+        }
+    }
+
     /// Set the channel binding for a session.
     pub fn set_channel_binding(&mut self, key: &str, binding: Option<String>) {
         if let Some(entry) = self.entries.get_mut(key) {
@@ -204,6 +215,7 @@ struct SessionRow {
     channel_binding: Option<String>,
     parent_session_key: Option<String>,
     fork_point: Option<i32>,
+    mcp_disabled: Option<i32>,
 }
 
 impl From<SessionRow> for SessionEntry {
@@ -224,6 +236,7 @@ impl From<SessionRow> for SessionEntry {
             channel_binding: r.channel_binding,
             parent_session_key: r.parent_session_key,
             fork_point: r.fork_point.map(|v| v as u32),
+            mcp_disabled: r.mcp_disabled.map(|v| v != 0),
         }
     }
 }
@@ -255,7 +268,8 @@ impl SqliteSessionMetadata {
                 sandbox_image       TEXT,
                 channel_binding     TEXT,
                 parent_session_key  TEXT,
-                fork_point          INTEGER
+                fork_point          INTEGER,
+                mcp_disabled        INTEGER
             )"#,
         )
         .execute(pool)
@@ -380,6 +394,18 @@ impl SqliteSessionMetadata {
         let now = now_ms() as i64;
         sqlx::query("UPDATE sessions SET worktree_branch = ?, updated_at = ? WHERE key = ?")
             .bind(&branch)
+            .bind(now)
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .ok();
+    }
+
+    pub async fn set_mcp_disabled(&self, key: &str, disabled: Option<bool>) {
+        let now = now_ms() as i64;
+        let val = disabled.map(|b| b as i32);
+        sqlx::query("UPDATE sessions SET mcp_disabled = ?, updated_at = ? WHERE key = ?")
+            .bind(val)
             .bind(now)
             .bind(key)
             .execute(&self.pool)
@@ -936,5 +962,48 @@ mod tests {
                 .channel_binding
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_mcp_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        let mut meta = SessionMetadata::load(path.clone()).unwrap();
+
+        meta.upsert("main", None);
+        assert!(meta.get("main").unwrap().mcp_disabled.is_none());
+
+        meta.set_mcp_disabled("main", Some(true));
+        assert_eq!(meta.get("main").unwrap().mcp_disabled, Some(true));
+
+        meta.set_mcp_disabled("main", Some(false));
+        assert_eq!(meta.get("main").unwrap().mcp_disabled, Some(false));
+
+        meta.set_mcp_disabled("main", None);
+        assert!(meta.get("main").unwrap().mcp_disabled.is_none());
+
+        // Round-trip through save/load.
+        meta.set_mcp_disabled("main", Some(true));
+        meta.save().unwrap();
+        let reloaded = SessionMetadata::load(path).unwrap();
+        assert_eq!(reloaded.get("main").unwrap().mcp_disabled, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_mcp_disabled() {
+        let pool = sqlite_pool().await;
+        let meta = SqliteSessionMetadata::new(pool);
+
+        meta.upsert("main", None).await.unwrap();
+        assert!(meta.get("main").await.unwrap().mcp_disabled.is_none());
+
+        meta.set_mcp_disabled("main", Some(true)).await;
+        assert_eq!(meta.get("main").await.unwrap().mcp_disabled, Some(true));
+
+        meta.set_mcp_disabled("main", Some(false)).await;
+        assert_eq!(meta.get("main").await.unwrap().mcp_disabled, Some(false));
+
+        meta.set_mcp_disabled("main", None).await;
+        assert!(meta.get("main").await.unwrap().mcp_disabled.is_none());
     }
 }
