@@ -13,42 +13,45 @@ for scraping by Grafana, Prometheus, or other monitoring tools.
 
 All metrics are **feature-gated** — they add zero overhead when disabled.
 
-## Enabling Metrics
+## Feature Flags
 
-### Compile-Time Feature Flags
+Metrics are controlled by two feature flags:
 
-Metrics are controlled by the `metrics` feature flag on each crate:
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `metrics` | Enables metrics collection and the `/api/metrics` JSON API | Enabled |
+| `prometheus` | Enables the `/metrics` Prometheus endpoint (requires `metrics`) | Enabled |
+
+### Compile-Time Configuration
 
 ```toml
-# Enable metrics for the gateway (includes Prometheus export)
+# Enable only metrics collection (no Prometheus endpoint)
 moltis-gateway = { version = "0.1", features = ["metrics"] }
+
+# Enable metrics with Prometheus export (default)
+moltis-gateway = { version = "0.1", features = ["metrics", "prometheus"] }
 
 # Enable metrics for specific crates
 moltis-agents = { version = "0.1", features = ["metrics"] }
 moltis-cron = { version = "0.1", features = ["metrics"] }
 ```
 
-The gateway's `metrics` feature automatically enables `moltis-metrics/prometheus`
-for the Prometheus exporter.
-
-### Default Configuration
-
-By default, the gateway binary includes the `metrics` feature. To build without
-metrics:
+To build without metrics entirely:
 
 ```bash
-cargo build --release --no-default-features
+cargo build --release --no-default-features --features "file-watcher,tailscale,tls,web-ui"
 ```
 
 ## Prometheus Endpoint
 
-When metrics are enabled, the gateway exposes a `/metrics` endpoint:
+When the `prometheus` feature is enabled, the gateway exposes a `/metrics` endpoint:
 
 ```
-GET http://localhost:8080/metrics
+GET http://localhost:18789/metrics
 ```
 
-This endpoint returns metrics in Prometheus text format:
+This endpoint is **unauthenticated** to allow Prometheus scrapers to access it.
+It returns metrics in Prometheus text format:
 
 ```
 # HELP moltis_http_requests_total Total number of HTTP requests handled
@@ -70,21 +73,105 @@ To scrape metrics with Prometheus and visualize in Grafana:
 scrape_configs:
   - job_name: 'moltis'
     static_configs:
-      - targets: ['localhost:8080']
+      - targets: ['localhost:18789']
     metrics_path: /metrics
     scrape_interval: 15s
 ```
 
 2. Import or create Grafana dashboards using the `moltis_*` metrics.
 
-### JSON API
+## JSON API Endpoints
 
-For the web UI dashboard, authenticated JSON endpoints are available:
+For the web UI dashboard and programmatic access, authenticated JSON endpoints
+are available:
 
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/metrics` | Full metrics snapshot with aggregates and per-provider breakdown |
+| `GET /api/metrics/summary` | Lightweight counts for navigation badges |
+| `GET /api/metrics/history` | Time-series data points for charts (last hour, 10s intervals) |
+
+### History Endpoint
+
+The `/api/metrics/history` endpoint returns historical metrics data for rendering
+time-series charts:
+
+```json
+{
+  "enabled": true,
+  "interval_seconds": 10,
+  "max_points": 60480,
+  "points": [
+    {
+      "timestamp": 1706832000000,
+      "llm_completions": 42,
+      "llm_input_tokens": 15000,
+      "llm_output_tokens": 8000,
+      "http_requests": 150,
+      "ws_active": 3,
+      "tool_executions": 25,
+      "mcp_calls": 12,
+      "active_sessions": 2
+    }
+  ]
+}
 ```
-GET /api/metrics          # Full metrics snapshot
-GET /api/metrics/summary  # Lightweight counts for navigation badges
+
+## Metrics Persistence
+
+Metrics history is persisted to SQLite, so historical data survives server
+restarts. The database is stored at `~/.moltis/metrics.db` (or the configured
+data directory).
+
+Key features:
+
+- **7-day retention**: History is kept for 7 days (60,480 data points at
+  10-second intervals)
+- **Automatic cleanup**: Old data is automatically removed hourly
+- **Startup recovery**: History is loaded from the database when the server
+  starts
+
+The storage backend uses a trait-based design (`MetricsStore`), allowing
+alternative implementations (e.g., TimescaleDB) for larger deployments.
+
+### Storage Architecture
+
+```rust
+// The MetricsStore trait defines the storage interface
+#[async_trait]
+pub trait MetricsStore: Send + Sync {
+    async fn save_point(&self, point: &MetricsHistoryPoint) -> Result<()>;
+    async fn load_history(&self, since: u64, limit: usize) -> Result<Vec<MetricsHistoryPoint>>;
+    async fn cleanup_before(&self, before: u64) -> Result<u64>;
+    async fn latest_point(&self) -> Result<Option<MetricsHistoryPoint>>;
+}
 ```
+
+The default `SqliteMetricsStore` implementation stores data in a single table
+with an index on the timestamp column for efficient range queries.
+
+## Web UI Dashboard
+
+The gateway includes a built-in metrics dashboard at `/monitoring` in the web UI.
+This page displays:
+
+**Overview Tab:**
+- System metrics (uptime, connected clients, active sessions)
+- LLM usage (completions, tokens, cache statistics)
+- Tool execution statistics
+- MCP server status
+- Provider breakdown table
+- Prometheus endpoint (with copy button)
+
+**Charts Tab:**
+- Token usage over time (input/output)
+- HTTP requests and LLM completions
+- WebSocket connections and active sessions
+- Tool executions and MCP calls
+
+The dashboard uses [uPlot](https://github.com/leeoniya/uPlot) for lightweight,
+high-performance time-series charts. Data updates every 10 seconds for current
+metrics and every 30 seconds for history.
 
 ## Available Metrics
 
@@ -106,6 +193,33 @@ GET /api/metrics/summary  # Lightweight counts for navigation badges
 | `moltis_llm_output_tokens_total` | Counter | provider, model | Output tokens generated |
 | `moltis_llm_completion_errors_total` | Counter | provider, model, error_type | Completion failures |
 | `moltis_llm_time_to_first_token_seconds` | Histogram | provider, model | Streaming TTFT |
+
+#### Provider Aliases
+
+When you have multiple instances of the same provider type (e.g., separate API keys
+for work and personal use), you can use the `alias` configuration option to
+differentiate them in metrics:
+
+```toml
+[providers.anthropic]
+api_key = "sk-work-..."
+alias = "anthropic-work"
+
+# Note: You would need separate config sections for multiple instances
+# of the same provider. This is a placeholder for future functionality.
+```
+
+The alias appears in the `provider` label of all LLM metrics:
+
+```
+moltis_llm_input_tokens_total{provider="anthropic-work", model="claude-3-opus"} 5000
+moltis_llm_input_tokens_total{provider="anthropic-personal", model="claude-3-opus"} 3000
+```
+
+This allows you to:
+- Track token usage separately for billing purposes
+- Create separate Grafana dashboards per provider instance
+- Monitor rate limits and quotas independently
 
 ### MCP (Model Context Protocol) Metrics
 
@@ -307,18 +421,20 @@ use moltis_metrics::{counter, my_feature};
 counter!(my_feature::OPERATIONS_TOTAL).increment(1);
 ```
 
-## Web UI Dashboard
+## Configuration
 
-The gateway includes a built-in metrics dashboard at `/metrics` in the web UI.
-This page displays:
+Metrics configuration in `moltis.toml`:
 
-- System metrics (uptime, connected clients)
-- LLM usage (completions, tokens, latency)
-- Tool execution statistics
-- MCP server status
-- Provider breakdown table
+```toml
+[metrics]
+enabled = true              # Enable metrics collection (default: true)
+prometheus_endpoint = true  # Expose /metrics endpoint (default: true)
+labels = { env = "prod" }   # Add custom labels to all metrics
+```
 
-The dashboard fetches data from `/api/metrics` and updates periodically.
+Environment variables:
+
+- `RUST_LOG=moltis_metrics=debug` — Enable debug logging for metrics initialization
 
 ## Best Practices
 
@@ -328,19 +444,6 @@ The dashboard fetches data from `/api/metrics` and updates periodically.
 4. **Feature-gate everything**: Use `#[cfg(feature = "metrics")]` to ensure zero overhead when disabled
 5. **Use predefined buckets**: The `buckets` module has standard histogram buckets for common metric types
 
-## Configuration
-
-Metrics configuration in `moltis.toml`:
-
-```toml
-[metrics]
-enabled = true  # Enable metrics collection (default: true when feature enabled)
-```
-
-Environment variables:
-
-- `RUST_LOG=moltis_metrics=debug` — Enable debug logging for metrics initialization
-
 ## Troubleshooting
 
 ### Metrics not appearing
@@ -348,6 +451,12 @@ Environment variables:
 1. Verify the `metrics` feature is enabled at compile time
 2. Check that the metrics recorder is initialized (happens automatically in gateway)
 3. Ensure you're hitting the correct `/metrics` endpoint
+4. Check `moltis.toml` has `[metrics] enabled = true`
+
+### Prometheus endpoint not available
+
+1. Ensure the `prometheus` feature is enabled (it's separate from `metrics`)
+2. Check your build: `cargo build --features prometheus`
 
 ### High memory usage
 

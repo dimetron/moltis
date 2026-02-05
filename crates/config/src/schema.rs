@@ -738,6 +738,14 @@ pub struct ProviderEntry {
 
     /// Default model ID for this provider.
     pub model: Option<String>,
+
+    /// Optional alias for this provider instance.
+    ///
+    /// When set, this alias is used in metrics labels instead of the provider name.
+    /// Useful when configuring multiple instances of the same provider type
+    /// (e.g., "anthropic-work", "anthropic-personal").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 impl std::fmt::Debug for ProviderEntry {
@@ -747,6 +755,7 @@ impl std::fmt::Debug for ProviderEntry {
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("base_url", &self.base_url)
             .field("model", &self.model)
+            .field("alias", &self.alias)
             .finish()
     }
 }
@@ -758,6 +767,7 @@ impl Default for ProviderEntry {
             api_key: None,
             base_url: None,
             model: None,
+            alias: None,
         }
     }
 }
