@@ -311,13 +311,22 @@ pub async fn start_gateway(
         .await
         .expect("failed to open moltis.db");
 
-    // Create tables.
-    moltis_projects::SqliteProjectStore::init(&db_pool)
+    // Run database migrations from each crate in dependency order.
+    // Order matters: sessions depends on projects (FK reference).
+    moltis_projects::run_migrations(&db_pool)
         .await
-        .expect("failed to init projects table");
-    SqliteSessionMetadata::init(&db_pool)
+        .expect("failed to run projects migrations");
+    moltis_sessions::run_migrations(&db_pool)
         .await
-        .expect("failed to init sessions table");
+        .expect("failed to run sessions migrations");
+    moltis_cron::run_migrations(&db_pool)
+        .await
+        .expect("failed to run cron migrations");
+    // Gateway's own tables (auth, message_log, channels).
+    sqlx::migrate!("./migrations")
+        .run(&db_pool)
+        .await
+        .expect("failed to run gateway migrations");
 
     // Initialize credential store (auth tables).
     let credential_store = Arc::new(
@@ -360,9 +369,6 @@ pub async fn start_gateway(
         }
     }
 
-    crate::message_log_store::SqliteMessageLog::init(&db_pool)
-        .await
-        .expect("failed to init message_log table");
     let message_log: Arc<dyn moltis_channels::message_log::MessageLog> = Arc::new(
         crate::message_log_store::SqliteMessageLog::new(db_pool.clone()),
     );
@@ -637,9 +643,6 @@ pub async fn start_gateway(
     {
         use moltis_channels::store::ChannelStore;
 
-        crate::channel_store::SqliteChannelStore::init(&db_pool)
-            .await
-            .expect("failed to init channels table");
         let channel_store: Arc<dyn ChannelStore> = Arc::new(
             crate::channel_store::SqliteChannelStore::new(db_pool.clone()),
         );

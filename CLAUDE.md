@@ -396,6 +396,40 @@ Moltis uses two directories, **never** the current working directory:
   (`server.rs`) and threads it through. Prefer using that resolved value
   over calling `data_dir()` repeatedly.
 
+## Database Migrations
+
+Schema changes are managed via **sqlx migrations**. Each crate owns its migrations
+in its own `migrations/` directory. See [docs/sqlite-migration.md](docs/sqlite-migration.md)
+for full documentation.
+
+**Architecture:**
+
+- Each crate has its own `migrations/` directory and `run_migrations()` function
+- Gateway orchestrates migrations at startup in dependency order
+- Timestamp-based versioning (`YYYYMMDDHHMMSS_description.sql`) for global uniqueness
+
+**Crate ownership:**
+
+| Crate | Tables |
+|-------|--------|
+| `moltis-projects` | `projects` |
+| `moltis-sessions` | `sessions`, `channel_sessions` |
+| `moltis-cron` | `cron_jobs`, `cron_runs` |
+| `moltis-gateway` | `auth_*`, `passkeys`, `api_keys`, `env_variables`, `message_log`, `channels` |
+| `moltis-memory` | `files`, `chunks`, `embedding_cache`, `chunks_fts` |
+
+**Adding a migration to an existing crate:**
+
+1. Create `crates/<crate>/migrations/YYYYMMDDHHMMSS_description.sql`
+2. Write the SQL (use `IF NOT EXISTS` for new tables)
+3. Rebuild (`cargo build`) to embed the migration
+
+**Adding a new crate with migrations:**
+
+1. Create `crates/new-crate/migrations/` directory
+2. Add `run_migrations()` to `lib.rs`
+3. Call it from `server.rs` in dependency order
+
 ## Provider Implementation Guidelines
 
 ### Async all the way down
