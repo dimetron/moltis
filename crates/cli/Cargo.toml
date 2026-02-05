@@ -4,7 +4,7 @@ edition.workspace = true
 homepage          = "https://docs.molt.bot/"
 license           = "MIT"
 name              = "moltis-cli"
-repository        = "https://github.com/penso/moltis"
+repository        = "https://github.com/moltis-org/moltis"
 version.workspace = true
 
 [package.metadata.binstall]

@@ -1,12 +1,22 @@
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/moltis-org/moltis-website/main/favicon.svg" alt="Moltis" width="120">
+
 # Moltis
 
-[![CI](https://github.com/penso/moltis/actions/workflows/ci.yml/badge.svg)](https://github.com/penso/moltis/actions/workflows/ci.yml)
+**A personal AI gateway written in Rust. One binary, no runtime, no npm.**
+
+[![CI](https://github.com/moltis-org/moltis/actions/workflows/ci.yml/badge.svg)](https://github.com/moltis-org/moltis/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
 
-A personal AI gateway written in Rust, inspired by
-[OpenClaw](https://docs.openclaw.ai). One binary, no runtime, no npm — just
-build it and run it.
+[Features](#features) • [Installation](#installation) • [Quickstart](#quickstart) • [How It Works](#how-it-works) • [Hooks](#hooks)
+
+</div>
+
+---
+
+Inspired by [OpenClaw](https://docs.openclaw.ai) — just build it and run it.
 
 ## Installation
 
@@ -15,10 +25,10 @@ build it and run it.
 docker pull ghcr.io/penso/moltis:latest
 
 # macOS / Linux via Homebrew
-brew install penso/tap/moltis
+brew install moltis-org/tap/moltis
 
 # Or build from source
-cargo install moltis-cli --git https://github.com/penso/moltis
+cargo install moltis-cli --git https://github.com/moltis-org/moltis
 ```
 
 Moltis compiles your entire AI gateway — web UI, LLM providers, tools, and
@@ -55,7 +65,8 @@ What you get out of the box:
 - **Multi-provider LLM support** — OpenAI, Anthropic, GitHub Copilot, and more
   through a trait-based provider architecture
 - **Streaming responses** — real-time token streaming for a responsive user
-  experience
+  experience, including when tools are enabled (tool calls stream argument
+  deltas as they arrive)
 - **Communication channels** — Telegram integration with an extensible channel
   abstraction for adding others
 - **Web gateway** — HTTP and WebSocket server with a built-in web UI
@@ -98,6 +109,10 @@ What you get out of the box:
   creature, vibe, soul) and user profile
 - **Default config on first run** — writes a complete `moltis.toml` with all
   defaults so you can edit packages and settings without recompiling
+- **Random port per installation** — each fresh install picks a unique available
+  port, avoiding conflicts when multiple users run moltis on the same machine
+- **Zero-config startup** — `moltis` runs the gateway by default; no subcommand
+  needed
 - **Configurable directories** — `--config-dir` / `--data-dir` CLI flags and
   `MOLTIS_CONFIG_DIR` / `MOLTIS_DATA_DIR` environment variables
 - **Tailscale integration** — expose the gateway over your tailnet via Tailscale
@@ -108,12 +123,12 @@ What you get out of the box:
 
 ```bash
 # Clone and build
-git clone https://github.com/penso/moltis.git
+git clone https://github.com/moltis-org/moltis.git
 cd moltis
 cargo build --release
 
-# Start the gateway
-cargo run --release -- gateway
+# Start the gateway (gateway is the default command)
+cargo run --release
 ```
 
 On first launch, a one-time setup code is printed to the terminal. Open
@@ -324,7 +339,7 @@ cargo build --release    # Optimized build
 ### Run
 
 ```bash
-cargo run -- gateway     # Start the gateway server
+cargo run                # Start the gateway server (default command)
 ```
 
 On first run, a setup code is printed to the terminal. Open the web UI and
@@ -333,7 +348,7 @@ enter this code to set your password or register a passkey.
 Optional flags:
 
 ```bash
-cargo run -- gateway --config-dir /path/to/config --data-dir /path/to/data
+cargo run -- --config-dir /path/to/config --data-dir /path/to/data
 ```
 
 ### Test
@@ -471,7 +486,7 @@ Moltis is organized as a Cargo workspace with the following crates:
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=penso/moltis&type=Date)](https://star-history.com/#penso/moltis&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=moltis-org/moltis&type=Date)](https://star-history.com/#moltis-org/moltis&Date)
 
 ## License
 
