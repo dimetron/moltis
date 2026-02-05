@@ -22,6 +22,12 @@
 
 ---
 
+# Security
+
+- [Security Architecture](security.md)
+
+---
+
 # Deployment
 
 - [Docker](docker.md)
