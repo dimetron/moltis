@@ -107,7 +107,7 @@ You can search for moltis signatures at: https://search.sigstore.dev
 
 All commits to this repository must be cryptographically signed. This ensures
 that commits actually come from the claimed author and haven't been tampered
-with. CI will reject unsigned commits.
+with.
 
 ### Setting up commit signing
 
