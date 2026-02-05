@@ -765,9 +765,15 @@
     min-width: 0;
   }
   .session-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     font-size: 0.82rem;
     color: var(--text);
     white-space: nowrap;
+    min-width: 0;
+  }
+  .session-label [data-label-text] {
     overflow: hidden;
     text-overflow: ellipsis;
   }

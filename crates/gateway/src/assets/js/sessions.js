@@ -65,7 +65,7 @@ function createSessionIcon(s, isBranch) {
 		iconWrap.style.opacity = s.activeChannel ? "1" : "0.5";
 		iconWrap.title = s.activeChannel ? "Active Telegram session" : "Telegram session (inactive)";
 	} else {
-		iconWrap.style.color = isBranch ? "var(--accent)" : "var(--muted)";
+		iconWrap.style.color = "var(--muted)";
 	}
 	var spinner = document.createElement("span");
 	spinner.className = "session-spinner";
@@ -361,6 +361,8 @@ function postHistoryLoadActions(key, searchContext, msgEls, sessionList) {
 }
 
 function nextSessionKey(currentKey) {
+	var s = S.sessions.find((x) => x.key === currentKey);
+	if (s?.parentSessionKey) return s.parentSessionKey;
 	var idx = S.sessions.findIndex((x) => x.key === currentKey);
 	if (idx >= 0 && idx + 1 < S.sessions.length) return S.sessions[idx + 1].key;
 	if (idx > 0) return S.sessions[idx - 1].key;
@@ -425,7 +427,7 @@ export function updateChatSessionHeader() {
 
 	var forkBtn = S.$("chatSessionFork");
 	if (forkBtn) {
-		forkBtn.classList.toggle("hidden", isMain || isCron);
+		forkBtn.classList.toggle("hidden", isCron);
 		forkBtn.onclick = () => {
 			sendRpc("sessions.fork", { key: S.activeSessionKey }).then((res) => {
 				if (res?.ok && res.payload?.sessionKey) {

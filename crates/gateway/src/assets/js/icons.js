@@ -43,11 +43,8 @@ export function makeBranchIcon() {
 	var path = document.createElementNS(ns, "path");
 	path.setAttribute("stroke-linecap", "round");
 	path.setAttribute("stroke-linejoin", "round");
-	// Git-branch style: vertical line with a branch splitting off
-	path.setAttribute(
-		"d",
-		"M6 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3-3h6a3 3 0 0 0 3-3V3m0 0a3 3 0 1 0-3 3m3-3a3 3 0 0 1-3 3",
-	);
+	// Simple branch: trunk line + branch curving off to the right
+	path.setAttribute("d", "M4 3v18M20 3v6c0 2-2 3-4 3H4");
 	svg.appendChild(path);
 	return svg;
 }
@@ -64,10 +61,7 @@ export function makeForkIcon() {
 	var path = document.createElementNS(ns, "path");
 	path.setAttribute("stroke-linecap", "round");
 	path.setAttribute("stroke-linejoin", "round");
-	path.setAttribute(
-		"d",
-		"M6 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3-3h6a3 3 0 0 0 3-3V3m0 0a3 3 0 1 0-3 3m3-3a3 3 0 0 1-3 3",
-	);
+	path.setAttribute("d", "M4 3v18M20 3v6c0 2-2 3-4 3H4");
 	svg.appendChild(path);
 	return svg;
 }
