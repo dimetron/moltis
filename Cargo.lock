@@ -2507,6 +2507,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "directories",
+ "encoding_rs",
  "futures",
  "genai",
  "http 1.4.0",

@@ -5,7 +5,11 @@
 
 use std::path::PathBuf;
 
-use {anyhow::Context, futures::StreamExt, tracing::{debug, info}};
+use {
+    anyhow::Context,
+    futures::StreamExt,
+    tracing::{debug, info},
+};
 
 use super::{chat_templates::ChatTemplateHint, system_info::MemoryTier};
 
@@ -412,10 +416,7 @@ where
     let mut downloaded: u64 = 0;
 
     if let Some(size) = total {
-        debug!(
-            total_size_mb = size / (1024 * 1024),
-            "download size known"
-        );
+        debug!(total_size_mb = size / (1024 * 1024), "download size known");
     }
 
     // Report initial progress
@@ -453,8 +454,7 @@ where
                 .unwrap_or(0);
             debug!(
                 downloaded_mb = downloaded / (1024 * 1024),
-                percent,
-                "download progress"
+                percent, "download progress"
             );
             last_log = std::time::Instant::now();
         }

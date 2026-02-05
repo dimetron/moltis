@@ -9,13 +9,7 @@ pub mod chat_templates;
 pub mod models;
 pub mod system_info;
 
-use std::{
-    num::NonZeroU32,
-    path::PathBuf,
-    pin::Pin,
-    sync::Arc,
-    time::Instant,
-};
+use std::{num::NonZeroU32, path::PathBuf, pin::Pin, sync::Arc, time::Instant};
 
 use {
     anyhow::{Context, Result, bail},
@@ -245,7 +239,10 @@ impl LocalGgufProvider {
         }
 
         // Process prompt in batches to avoid exceeding n_batch
-        debug!(num_chunks = tokens.len().div_ceil(batch_size), "processing prompt");
+        debug!(
+            num_chunks = tokens.len().div_ceil(batch_size),
+            "processing prompt"
+        );
         let mut batch = LlamaBatch::new(batch_size, 1);
         for (chunk_idx, chunk) in tokens.chunks(batch_size).enumerate() {
             batch.clear();
@@ -334,10 +331,11 @@ impl LocalGgufProvider {
 
 /// Detokenize a sequence of tokens into a string.
 fn detokenize(model: &LlamaModel, tokens: &[LlamaToken]) -> Result<String> {
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
     let mut output = String::new();
     for &token in tokens {
         let piece = model
-            .token_to_str(token, llama_cpp_2::model::Special::Tokenize)
+            .token_to_piece(token, &mut decoder, true, None)
             .map_err(|e| anyhow::anyhow!("detokenization failed: {e}"))?;
         output.push_str(&piece);
     }
@@ -522,6 +520,7 @@ fn stream_generate_sync(
         let mut output_tokens = 0u32;
         let mut pos = tokens.len() as i32;
         let eos_token = model.token_eos();
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
 
         for _ in 0..max_tokens {
             // Sample from the last position in the batch
@@ -551,7 +550,7 @@ fn stream_generate_sync(
 
             // Detokenize and send
             let piece = model
-                .token_to_str(token, llama_cpp_2::model::Special::Tokenize)
+                .token_to_piece(token, &mut decoder, true, None)
                 .map_err(|e| anyhow::anyhow!("detokenization failed: {e}"))?;
 
             if tx.blocking_send(StreamEvent::Delta(piece)).is_err() {

@@ -324,10 +324,11 @@ pub mod gguf {
 
     /// Detokenize a sequence of tokens into a string.
     fn detokenize(model: &LlamaModel, tokens: &[LlamaToken]) -> Result<String> {
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut output = String::new();
         for &token in tokens {
             let piece = model
-                .token_to_str(token, llama_cpp_2::model::Special::Tokenize)
+                .token_to_piece(token, &mut decoder, true, None)
                 .map_err(|e| anyhow::anyhow!("detokenization failed: {e}"))?;
             output.push_str(&piece);
         }
@@ -484,6 +485,7 @@ pub mod gguf {
             let mut output_tokens = 0u32;
             let mut pos = tokens.len() as i32;
             let eos_token = model.token_eos();
+            let mut decoder = encoding_rs::UTF_8.new_decoder();
 
             for _ in 0..max_tokens {
                 let token = sampler.sample(&ctx, batch.n_tokens() - 1);
@@ -496,7 +498,7 @@ pub mod gguf {
                 sampler.accept(token);
 
                 let piece = model
-                    .token_to_str(token, llama_cpp_2::model::Special::Tokenize)
+                    .token_to_piece(token, &mut decoder, true, None)
                     .map_err(|e| anyhow::anyhow!("detokenization failed: {e}"))?;
 
                 if tx.blocking_send(StreamEvent::Delta(piece)).is_err() {
