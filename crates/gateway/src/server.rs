@@ -1394,16 +1394,17 @@ pub async fn start_gateway(
         ));
 
         // Register skill management tools for agent self-extension.
+        // Use data_dir so created skills land in ~/.moltis/skills/ (Personal
+        // source), which is always discovered regardless of the gateway's cwd.
         {
-            let cwd = std::env::current_dir().unwrap_or_default();
             tool_registry.register(Box::new(moltis_tools::skill_tools::CreateSkillTool::new(
-                cwd.clone(),
+                data_dir.clone(),
             )));
             tool_registry.register(Box::new(moltis_tools::skill_tools::UpdateSkillTool::new(
-                cwd.clone(),
+                data_dir.clone(),
             )));
             tool_registry.register(Box::new(moltis_tools::skill_tools::DeleteSkillTool::new(
-                cwd,
+                data_dir.clone(),
             )));
         }
 
@@ -2581,7 +2582,7 @@ fn enabled_from_manifest(
         .unwrap_or_default()
 }
 
-/// Skills endpoint: repos and enabled skills from the skills manifest only.
+/// Skills endpoint: repos, enabled registry skills, and discovered personal/project skills.
 #[cfg(feature = "web-ui")]
 async fn api_skills_handler(State(state): State<AppState>) -> impl IntoResponse {
     let repos = state
@@ -2594,7 +2595,37 @@ async fn api_skills_handler(State(state): State<AppState>) -> impl IntoResponse 
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
 
-    let skills = enabled_from_manifest(moltis_skills::manifest::ManifestStore::default_path());
+    let mut skills = enabled_from_manifest(moltis_skills::manifest::ManifestStore::default_path());
+
+    // Also include discovered Personal and Project skills (not in the manifest).
+    {
+        use moltis_skills::discover::{FsSkillDiscoverer, SkillDiscoverer};
+        let data_dir = moltis_config::data_dir();
+        let search_paths = vec![
+            (
+                data_dir.join("skills"),
+                moltis_skills::types::SkillSource::Personal,
+            ),
+            // Project-local skills if gateway was started from a project directory.
+            (
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join(".moltis/skills"),
+                moltis_skills::types::SkillSource::Project,
+            ),
+        ];
+        let discoverer = FsSkillDiscoverer::new(search_paths);
+        if let Ok(discovered) = discoverer.discover().await {
+            for s in discovered {
+                skills.push(serde_json::json!({
+                    "name": s.name,
+                    "description": s.description,
+                    "source": s.source,
+                    "enabled": true,
+                }));
+            }
+        }
+    }
 
     Json(serde_json::json!({ "skills": skills, "repos": repos }))
 }

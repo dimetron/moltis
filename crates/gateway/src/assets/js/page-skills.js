@@ -244,19 +244,39 @@ function SkillDetail(props) {
 	var d = props.detail;
 	var onClose = props.onClose;
 
+	var panelRef = useRef(null);
+	var didScroll = useRef(false);
+
 	var bodyRef = useRef(null);
 	useEffect(() => {
 		if (bodyRef.current && d?.body_html) {
-			// Safe: body_html is rendered server-side by the Rust gateway from SKILL.md
+			// Safe: body_html is server-rendered trusted HTML from the Rust gateway (SKILL.md → pulldown-cmark)
 			bodyRef.current.textContent = "";
 			var tpl = document.createElement("template");
-			// eslint-disable-next-line no-unsanitized/property -- server-rendered trusted HTML from Rust gateway
-			tpl.innerHTML = d.body_html;
+			tpl.innerHTML = d.body_html; // eslint-disable-line no-unsanitized/property
 			bodyRef.current.appendChild(tpl.content);
 			bodyRef.current.querySelectorAll("a").forEach((a) => {
 				a.setAttribute("target", "_blank");
 				a.setAttribute("rel", "noopener");
 			});
+		}
+		// Scroll only on first render (panel just opened), not when switching skills.
+		if (panelRef.current && !didScroll.current) {
+			didScroll.current = true;
+			var el = panelRef.current;
+			var scrollParent = el.parentElement;
+			while (
+				scrollParent &&
+				getComputedStyle(scrollParent).overflowY !== "auto" &&
+				getComputedStyle(scrollParent).overflowY !== "scroll"
+			) {
+				scrollParent = scrollParent.parentElement;
+			}
+			if (scrollParent) {
+				var panelTop =
+					el.getBoundingClientRect().top - scrollParent.getBoundingClientRect().top + scrollParent.scrollTop;
+				scrollParent.scrollTo({ top: panelTop, behavior: "smooth" });
+			}
 		}
 	}, [d?.body_html]);
 
@@ -270,7 +290,7 @@ function SkillDetail(props) {
 		});
 	}
 
-	return html`<div class="skills-detail-panel" style="display:block">
+	return html`<div ref=${panelRef} class="skills-detail-panel" style="display:block">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-family:var(--font-mono);font-size:.9rem;font-weight:600;color:var(--text-strong)">${d.display_name || d.name}</span>
@@ -346,8 +366,11 @@ function RepoCard(props) {
 			skill: skill.name,
 		}).then((res) => {
 			detailLoading.value = false;
-			if (res?.ok) activeDetail.value = res.payload || {};
-			else showToast(`Failed to load: ${res?.error || "unknown"}`, "error");
+			if (res?.ok) {
+				activeDetail.value = res.payload || {};
+			} else {
+				showToast(`Failed to load: ${res?.error || "unknown"}`, "error");
+			}
 		});
 	}
 
@@ -445,9 +468,21 @@ function ReposSection() {
   </div>`;
 }
 
+function SourceBadge(props) {
+	var src = props.source || "";
+	// Discovered skills have source types like "personal", "project".
+	// Registry skills have repo sources like "owner/repo".
+	var isType = !src.includes("/");
+	var label = isType ? src.charAt(0).toUpperCase() + src.slice(1) : src;
+	var cls = isType ? "recommended-badge" : "tier-badge";
+	return html`<span class=${cls}>${label}</span>`;
+}
+
 function EnabledSkillsTable() {
 	var s = enabledSkills.value;
 	var map = skillRepoMap.value;
+	var activeDetail = useSignal(null);
+	var detailLoading = useSignal(false);
 	if (!s || s.length === 0) return null;
 
 	function onDisable(skill) {
@@ -466,6 +501,25 @@ function EnabledSkillsTable() {
 		});
 	}
 
+	function loadDetail(skill) {
+		// Toggle: close if clicking the same skill
+		if (activeDetail.value && activeDetail.value.name === skill.name) {
+			activeDetail.value = null;
+			return;
+		}
+		var source = map[skill.name] || skill.source;
+		if (!source) return;
+		detailLoading.value = true;
+		sendRpc("skills.skill.detail", { source: source, skill: skill.name }).then((res) => {
+			detailLoading.value = false;
+			if (res?.ok) {
+				activeDetail.value = res.payload || {};
+			} else {
+				showToast(`Failed to load: ${res?.error || "unknown"}`, "error");
+			}
+		});
+	}
+
 	return html`<div class="skills-section">
     <h3 class="skills-section-title">Enabled Skills</h3>
     <div class="skills-table-wrap">
@@ -474,22 +528,28 @@ function EnabledSkillsTable() {
           <tr style="border-bottom:1px solid var(--border);background:var(--surface)">
             <th style="text-align:left;padding:8px 12px;font-weight:500;color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.04em">Name</th>
             <th style="text-align:left;padding:8px 12px;font-weight:500;color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.04em">Description</th>
+            <th style="text-align:left;padding:8px 12px;font-weight:500;color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.04em">Source</th>
             <th style="text-align:left;padding:8px 12px;font-weight:500;color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.04em"></th>
           </tr>
         </thead>
         <tbody>
           ${s.map(
-						(skill) => html`<tr key=${skill.name} style="border-bottom:1px solid var(--border)"
+						(skill) => html`<tr key=${skill.name} class="cursor-pointer" style="border-bottom:1px solid var(--border)"
+              onClick=${() => {
+								loadDetail(skill);
+							}}
               onMouseEnter=${(e) => {
 								e.currentTarget.style.background = "var(--bg-hover)";
 							}}
               onMouseLeave=${(e) => {
 								e.currentTarget.style.background = "";
 							}}>
-              <td style="padding:8px 12px;font-weight:500;color:var(--text-strong);font-family:var(--font-mono)">${skill.name}</td>
+              <td style="padding:8px 12px;font-weight:500;color:var(--accent);font-family:var(--font-mono)">${skill.name}</td>
               <td style="padding:8px 12px;color:var(--text)">${skill.description || "\u2014"}</td>
+              <td style="padding:8px 12px"><${SourceBadge} source=${skill.source} /></td>
               <td style="padding:8px 12px;text-align:right">
-                <button class="provider-btn provider-btn-sm provider-btn-secondary" onClick=${() => {
+                <button class="provider-btn provider-btn-sm provider-btn-secondary" onClick=${(e) => {
+									e.stopPropagation();
 									onDisable(skill);
 								}}>Disable</button>
               </td>
@@ -498,6 +558,20 @@ function EnabledSkillsTable() {
         </tbody>
       </table>
     </div>
+    ${detailLoading.value && html`<div class="text-sm text-[var(--muted)] p-3">Loading\u2026</div>`}
+    ${
+			activeDetail.value &&
+			html`<${SkillDetail}
+      detail=${activeDetail.value}
+      repoSource=${activeDetail.value.source}
+      onClose=${() => {
+				activeDetail.value = null;
+			}}
+      onReload=${() => {
+				loadDetail({ name: activeDetail.value.name, source: activeDetail.value.source });
+			}}
+    />`
+		}
   </div>`;
 }
 

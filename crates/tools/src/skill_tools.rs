@@ -1,4 +1,5 @@
-//! Agent tools for creating, updating, and deleting project-local skills at runtime.
+//! Agent tools for creating, updating, and deleting personal skills at runtime.
+//! Skills are written to `<data_dir>/skills/<name>/SKILL.md` (Personal source).
 
 use std::path::{Path, PathBuf};
 
@@ -9,18 +10,18 @@ use {
     serde_json::{Value, json},
 };
 
-/// Tool that creates a new project-local skill.
+/// Tool that creates a new personal skill in `<data_dir>/skills/`.
 pub struct CreateSkillTool {
-    cwd: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl CreateSkillTool {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self { data_dir }
     }
 
     fn skills_dir(&self) -> PathBuf {
-        self.cwd.join(".moltis/skills")
+        self.data_dir.join("skills")
     }
 }
 
@@ -31,7 +32,7 @@ impl AgentTool for CreateSkillTool {
     }
 
     fn description(&self) -> &str {
-        "Create a new project-local skill. Writes a SKILL.md file to .moltis/skills/<name>/. \
+        "Create a new personal skill. Writes a SKILL.md file to ~/skills/<name>/. \
          The skill will be available on the next message automatically."
     }
 
@@ -103,18 +104,18 @@ impl AgentTool for CreateSkillTool {
     }
 }
 
-/// Tool that updates an existing project-local skill.
+/// Tool that updates an existing personal skill in `<data_dir>/skills/`.
 pub struct UpdateSkillTool {
-    cwd: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl UpdateSkillTool {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self { data_dir }
     }
 
     fn skills_dir(&self) -> PathBuf {
-        self.cwd.join(".moltis/skills")
+        self.data_dir.join("skills")
     }
 }
 
@@ -125,7 +126,7 @@ impl AgentTool for UpdateSkillTool {
     }
 
     fn description(&self) -> &str {
-        "Update an existing project-local skill. Overwrites the SKILL.md file."
+        "Update an existing personal skill. Overwrites the SKILL.md file."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -196,18 +197,18 @@ impl AgentTool for UpdateSkillTool {
     }
 }
 
-/// Tool that deletes a project-local skill.
+/// Tool that deletes a personal skill from `<data_dir>/skills/`.
 pub struct DeleteSkillTool {
-    cwd: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl DeleteSkillTool {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self { data_dir }
     }
 
     fn skills_dir(&self) -> PathBuf {
-        self.cwd.join(".moltis/skills")
+        self.data_dir.join("skills")
     }
 }
 
@@ -218,7 +219,7 @@ impl AgentTool for DeleteSkillTool {
     }
 
     fn description(&self) -> &str {
-        "Delete a project-local skill. Only works for skills in .moltis/skills/."
+        "Delete a personal skill. Only works for skills in ~/skills/."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -246,7 +247,7 @@ impl AgentTool for DeleteSkillTool {
 
         let skill_dir = self.skills_dir().join(name);
 
-        // Only allow deleting from the project-local skills directory.
+        // Only allow deleting from the personal skills directory.
         let canonical_base = self
             .skills_dir()
             .canonicalize()
@@ -255,7 +256,7 @@ impl AgentTool for DeleteSkillTool {
             .canonicalize()
             .unwrap_or_else(|_| skill_dir.clone());
         if !canonical_target.starts_with(&canonical_base) {
-            bail!("can only delete project-local skills");
+            bail!("can only delete personal skills");
         }
 
         if !skill_dir.exists() {
@@ -309,7 +310,7 @@ mod tests {
             .unwrap();
         assert!(result["created"].as_bool().unwrap());
 
-        let skill_md = tmp.path().join(".moltis/skills/my-skill/SKILL.md");
+        let skill_md = tmp.path().join("skills/my-skill/SKILL.md");
         assert!(skill_md.exists());
         let content = std::fs::read_to_string(&skill_md).unwrap();
         assert!(content.contains("name: my-skill"));
@@ -331,7 +332,7 @@ mod tests {
         .unwrap();
 
         let content =
-            std::fs::read_to_string(tmp.path().join(".moltis/skills/git-skill/SKILL.md")).unwrap();
+            std::fs::read_to_string(tmp.path().join("skills/git-skill/SKILL.md")).unwrap();
         assert!(content.contains("allowed_tools:"));
         assert!(content.contains("Bash(git:*)"));
     }
@@ -398,8 +399,7 @@ mod tests {
             .await
             .unwrap();
 
-        let content =
-            std::fs::read_to_string(tmp.path().join(".moltis/skills/my-skill/SKILL.md")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("skills/my-skill/SKILL.md")).unwrap();
         assert!(content.contains("description: updated"));
         assert!(content.contains("new body"));
     }
@@ -436,7 +436,7 @@ mod tests {
 
         let result = delete.execute(json!({ "name": "my-skill" })).await.unwrap();
         assert!(result["deleted"].as_bool().unwrap());
-        assert!(!tmp.path().join(".moltis/skills/my-skill").exists());
+        assert!(!tmp.path().join("skills/my-skill").exists());
     }
 
     #[tokio::test]

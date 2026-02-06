@@ -88,6 +88,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complex git-branch SVG with simple trunk+branch path).
 - Deleting a forked session now navigates to the parent session instead of
   an unrelated sibling.
+- **Streaming tool calls for non-Anthropic providers**: `OpenAiProvider`,
+  `GitHubCopilotProvider`, `KimiCodeProvider`, `OpenAiCodexProvider`, and
+  `ProviderChain` now implement `stream_with_tools()` so tool schemas are
+  sent in the streaming API request and tool-call events are properly parsed.
+  Previously only `AnthropicProvider` supported streaming tool calls; all
+  other providers silently dropped the tools parameter, causing the LLM to
+  emit tool invocations as plain text instead of structured function calls.
+- **Streaming tool call arguments dropped when index ≠ 0**: When a provider
+  (e.g. GitHub Copilot proxying Claude) emits a text content block at
+  streaming index 0 and a tool_use block at index 1, the runner's argument
+  finalization used the streaming index as the vector position directly.
+  Since `tool_calls` has only 1 element at position 0, the condition
+  `1 < 1` was false and arguments were silently dropped (empty `{}`).
+  Fixed by mapping streaming indices to vector positions via a HashMap.
+- **Skill tools wrote to wrong directory**: `create_skill`, `update_skill`, and
+  `delete_skill` used `std::env::current_dir()` captured at gateway startup,
+  writing skills to `<cwd>/.moltis/skills/` instead of `~/.moltis/skills/`.
+  Skills now write to `<data_dir>/skills/` (Personal source), which is always
+  discovered regardless of where the gateway was started.
+- **Skills page missing personal/project skills**: The `/api/skills` endpoint
+  only returned manifest-based registry skills. Personal and project-local
+  skills were never shown in the navigation or skills page. The endpoint now
+  discovers and includes them alongside registry skills.
 
 ### Documentation
 
