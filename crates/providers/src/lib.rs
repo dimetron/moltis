@@ -649,7 +649,7 @@ pub fn context_window_for_model(model_id: &str) -> u32 {
     if model_id.starts_with("kimi-") {
         return 128_000;
     }
-    // MiniMax M2/M2.1/M2.5: 204,800.
+    // MiniMax M2/M2.1/M2.5/M2.7: 204,800.
     if model_id.starts_with("MiniMax-") {
         return 204_800;
     }
@@ -853,9 +853,12 @@ const CEREBRAS_MODELS: &[(&str, &str)] =
 /// Known MiniMax models.
 /// See: <https://platform.minimax.io/docs/api-reference/text-anthropic-api>
 const MINIMAX_MODELS: &[(&str, &str)] = &[
+    ("MiniMax-M2.7", "MiniMax M2.7"),
+    ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed"),
     ("MiniMax-M2.5", "MiniMax M2.5"),
     ("MiniMax-M2.5-highspeed", "MiniMax M2.5 Highspeed"),
     ("MiniMax-M2.1", "MiniMax M2.1"),
+    ("MiniMax-M2.1-highspeed", "MiniMax M2.1 Highspeed"),
     ("MiniMax-M2", "MiniMax M2"),
 ];
 
