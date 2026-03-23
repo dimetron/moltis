@@ -225,7 +225,13 @@ pub struct RedactedConfig<'a>(pub &'a SlackAccountConfig);
 impl Serialize for RedactedConfig<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let c = self.0;
-        let mut s = serializer.serialize_struct("SlackAccountConfig", 16)?;
+        let mut count = 11; // always-present fields
+        count += c.signing_secret.is_some() as usize;
+        count += c.model.is_some() as usize;
+        count += c.model_provider.is_some() as usize;
+        count += !c.channel_overrides.is_empty() as usize;
+        count += !c.user_overrides.is_empty() as usize;
+        let mut s = serializer.serialize_struct("SlackAccountConfig", count)?;
         s.serialize_field("bot_token", secret_serde::REDACTED)?;
         s.serialize_field("app_token", secret_serde::REDACTED)?;
         s.serialize_field("connection_mode", &c.connection_mode)?;

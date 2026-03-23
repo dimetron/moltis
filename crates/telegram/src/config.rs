@@ -124,7 +124,12 @@ pub struct RedactedConfig<'a>(pub &'a TelegramAccountConfig);
 impl Serialize for RedactedConfig<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let c = self.0;
-        let mut s = serializer.serialize_struct("TelegramAccountConfig", 17)?;
+        let mut count = 13; // always-present fields
+        count += c.model.is_some() as usize;
+        count += c.model_provider.is_some() as usize;
+        count += !c.channel_overrides.is_empty() as usize;
+        count += !c.user_overrides.is_empty() as usize;
+        let mut s = serializer.serialize_struct("TelegramAccountConfig", count)?;
         s.serialize_field("token", secret_serde::REDACTED)?;
         s.serialize_field("dm_policy", &c.dm_policy)?;
         s.serialize_field("group_policy", &c.group_policy)?;
