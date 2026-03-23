@@ -85,7 +85,7 @@ pub struct RedactedConfig<'a>(pub &'a MsTeamsAccountConfig);
 impl Serialize for RedactedConfig<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let c = self.0;
-        let mut s = serializer.serialize_struct("MsTeamsAccountConfig", 13)?;
+        let mut s = serializer.serialize_struct("MsTeamsAccountConfig", 12)?;
         s.serialize_field("app_id", &c.app_id)?;
         s.serialize_field("app_password", secret_serde::REDACTED)?;
         s.serialize_field("oauth_tenant", &c.oauth_tenant)?;
