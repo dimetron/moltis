@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 use super::apple::*;
 use {
     super::{containers::*, docker::*, host::*, paths::*, platform::*, router::*, types::*, *},
