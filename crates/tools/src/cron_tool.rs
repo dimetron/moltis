@@ -786,7 +786,8 @@ impl AgentTool for CronTool {
                             .ok_or_else(|| Error::message("missing 'job' parameter for add"))?;
                         if obj.contains_key("schedule") || obj.contains_key("payload") {
                             let mut job_obj = Map::new();
-                            const ACTION_KEYS: &[&str] = &["action", "force", "id", "limit"];
+                            const ACTION_KEYS: &[&str] =
+                                &["action", "force", "id", "limit", "patch", "job"];
                             for (k, v) in obj {
                                 if !ACTION_KEYS.contains(&k.as_str()) {
                                     job_obj.insert(k.clone(), v.clone());
