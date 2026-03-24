@@ -791,37 +791,9 @@ fn infer_reply_medium(params: &Value, text: &str) -> ReplyMedium {
     ReplyMedium::Text
 }
 
-fn runtime_datetime_prompt_tail(runtime_context: Option<&PromptRuntimeContext>) -> Option<String> {
-    let runtime = runtime_context?;
-    if let Some(time) = runtime
-        .host
-        .time
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        return Some(format!("\nThe current user datetime is {time}.\n"));
-    }
-    runtime
-        .host
-        .today
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .map(|today| format!("\nThe current user date is {today}.\n"))
-}
-
-fn apply_voice_reply_suffix(
-    system_prompt: String,
-    desired_reply_medium: ReplyMedium,
-    runtime_context: Option<&PromptRuntimeContext>,
-) -> String {
+fn apply_voice_reply_suffix(system_prompt: String, desired_reply_medium: ReplyMedium) -> String {
     if desired_reply_medium != ReplyMedium::Voice {
         return system_prompt;
-    }
-
-    if let Some(tail) = runtime_datetime_prompt_tail(runtime_context)
-        && let Some(prefix) = system_prompt.strip_suffix(&tail)
-    {
-        return format!("{prefix}{VOICE_REPLY_SUFFIX}{tail}");
     }
 
     format!("{system_prompt}{VOICE_REPLY_SUFFIX}")
@@ -1258,12 +1230,7 @@ async fn build_prompt_runtime_context(
                     platform: n.platform,
                     capabilities: n.capabilities,
                     cpu_count: n.cpu_count,
-                    cpu_usage: n.cpu_usage,
                     mem_total: n.mem_total,
-                    mem_available: n.mem_available,
-                    telemetry_stale: n.telemetry_stale,
-                    disk_total: n.disk_total,
-                    disk_available: n.disk_available,
                     runtimes: n.runtimes,
                     providers: n.providers,
                 })
@@ -6036,9 +6003,7 @@ async fn run_with_tools(
     };
 
     // Layer 1: instruct the LLM to write speech-friendly output when voice is active.
-    // Keep the runtime datetime/date sentence as the final prompt line for better cache locality.
-    let system_prompt =
-        apply_voice_reply_suffix(system_prompt, desired_reply_medium, runtime_context);
+    let system_prompt = apply_voice_reply_suffix(system_prompt, desired_reply_medium);
 
     // Determine sandbox mode for this session.
     let session_is_sandboxed = if let Some(router) = state.sandbox_router() {
@@ -6566,7 +6531,15 @@ async fn run_with_tools(
         .insert(session_key.to_string(), event_forwarder);
 
     // Convert persisted JSON history to typed ChatMessages for the LLM provider.
-    let chat_history = values_to_chat_messages(history_raw);
+    let mut chat_history = values_to_chat_messages(history_raw);
+
+    // Inject the datetime as a trailing system message so the main system
+    // prompt stays byte-identical between turns, enabling KV cache hits for
+    // local LLMs (Ollama, LM Studio) and prompt-cache hits for cloud providers.
+    if let Some(datetime_msg) = moltis_agents::prompt::runtime_datetime_message(runtime_context) {
+        chat_history.push(ChatMessage::system(&datetime_msg));
+    }
+
     let hist = if chat_history.is_empty() {
         None
     } else {
@@ -7058,14 +7031,17 @@ async fn run_streaming(
     );
 
     // Layer 1: instruct the LLM to write speech-friendly output when voice is active.
-    // Keep the runtime datetime/date sentence as the final prompt line for better cache locality.
-    let system_prompt =
-        apply_voice_reply_suffix(system_prompt, desired_reply_medium, runtime_context);
+    let system_prompt = apply_voice_reply_suffix(system_prompt, desired_reply_medium);
 
     let mut messages: Vec<ChatMessage> = Vec::new();
     messages.push(ChatMessage::system(system_prompt));
     // Convert persisted JSON history to typed ChatMessages for the LLM provider.
     messages.extend(values_to_chat_messages(history_raw));
+    // Inject datetime as a trailing system message so the main system prompt
+    // stays byte-identical between turns (KV cache / prompt cache locality).
+    if let Some(datetime_msg) = moltis_agents::prompt::runtime_datetime_message(runtime_context) {
+        messages.push(ChatMessage::system(&datetime_msg));
+    }
     messages.push(ChatMessage::User {
         content: user_content.clone(),
     });
@@ -9259,37 +9235,18 @@ mod tests {
     }
 
     #[test]
-    fn apply_voice_reply_suffix_keeps_datetime_tail_at_end() {
-        let runtime_context = PromptRuntimeContext {
-            host: PromptHostRuntimeContext {
-                time: Some("2026-02-17 16:18:00 CET".to_string()),
-                ..Default::default()
-            },
-            sandbox: None,
-            nodes: None,
-        };
-        let base_prompt =
-            "You are a helpful assistant.\nThe current user datetime is 2026-02-17 16:18:00 CET.\n"
-                .to_string();
+    fn apply_voice_reply_suffix_appends_voice_section() {
+        let base_prompt = "You are a helpful assistant.".to_string();
 
-        let prompt =
-            apply_voice_reply_suffix(base_prompt, ReplyMedium::Voice, Some(&runtime_context));
+        let prompt = apply_voice_reply_suffix(base_prompt, ReplyMedium::Voice);
 
         assert!(prompt.contains("## Voice Reply Mode"));
-        assert!(
-            prompt
-                .trim_end()
-                .ends_with("The current user datetime is 2026-02-17 16:18:00 CET.")
-        );
-        let voice_ix = prompt.find("## Voice Reply Mode");
-        let datetime_ix = prompt.rfind("The current user datetime is 2026-02-17 16:18:00 CET.");
-        assert!(voice_ix.is_some_and(|idx| datetime_ix.is_some_and(|tail| idx < tail)));
     }
 
     #[test]
     fn apply_voice_reply_suffix_noop_for_text_reply_mode() {
         let base_prompt = "You are a helpful assistant.".to_string();
-        let prompt = apply_voice_reply_suffix(base_prompt.clone(), ReplyMedium::Text, None);
+        let prompt = apply_voice_reply_suffix(base_prompt.clone(), ReplyMedium::Text);
         assert_eq!(prompt, base_prompt);
     }
 
