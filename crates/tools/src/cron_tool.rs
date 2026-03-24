@@ -570,11 +570,11 @@ fn normalize_sandbox_field(obj: &mut Map<String, Value>) -> Result<()> {
 /// This rescues the common LLM mistake of double-serialising an object
 /// parameter.
 fn rescue_stringified_object(v: &mut Value) {
-    if let Value::String(s) = &*v {
-        if let Ok(parsed @ Value::Object(_)) = serde_json::from_str(s.trim()) {
-            tracing::debug!(original = %s, "rescued double-serialised object parameter");
-            *v = parsed;
-        }
+    if let Value::String(s) = &*v
+        && let Ok(parsed @ Value::Object(_)) = serde_json::from_str(s.trim())
+    {
+        tracing::debug!(original = %s, "rescued double-serialised object parameter");
+        *v = parsed;
     }
 }
 
