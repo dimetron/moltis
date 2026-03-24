@@ -1,7 +1,10 @@
 use {
     anyhow::Result,
     async_trait::async_trait,
-    std::{collections::HashMap, sync::Arc},
+    std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    },
 };
 
 /// Agent-callable tool.
@@ -10,6 +13,10 @@ pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> serde_json::Value;
+    /// Opportunistic post-start initialization hook.
+    async fn warmup(&self) -> Result<()> {
+        Ok(())
+    }
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value>;
 }
 
@@ -20,13 +27,22 @@ pub enum ToolSource {
     Builtin,
     /// Tool provided by an MCP server.
     Mcp { server: String },
+    /// Tool provided by a precompiled WASM component.
+    Wasm { component_hash: [u8; 32] },
 }
 
 /// Internal entry pairing a tool with its source metadata.
-struct ToolEntry {
-    tool: Arc<dyn AgentTool>,
-    source: ToolSource,
+pub(crate) struct ToolEntry {
+    pub(crate) tool: Arc<dyn AgentTool>,
+    pub(crate) source: ToolSource,
 }
+
+/// Shared set of tools activated at runtime by [`ToolSearchTool`](crate::lazy_tools::ToolSearchTool).
+///
+/// Uses `std::sync::Mutex` (not tokio) because the lock is held for
+/// microseconds — just a `HashMap` insert/lookup — and this keeps
+/// `list_schemas()` usable from sync contexts.
+pub(crate) type ActivatedTools = Arc<Mutex<HashMap<String, ToolEntry>>>;
 
 /// Registry of available tools for an agent run.
 ///
@@ -34,6 +50,9 @@ struct ToolEntry {
 /// cloned (e.g. for sub-agents that need a filtered copy of the parent's tools).
 pub struct ToolRegistry {
     tools: HashMap<String, ToolEntry>,
+    /// Tools activated at runtime via lazy tool discovery (`tool_search`).
+    /// Always present (empty when lazy mode is not in use).
+    pub(crate) activated: ActivatedTools,
 }
 
 impl Default for ToolRegistry {
@@ -46,6 +65,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            activated: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -67,6 +87,33 @@ impl ToolRegistry {
         });
     }
 
+    /// Register a tool from a WASM component.
+    pub fn register_wasm(&mut self, tool: Box<dyn AgentTool>, component_hash: [u8; 32]) {
+        let name = tool.name().to_string();
+        self.tools.insert(name, ToolEntry {
+            tool: Arc::from(tool),
+            source: ToolSource::Wasm { component_hash },
+        });
+    }
+
+    /// Replace an existing tool by name, preserving its source metadata.
+    ///
+    /// Returns `true` if an existing tool was replaced, `false` if this was a new entry.
+    pub fn replace(&mut self, tool: Box<dyn AgentTool>) -> bool {
+        let name = tool.name().to_string();
+        let source = self
+            .tools
+            .get(&name)
+            .map(|entry| entry.source.clone())
+            .unwrap_or(ToolSource::Builtin);
+        self.tools
+            .insert(name, ToolEntry {
+                tool: Arc::from(tool),
+                source,
+            })
+            .is_some()
+    }
+
     pub fn unregister(&mut self, name: &str) -> bool {
         self.tools.remove(name).is_some()
     }
@@ -79,34 +126,47 @@ impl ToolRegistry {
         before - self.tools.len()
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn AgentTool> {
-        self.tools.get(name).map(|e| e.tool.as_ref())
+    pub fn get(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        if let Some(e) = self.tools.get(name) {
+            return Some(Arc::clone(&e.tool));
+        }
+        let activated = self.activated.lock().unwrap_or_else(|e| e.into_inner());
+        activated.get(name).map(|e| Arc::clone(&e.tool))
+    }
+
+    /// Return the [`ToolSource`] for a tool by name.
+    pub(crate) fn get_source(&self, name: &str) -> Option<ToolSource> {
+        self.tools.get(name).map(|e| e.source.clone())
     }
 
     pub fn list_schemas(&self) -> Vec<serde_json::Value> {
-        self.tools
-            .values()
-            .map(|e| {
-                let mut schema = serde_json::json!({
-                    "name": e.tool.name(),
-                    "description": e.tool.description(),
-                    "parameters": e.tool.parameters_schema(),
-                });
-                match &e.source {
-                    ToolSource::Builtin => {
-                        schema["source"] = serde_json::json!("builtin");
-                    },
-                    ToolSource::Mcp { server } => {
-                        schema["source"] = serde_json::json!("mcp");
-                        schema["mcpServer"] = serde_json::json!(server);
-                    },
-                }
-                schema
-            })
-            .collect()
+        let mut schemas: Vec<serde_json::Value> =
+            self.tools.values().map(entry_to_schema).collect();
+
+        let activated = self.activated.lock().unwrap_or_else(|e| e.into_inner());
+        for (name, entry) in activated.iter() {
+            if !self.tools.contains_key(name) {
+                schemas.push(entry_to_schema(entry));
+            }
+        }
+        schemas
+    }
+
+    /// List registered tool names (static + activated).
+    pub fn list_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tools.keys().cloned().collect();
+        let activated = self.activated.lock().unwrap_or_else(|e| e.into_inner());
+        for name in activated.keys() {
+            if !self.tools.contains_key(name) {
+                names.push(name.clone());
+            }
+        }
+        names
     }
 
     /// Clone the registry, excluding tools whose names start with `prefix`.
+    ///
+    /// Sub-agent registries get a fresh (empty) activated set.
     pub fn clone_without_prefix(&self, prefix: &str) -> ToolRegistry {
         let tools = self
             .tools
@@ -119,7 +179,10 @@ impl ToolRegistry {
                 })
             })
             .collect();
-        ToolRegistry { tools }
+        ToolRegistry {
+            tools,
+            activated: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Clone the registry, excluding all MCP-sourced tools.
@@ -135,7 +198,10 @@ impl ToolRegistry {
                 })
             })
             .collect();
-        ToolRegistry { tools }
+        ToolRegistry {
+            tools,
+            activated: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Clone the registry, excluding tools whose names are in `exclude`.
@@ -151,10 +217,67 @@ impl ToolRegistry {
                 })
             })
             .collect();
-        ToolRegistry { tools }
+        ToolRegistry {
+            tools,
+            activated: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Clone the registry keeping only tools that match `predicate`.
+    pub fn clone_allowed_by<F>(&self, mut predicate: F) -> ToolRegistry
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let tools = self
+            .tools
+            .iter()
+            .filter(|(name, _)| predicate(name))
+            .map(|(name, entry)| {
+                (name.clone(), ToolEntry {
+                    tool: Arc::clone(&entry.tool),
+                    source: entry.source.clone(),
+                })
+            })
+            .collect();
+        ToolRegistry {
+            tools,
+            activated: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
+fn entry_to_schema(e: &ToolEntry) -> serde_json::Value {
+    let mut schema = serde_json::json!({
+        "name": e.tool.name(),
+        "description": e.tool.description(),
+        "parameters": e.tool.parameters_schema(),
+    });
+    match &e.source {
+        ToolSource::Builtin => {
+            schema["source"] = serde_json::json!("builtin");
+        },
+        ToolSource::Mcp { server } => {
+            schema["source"] = serde_json::json!("mcp");
+            schema["mcpServer"] = serde_json::json!(server);
+        },
+        ToolSource::Wasm { component_hash } => {
+            schema["source"] = serde_json::json!("wasm");
+            schema["componentHash"] = serde_json::json!(hex_component_hash(*component_hash));
+        },
+    }
+    schema
+}
+
+fn hex_component_hash(component_hash: [u8; 32]) -> String {
+    let mut output = String::with_capacity(component_hash.len() * 2);
+    for byte in component_hash {
+        use std::fmt::Write as _;
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +406,12 @@ mod tests {
             }),
             "github".to_string(),
         );
+        registry.register_wasm(
+            Box::new(DummyTool {
+                name: "calc_wasm".to_string(),
+            }),
+            [0xAB; 32],
+        );
 
         let schemas = registry.list_schemas();
         let builtin = schemas
@@ -298,5 +427,59 @@ mod tests {
             .expect("mcp tool should exist");
         assert_eq!(mcp["source"], "mcp");
         assert_eq!(mcp["mcpServer"], "github");
+
+        let wasm = schemas
+            .iter()
+            .find(|s| s["name"] == "calc_wasm")
+            .expect("wasm tool should exist");
+        assert_eq!(wasm["source"], "wasm");
+        assert_eq!(
+            wasm["componentHash"],
+            "abababababababababababababababababababababababababababababababab"
+        );
+    }
+
+    #[test]
+    fn test_list_names() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DummyTool {
+            name: "exec".to_string(),
+        }));
+        registry.register(Box::new(DummyTool {
+            name: "web_fetch".to_string(),
+        }));
+
+        let mut names = registry.list_names();
+        names.sort();
+        assert_eq!(names, vec!["exec".to_string(), "web_fetch".to_string()]);
+    }
+
+    #[test]
+    fn test_get_returns_cloned_tool_handle() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DummyTool {
+            name: "exec".to_string(),
+        }));
+        assert!(registry.get("exec").is_some());
+        assert!(registry.get("missing").is_none());
+    }
+
+    #[test]
+    fn test_clone_allowed_by() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DummyTool {
+            name: "exec".to_string(),
+        }));
+        registry.register(Box::new(DummyTool {
+            name: "web_fetch".to_string(),
+        }));
+        registry.register(Box::new(DummyTool {
+            name: "session_state".to_string(),
+        }));
+
+        let filtered = registry.clone_allowed_by(|name| name.starts_with("web") || name == "exec");
+        let mut names = filtered.list_names();
+        names.sort();
+        assert_eq!(names, vec!["exec".to_string(), "web_fetch".to_string()]);
     }
 }

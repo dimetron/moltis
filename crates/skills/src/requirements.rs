@@ -6,6 +6,61 @@ use anyhow::{Context, bail};
 
 use crate::types::{InstallKind, InstallSpec, SkillEligibility, SkillMetadata};
 
+/// Resolve install command program + args from an install spec.
+pub fn install_program_and_args(spec: &InstallSpec) -> anyhow::Result<(&'static str, Vec<&str>)> {
+    let (program, args) = match &spec.kind {
+        InstallKind::Brew => {
+            let formula = spec
+                .formula
+                .as_deref()
+                .context("brew install requires 'formula'")?;
+            ("brew", vec!["install", formula])
+        },
+        InstallKind::Npm => {
+            let package = spec
+                .package
+                .as_deref()
+                .context("npm install requires 'package'")?;
+            ("npm", vec!["install", "-g", "--ignore-scripts", package])
+        },
+        InstallKind::Go => {
+            let module = spec
+                .module
+                .as_deref()
+                .context("go install requires 'module'")?;
+            ("go", vec!["install", module])
+        },
+        InstallKind::Cargo => {
+            let package = spec
+                .package
+                .as_deref()
+                .context("cargo install requires 'package'")?;
+            ("cargo", vec!["install", package])
+        },
+        InstallKind::Uv => {
+            let package = spec
+                .package
+                .as_deref()
+                .context("uv install requires 'package'")?;
+            ("uv", vec!["tool", "install", package])
+        },
+        InstallKind::Download => {
+            bail!("download install kind is not yet supported for automatic installation");
+        },
+    };
+
+    Ok((program, args))
+}
+
+/// Render an install spec to a user-visible command preview.
+pub fn install_command_preview(spec: &InstallSpec) -> anyhow::Result<String> {
+    let (program, args) = install_program_and_args(spec)?;
+    Ok(std::iter::once(program)
+        .chain(args)
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
 /// Returns the current OS identifier used for platform filtering.
 pub fn current_os() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -100,46 +155,7 @@ pub struct InstallResult {
 
 /// Run an install spec command (e.g. `brew install <formula>`).
 pub async fn run_install(spec: &InstallSpec) -> anyhow::Result<InstallResult> {
-    let (program, args) = match &spec.kind {
-        InstallKind::Brew => {
-            let formula = spec
-                .formula
-                .as_deref()
-                .context("brew install requires 'formula'")?;
-            ("brew", vec!["install", formula])
-        },
-        InstallKind::Npm => {
-            let package = spec
-                .package
-                .as_deref()
-                .context("npm install requires 'package'")?;
-            ("npm", vec!["install", "-g", package])
-        },
-        InstallKind::Go => {
-            let module = spec
-                .module
-                .as_deref()
-                .context("go install requires 'module'")?;
-            ("go", vec!["install", module])
-        },
-        InstallKind::Cargo => {
-            let package = spec
-                .package
-                .as_deref()
-                .context("cargo install requires 'package'")?;
-            ("cargo", vec!["install", package])
-        },
-        InstallKind::Uv => {
-            let package = spec
-                .package
-                .as_deref()
-                .context("uv install requires 'package'")?;
-            ("uv", vec!["tool", "install", package])
-        },
-        InstallKind::Download => {
-            bail!("download install kind is not yet supported for automatic installation");
-        },
-    };
+    let (program, args) = install_program_and_args(spec)?;
 
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let output = tokio::process::Command::new(program)
@@ -155,6 +171,7 @@ pub async fn run_install(spec: &InstallSpec) -> anyhow::Result<InstallResult> {
     })
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use {super::*, crate::types::SkillRequirements};
@@ -329,5 +346,46 @@ mod tests {
                 .iter()
                 .any(|o| o.kind == InstallKind::Cargo)
         );
+    }
+
+    #[test]
+    fn test_install_command_preview() {
+        let spec = InstallSpec {
+            kind: InstallKind::Cargo,
+            formula: None,
+            package: Some("ripgrep".into()),
+            module: None,
+            url: None,
+            bins: vec!["rg".into()],
+            os: Vec::new(),
+            label: None,
+        };
+
+        let preview = install_command_preview(&spec).unwrap();
+        assert_eq!(preview, "cargo install ripgrep");
+    }
+
+    #[test]
+    fn test_npm_install_includes_ignore_scripts() {
+        let spec = InstallSpec {
+            kind: InstallKind::Npm,
+            formula: None,
+            package: Some("@tobilu/qmd".into()),
+            module: None,
+            url: None,
+            bins: vec!["qmd".into()],
+            os: Vec::new(),
+            label: None,
+        };
+
+        let (program, args) = install_program_and_args(&spec).unwrap();
+        assert_eq!(program, "npm");
+        assert!(
+            args.contains(&"--ignore-scripts"),
+            "npm install must include --ignore-scripts to prevent supply chain attacks"
+        );
+
+        let preview = install_command_preview(&spec).unwrap();
+        assert_eq!(preview, "npm install -g --ignore-scripts @tobilu/qmd");
     }
 }

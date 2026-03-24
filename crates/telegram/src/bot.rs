@@ -30,13 +30,14 @@ pub async fn start_polling(
     accounts: AccountStateMap,
     message_log: Option<Arc<dyn MessageLog>>,
     event_sink: Option<Arc<dyn ChannelEventSink>>,
-) -> anyhow::Result<CancellationToken> {
+) -> crate::Result<CancellationToken> {
     // Build bot with a client timeout longer than the long-polling timeout (30s)
     // so the HTTP client doesn't abort the request before Telegram responds.
     let client = teloxide::net::default_reqwest_settings()
         .timeout(std::time::Duration::from_secs(45))
-        .build()?;
-    let bot = teloxide::Bot::with_client(config.token.expose_secret(), client);
+        .build()
+        .map_err(|source| crate::Error::external("build telegram client", source))?;
+    let bot = Bot::with_client(config.token.expose_secret(), client);
 
     // Verify credentials and get bot username.
     let me = bot.get_me().await?;
@@ -49,8 +50,10 @@ pub async fn start_polling(
     let commands = vec![
         BotCommand::new("new", "Start a new session"),
         BotCommand::new("sessions", "List and switch sessions"),
+        BotCommand::new("agent", "Switch session agent"),
         BotCommand::new("model", "Switch provider/model"),
         BotCommand::new("sandbox", "Toggle sandbox and choose image"),
+        BotCommand::new("sh", "Enable shell command mode"),
         BotCommand::new("clear", "Clear session history"),
         BotCommand::new("compact", "Compact session (summarize)"),
         BotCommand::new("context", "Show session context info"),
@@ -72,6 +75,7 @@ pub async fn start_polling(
         accounts: Arc::clone(&accounts),
     });
 
+    let otp_cooldown = config.otp_cooldown_secs;
     let state = AccountState {
         bot: bot.clone(),
         bot_username,
@@ -81,10 +85,11 @@ pub async fn start_polling(
         cancel: cancel.clone(),
         message_log,
         event_sink,
+        otp: std::sync::Mutex::new(crate::otp::OtpState::new(otp_cooldown)),
     };
 
     {
-        let mut map = accounts.write().unwrap();
+        let mut map = accounts.write().unwrap_or_else(|e| e.into_inner());
         map.insert(account_id.clone(), state);
     }
 
@@ -105,7 +110,11 @@ pub async fn start_polling(
                 .get_updates()
                 .offset(offset)
                 .timeout(30)
-                .allowed_updates(vec![AllowedUpdate::Message, AllowedUpdate::CallbackQuery])
+                .allowed_updates(vec![
+                    AllowedUpdate::Message,
+                    AllowedUpdate::EditedMessage,
+                    AllowedUpdate::CallbackQuery,
+                ])
                 .await;
 
             match result {
@@ -132,6 +141,23 @@ pub async fn start_polling(
                                         account_id = aid,
                                         error = %e,
                                         "error handling telegram message"
+                                    );
+                                }
+                            },
+                            UpdateKind::EditedMessage(msg) => {
+                                debug!(
+                                    account_id = aid,
+                                    chat_id = msg.chat.id.0,
+                                    "received telegram edited message"
+                                );
+                                if let Err(e) =
+                                    handlers::handle_edited_location(msg, &aid, &poll_accounts)
+                                        .await
+                                {
+                                    error!(
+                                        account_id = aid,
+                                        error = %e,
+                                        "error handling telegram edited message"
                                     );
                                 }
                             },
@@ -175,7 +201,7 @@ pub async fn start_polling(
 
                         // Request the gateway to disable this channel.
                         let event_sink = {
-                            let accounts = poll_accounts.read().unwrap();
+                            let accounts = poll_accounts.read().unwrap_or_else(|e| e.into_inner());
                             accounts.get(&aid).and_then(|s| s.event_sink.clone())
                         };
                         if let Some(sink) = event_sink {

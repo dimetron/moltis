@@ -3,7 +3,7 @@
 //! Scans configured directories for hook definitions (`HOOK.md` files)
 //! and produces [`ParsedHook`] entries.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use {async_trait::async_trait, tracing::warn};
 
@@ -22,7 +22,7 @@ pub enum HookSource {
 #[async_trait]
 pub trait HookDiscoverer: Send + Sync {
     /// Scan configured paths and return all discovered hooks.
-    async fn discover(&self) -> anyhow::Result<Vec<(ParsedHook, HookSource)>>;
+    async fn discover(&self) -> crate::Result<Vec<(ParsedHook, HookSource)>>;
 }
 
 /// Filesystem-based hook discoverer. Scans directories in priority order.
@@ -36,20 +36,20 @@ impl FsHookDiscoverer {
     }
 
     /// Build the default search paths for hook discovery.
-    pub fn default_paths(cwd: &Path) -> Vec<(PathBuf, HookSource)> {
-        let mut paths = vec![(cwd.join(".moltis/hooks"), HookSource::Project)];
-
-        if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
-            paths.push((home.join(".moltis/hooks"), HookSource::User));
-        }
-
-        paths
+    ///
+    /// Workspace root is always the configured data directory.
+    pub fn default_paths() -> Vec<(PathBuf, HookSource)> {
+        let workspace_root = moltis_config::data_dir();
+        vec![
+            (workspace_root.join(".moltis/hooks"), HookSource::Project),
+            (moltis_config::data_dir().join("hooks"), HookSource::User),
+        ]
     }
 }
 
 #[async_trait]
 impl HookDiscoverer for FsHookDiscoverer {
-    async fn discover(&self) -> anyhow::Result<Vec<(ParsedHook, HookSource)>> {
+    async fn discover(&self) -> crate::Result<Vec<(ParsedHook, HookSource)>> {
         let mut hooks = Vec::new();
 
         for (base_path, source) in &self.search_paths {
@@ -92,6 +92,7 @@ impl HookDiscoverer for FsHookDiscoverer {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;

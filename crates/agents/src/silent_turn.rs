@@ -3,7 +3,7 @@
 /// Before compacting a session, runs a hidden LLM turn that reviews the conversation
 /// and writes important memories to disk. The LLM's response text is discarded (not
 /// shown to the user). This matches OpenClaw's approach to long-term memory creation.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use {
@@ -12,7 +12,8 @@ use {
 };
 
 use crate::{
-    model::LlmProvider,
+    memory_writer::{MemoryWriteResult, MemoryWriter},
+    model::{ChatMessage, LlmProvider},
     runner::run_agent_loop,
     tool_registry::{AgentTool, ToolRegistry},
 };
@@ -34,22 +35,27 @@ Write to these paths:
 Format files as clean Markdown. Be concise but preserve important context.
 Do NOT respond to the user. Only use the write_file tool to save memories."#;
 
-/// A restricted write_file tool for the silent memory turn.
+#[must_use]
+fn truncate_at_char_boundary(content: &str, max_bytes: usize) -> &str {
+    &content[..content.floor_char_boundary(max_bytes)]
+}
+
+/// A thin `AgentTool` wrapper around `dyn MemoryWriter` that tracks written locations.
 struct MemoryWriteFileTool {
-    workspace_dir: PathBuf,
+    writer: Arc<dyn MemoryWriter>,
     written_paths: std::sync::Mutex<Vec<PathBuf>>,
 }
 
 impl MemoryWriteFileTool {
-    fn new(workspace_dir: PathBuf) -> Self {
+    fn new(writer: Arc<dyn MemoryWriter>) -> Self {
         Self {
-            workspace_dir,
+            writer,
             written_paths: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     fn take_written_paths(&self) -> Vec<PathBuf> {
-        std::mem::take(&mut *self.written_paths.lock().unwrap())
+        std::mem::take(&mut *self.written_paths.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 
@@ -94,28 +100,18 @@ impl AgentTool for MemoryWriteFileTool {
             .ok_or_else(|| anyhow::anyhow!("missing 'content' parameter"))?;
         let append = params["append"].as_bool().unwrap_or(false);
 
-        // Resolve relative to workspace
-        let full_path = self.workspace_dir.join(path_str);
+        let MemoryWriteResult {
+            location,
+            bytes_written,
+        } = self.writer.write_memory(path_str, content, append).await?;
 
-        // Ensure parent directory exists
-        if let Some(parent) = full_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        self.written_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(PathBuf::from(&location));
 
-        if append && full_path.exists() {
-            let existing = tokio::fs::read_to_string(&full_path)
-                .await
-                .unwrap_or_default();
-            let combined = format!("{existing}\n\n{content}");
-            tokio::fs::write(&full_path, combined).await?;
-        } else {
-            tokio::fs::write(&full_path, content).await?;
-        }
-
-        self.written_paths.lock().unwrap().push(full_path.clone());
-
-        debug!(path = %full_path.display(), "silent memory turn: wrote file");
-        Ok(serde_json::json!({ "ok": true, "path": full_path.to_string_lossy() }))
+        debug!(location = %location, bytes = bytes_written, "silent memory turn: wrote file");
+        Ok(serde_json::json!({ "ok": true, "path": location }))
     }
 }
 
@@ -127,10 +123,10 @@ impl AgentTool for MemoryWriteFileTool {
 /// Returns the list of file paths that were written.
 pub async fn run_silent_memory_turn(
     provider: Arc<dyn LlmProvider>,
-    conversation: &[serde_json::Value],
-    workspace_dir: &Path,
+    conversation: &[ChatMessage],
+    writer: Arc<dyn MemoryWriter>,
 ) -> Result<Vec<PathBuf>> {
-    let write_tool = Arc::new(MemoryWriteFileTool::new(workspace_dir.to_path_buf()));
+    let write_tool = Arc::new(MemoryWriteFileTool::new(writer));
 
     let mut tools = ToolRegistry::new();
     // We need to register a non-Arc version. Use a wrapper.
@@ -160,17 +156,21 @@ pub async fn run_silent_memory_turn(
     // Format the conversation for the user message
     let mut conversation_text = String::new();
     for msg in conversation {
-        let role = msg
-            .get("role")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        // Skip very long messages (tool results, etc.)
-        let truncated = if content.len() > 2000 {
-            &content[..2000]
-        } else {
-            content
+        let (role, content) = match msg {
+            ChatMessage::System { content } => ("system", content.as_str()),
+            ChatMessage::User {
+                content: crate::model::UserContent::Text(t),
+            } => ("user", t.as_str()),
+            ChatMessage::User {
+                content: crate::model::UserContent::Multimodal(_),
+            } => ("user", "[multimodal content]"),
+            ChatMessage::Assistant { content, .. } => {
+                ("assistant", content.as_deref().unwrap_or(""))
+            },
+            ChatMessage::Tool { content, .. } => ("tool", content.as_str()),
         };
+        // Skip very long messages (tool results, etc.)
+        let truncated = truncate_at_char_boundary(content, 2000);
         conversation_text.push_str(&format!("{role}: {truncated}\n\n"));
     }
 
@@ -179,11 +179,12 @@ pub async fn run_silent_memory_turn(
         "running silent memory turn before compaction"
     );
 
+    let user_content = crate::model::UserContent::Text(conversation_text);
     let result = run_agent_loop(
         provider,
         &tools,
         MEMORY_FLUSH_SYSTEM_PROMPT,
-        &conversation_text,
+        &user_content,
         None, // no event callbacks — silent
         None, // no history
     )
@@ -206,11 +207,12 @@ pub async fn run_silent_memory_turn(
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use {
         super::*,
-        crate::model::{CompletionResponse, StreamEvent, ToolCall, Usage},
+        crate::model::{ChatMessage, CompletionResponse, StreamEvent, ToolCall, Usage},
         std::pin::Pin,
         tokio_stream::Stream,
     };
@@ -236,7 +238,7 @@ mod tests {
 
         async fn complete(
             &self,
-            _messages: &[serde_json::Value],
+            _messages: &[ChatMessage],
             _tools: &[serde_json::Value],
         ) -> Result<CompletionResponse> {
             let count = self
@@ -256,6 +258,7 @@ mod tests {
                     usage: Usage {
                         input_tokens: 100,
                         output_tokens: 50,
+                        ..Default::default()
                     },
                 })
             } else {
@@ -265,6 +268,7 @@ mod tests {
                     usage: Usage {
                         input_tokens: 50,
                         output_tokens: 5,
+                        ..Default::default()
                     },
                 })
             }
@@ -272,9 +276,41 @@ mod tests {
 
         fn stream(
             &self,
-            _messages: Vec<serde_json::Value>,
+            _messages: Vec<ChatMessage>,
         ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
             Box::pin(tokio_stream::empty())
+        }
+    }
+
+    /// Mock MemoryWriter that writes to a temp directory.
+    struct MockMemoryWriter {
+        dir: PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryWriter for MockMemoryWriter {
+        async fn write_memory(
+            &self,
+            file: &str,
+            content: &str,
+            append: bool,
+        ) -> Result<MemoryWriteResult> {
+            let path = self.dir.join(file);
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            if append && path.exists() {
+                let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+                let combined = format!("{existing}\n\n{content}");
+                tokio::fs::write(&path, &combined).await?;
+            } else {
+                tokio::fs::write(&path, content).await?;
+            }
+            let bytes = tokio::fs::read(&path).await?.len();
+            Ok(MemoryWriteResult {
+                location: path.to_string_lossy().into_owned(),
+                bytes_written: bytes,
+            })
         }
     }
 
@@ -284,13 +320,16 @@ mod tests {
         let provider = Arc::new(MemoryWritingProvider {
             call_count: std::sync::atomic::AtomicUsize::new(0),
         });
+        let writer: Arc<dyn MemoryWriter> = Arc::new(MockMemoryWriter {
+            dir: tmp.path().to_path_buf(),
+        });
 
         let conversation = vec![
-            serde_json::json!({"role": "user", "content": "I prefer Rust over Python."}),
-            serde_json::json!({"role": "assistant", "content": "Noted! Rust is a great choice."}),
+            ChatMessage::user("I prefer Rust over Python."),
+            ChatMessage::assistant("Noted! Rust is a great choice."),
         ];
 
-        let paths = run_silent_memory_turn(provider, &conversation, tmp.path())
+        let paths = run_silent_memory_turn(provider, &conversation, writer)
             .await
             .unwrap();
 
@@ -308,12 +347,24 @@ mod tests {
         let provider = Arc::new(MemoryWritingProvider {
             call_count: std::sync::atomic::AtomicUsize::new(0),
         });
+        let writer: Arc<dyn MemoryWriter> = Arc::new(MockMemoryWriter {
+            dir: tmp.path().to_path_buf(),
+        });
 
-        let paths = run_silent_memory_turn(provider, &[], tmp.path())
-            .await
-            .unwrap();
+        let paths = run_silent_memory_turn(provider, &[], writer).await.unwrap();
 
         // Should succeed even with empty conversation (provider still writes)
         assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_handles_multibyte_boundary() {
+        let content = format!("{}л{}", "a".repeat(1999), "z".repeat(20));
+
+        let truncated = truncate_at_char_boundary(&content, 2000);
+
+        assert_eq!(truncated.len(), 1999);
+        assert!(content.is_char_boundary(truncated.len()));
+        assert!(truncated.chars().all(|c| c == 'a'));
     }
 }

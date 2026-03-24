@@ -10,7 +10,7 @@ Moltis supports two backends for local inference:
 
 | Backend | Format | Platform | GPU Acceleration |
 |---------|--------|----------|------------------|
-| **GGUF** (llama.cpp) | `.gguf` files | macOS, Linux, Windows | Metal (macOS), CUDA (NVIDIA) |
+| **GGUF** (llama.cpp) | `.gguf` files | macOS, Linux, Windows | Metal (macOS), CUDA (NVIDIA), Vulkan (opt-in) |
 | **MLX** | MLX model repos | macOS (Apple Silicon only) | Apple Silicon neural engine |
 
 ### GGUF (llama.cpp)
@@ -22,7 +22,7 @@ memory requirements while maintaining good quality.
 **Advantages:**
 - Cross-platform (macOS, Linux, Windows)
 - Wide model compatibility (any GGUF model)
-- GPU acceleration on both NVIDIA (CUDA) and Apple Silicon (Metal)
+- GPU acceleration on Apple Silicon (Metal), NVIDIA (CUDA), and Vulkan-capable GPUs
 - Mature and well-tested
 
 ### MLX
@@ -65,32 +65,35 @@ in the UI.
 
 ### Via Configuration File
 
-Add to `~/.moltis/moltis.toml`:
+Add to `~/.config/moltis/moltis.toml`:
 
 ```toml
-[providers.local]
-model = "qwen2.5-coder-7b-q4_k_m"
+[providers.local-llm]
+models = ["qwen2.5-coder-7b-q4_k_m"]
 ```
 
 For custom GGUF files:
 
-```toml
-[providers.local]
-model = "my-custom-model"
-model_path = "/path/to/model.gguf"
+```json
+{
+  "models": [
+    {
+      "model_id": "my-custom-model",
+      "model_path": "/path/to/model.gguf",
+      "gpu_layers": 99,
+      "backend": "GGUF"
+    }
+  ]
+}
 ```
+
+Save this as `~/.config/moltis/local-llm.json` (the same file managed by the
+Settings UI).
 
 ## Model Storage
 
-Downloaded models are cached in `~/.cache/moltis/models/` by default. This
+Downloaded models are cached in `~/.moltis/models/` by default. This
 directory can grow large (several GB per model).
-
-To change the cache location:
-
-```toml
-[providers.local]
-cache_dir = "/custom/models/path"
-```
 
 ## HuggingFace Integration
 
@@ -100,7 +103,7 @@ You can search and download models directly from HuggingFace:
 2. Enter a search term (e.g., "qwen coder")
 3. Select GGUF or MLX backend
 4. Choose a model from the results
-5. The model will be downloaded on first use
+5. The model will download immediately after you configure it
 
 ### Finding GGUF Models
 
@@ -122,9 +125,16 @@ MLX models are available from [mlx-community](https://huggingface.co/mlx-communi
 Metal acceleration is enabled by default on macOS. The number of GPU layers
 can be configured:
 
-```toml
-[providers.local]
-gpu_layers = 99  # Offload all layers to GPU
+```json
+{
+  "models": [
+    {
+      "model_id": "qwen2.5-coder-7b-q4_k_m",
+      "gpu_layers": 99,
+      "backend": "GGUF"
+    }
+  ]
+}
 ```
 
 ### CUDA (NVIDIA)
@@ -134,6 +144,30 @@ Requires building with the `local-llm-cuda` feature:
 ```bash
 cargo build --release --features local-llm-cuda
 ```
+
+### Vulkan
+
+Vulkan acceleration is available as an opt-in build. It is not enabled by
+default in Moltis release builds.
+
+Build with:
+
+```bash
+cargo build --release --features local-llm-vulkan
+```
+
+Requirements:
+
+- Linux: install Vulkan development packages, for example on Debian/Ubuntu:
+  `sudo apt-get install libvulkan-dev glslang-tools`
+  (Ubuntu 24.04+ also has a `glslc` package; on 22.04 install it from the
+  [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home) if the build
+  requires the `glslc` binary)
+- Windows: install the LunarG Vulkan SDK and set the `VULKAN_SDK` environment
+  variable before building
+
+If llama.cpp detects a Vulkan device at runtime, Moltis will report GGUF as
+using Vulkan acceleration in the local model setup flow.
 
 ## Limitations
 
@@ -176,7 +210,7 @@ possible.
 
 - Enable GPU acceleration (Metal on macOS, CUDA on Linux)
 - Try a smaller/more quantized model
-- Reduce context size in config
+- Reduce prompt/context length
 
 ### Out of memory
 

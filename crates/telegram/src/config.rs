@@ -1,8 +1,32 @@
+use std::collections::HashMap;
+
 use {
-    moltis_channels::gating::{DmPolicy, GroupPolicy, MentionMode},
-    secrecy::{ExposeSecret, Secret},
-    serde::{Deserialize, Serialize},
+    moltis_channels::{
+        config_view::ChannelConfigView,
+        gating::{DmPolicy, GroupPolicy, MentionMode},
+    },
+    moltis_common::secret_serde,
+    secrecy::Secret,
+    serde::{Deserialize, Serialize, ser::SerializeStruct},
 };
+
+/// Per-channel model/provider override.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+}
+
+/// Per-user model/provider override.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UserOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+}
 
 /// How streaming responses are delivered.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -20,7 +44,7 @@ pub enum StreamMode {
 #[serde(default)]
 pub struct TelegramAccountConfig {
     /// Bot token from @BotFather.
-    #[serde(serialize_with = "serialize_secret")]
+    #[serde(serialize_with = "secret_serde::serialize_secret")]
     pub token: Secret<String>,
 
     /// DM access policy.
@@ -44,6 +68,14 @@ pub struct TelegramAccountConfig {
     /// Minimum interval between edit-in-place updates (ms).
     pub edit_throttle_ms: u64,
 
+    /// Send a short non-silent message when edit-in-place streaming finishes.
+    /// This can trigger a reliable "completion" push notification in Telegram.
+    pub stream_notify_on_complete: bool,
+
+    /// Minimum number of characters to accumulate before sending the first
+    /// streamed message. Helps avoid early push notifications with tiny drafts.
+    pub stream_min_initial_chars: usize,
+
     /// Default model ID for this bot's sessions (e.g. "claude-sonnet-4-5-20250929").
     /// When set, channel messages use this model instead of the first registered provider.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +86,24 @@ pub struct TelegramAccountConfig {
     /// resolves the provider from the model ID at runtime.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_provider: Option<String>,
+
+    /// Enable OTP self-approval for non-allowlisted DM users (default: true).
+    pub otp_self_approval: bool,
+
+    /// Cooldown in seconds after 3 failed OTP attempts (default: 300).
+    pub otp_cooldown_secs: u64,
+
+    /// Send bot responses as Telegram replies to the user's message.
+    /// When false (default), responses are sent as standalone messages.
+    pub reply_to_message: bool,
+
+    /// Per-channel model/provider overrides (chat_id -> override).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub channel_overrides: HashMap<String, ChannelOverride>,
+
+    /// Per-user model/provider overrides (user_id -> override).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub user_overrides: HashMap<String, UserOverride>,
 }
 
 impl std::fmt::Debug for TelegramAccountConfig {
@@ -62,15 +112,101 @@ impl std::fmt::Debug for TelegramAccountConfig {
             .field("token", &"[REDACTED]")
             .field("dm_policy", &self.dm_policy)
             .field("group_policy", &self.group_policy)
+            .field("channel_overrides", &self.channel_overrides)
+            .field("user_overrides", &self.user_overrides)
             .finish_non_exhaustive()
     }
 }
 
-fn serialize_secret<S: serde::Serializer>(
-    secret: &Secret<String>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(secret.expose_secret())
+/// Wrapper that serializes secret fields as `"[REDACTED]"` for API responses.
+pub struct RedactedConfig<'a>(pub &'a TelegramAccountConfig);
+
+impl Serialize for RedactedConfig<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let c = self.0;
+        let mut count = 13; // always-present fields
+        count += c.model.is_some() as usize;
+        count += c.model_provider.is_some() as usize;
+        count += !c.channel_overrides.is_empty() as usize;
+        count += !c.user_overrides.is_empty() as usize;
+        let mut s = serializer.serialize_struct("TelegramAccountConfig", count)?;
+        s.serialize_field("token", secret_serde::REDACTED)?;
+        s.serialize_field("dm_policy", &c.dm_policy)?;
+        s.serialize_field("group_policy", &c.group_policy)?;
+        s.serialize_field("mention_mode", &c.mention_mode)?;
+        s.serialize_field("allowlist", &c.allowlist)?;
+        s.serialize_field("group_allowlist", &c.group_allowlist)?;
+        s.serialize_field("stream_mode", &c.stream_mode)?;
+        s.serialize_field("edit_throttle_ms", &c.edit_throttle_ms)?;
+        s.serialize_field("stream_notify_on_complete", &c.stream_notify_on_complete)?;
+        s.serialize_field("stream_min_initial_chars", &c.stream_min_initial_chars)?;
+        if c.model.is_some() {
+            s.serialize_field("model", &c.model)?;
+        }
+        if c.model_provider.is_some() {
+            s.serialize_field("model_provider", &c.model_provider)?;
+        }
+        s.serialize_field("otp_self_approval", &c.otp_self_approval)?;
+        s.serialize_field("otp_cooldown_secs", &c.otp_cooldown_secs)?;
+        s.serialize_field("reply_to_message", &c.reply_to_message)?;
+        if !c.channel_overrides.is_empty() {
+            s.serialize_field("channel_overrides", &c.channel_overrides)?;
+        }
+        if !c.user_overrides.is_empty() {
+            s.serialize_field("user_overrides", &c.user_overrides)?;
+        }
+        s.end()
+    }
+}
+
+impl ChannelConfigView for TelegramAccountConfig {
+    fn allowlist(&self) -> &[String] {
+        &self.allowlist
+    }
+
+    fn group_allowlist(&self) -> &[String] {
+        &self.group_allowlist
+    }
+
+    fn dm_policy(&self) -> DmPolicy {
+        self.dm_policy.clone()
+    }
+
+    fn group_policy(&self) -> GroupPolicy {
+        self.group_policy.clone()
+    }
+
+    fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    fn model_provider(&self) -> Option<&str> {
+        self.model_provider.as_deref()
+    }
+
+    fn channel_model(&self, channel_id: &str) -> Option<&str> {
+        self.channel_overrides
+            .get(channel_id)
+            .and_then(|o| o.model.as_deref())
+    }
+
+    fn channel_model_provider(&self, channel_id: &str) -> Option<&str> {
+        self.channel_overrides
+            .get(channel_id)
+            .and_then(|o| o.model_provider.as_deref())
+    }
+
+    fn user_model(&self, user_id: &str) -> Option<&str> {
+        self.user_overrides
+            .get(user_id)
+            .and_then(|o| o.model.as_deref())
+    }
+
+    fn user_model_provider(&self, user_id: &str) -> Option<&str> {
+        self.user_overrides
+            .get(user_id)
+            .and_then(|o| o.model_provider.as_deref())
+    }
 }
 
 impl Default for TelegramAccountConfig {
@@ -84,24 +220,36 @@ impl Default for TelegramAccountConfig {
             group_allowlist: Vec::new(),
             stream_mode: StreamMode::default(),
             edit_throttle_ms: 300,
+            stream_notify_on_complete: false,
+            stream_min_initial_chars: 30,
             model: None,
             model_provider: None,
+            otp_self_approval: true,
+            otp_cooldown_secs: 300,
+            reply_to_message: false,
+            channel_overrides: HashMap::new(),
+            user_overrides: HashMap::new(),
         }
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
+    use secrecy::ExposeSecret;
+
     use super::*;
 
     #[test]
     fn default_config() {
         let cfg = TelegramAccountConfig::default();
-        assert_eq!(cfg.dm_policy, DmPolicy::Open);
+        assert_eq!(cfg.dm_policy, DmPolicy::Allowlist);
         assert_eq!(cfg.group_policy, GroupPolicy::Open);
         assert_eq!(cfg.mention_mode, MentionMode::Mention);
         assert_eq!(cfg.stream_mode, StreamMode::EditInPlace);
         assert_eq!(cfg.edit_throttle_ms, 300);
+        assert!(!cfg.stream_notify_on_complete);
+        assert_eq!(cfg.stream_min_initial_chars, 30);
     }
 
     #[test]
@@ -110,15 +258,94 @@ mod tests {
             "token": "123:ABC",
             "dm_policy": "allowlist",
             "stream_mode": "off",
+            "stream_notify_on_complete": true,
+            "stream_min_initial_chars": 42,
             "allowlist": ["user1", "user2"]
         }"#;
         let cfg: TelegramAccountConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.token.expose_secret(), "123:ABC");
         assert_eq!(cfg.dm_policy, DmPolicy::Allowlist);
         assert_eq!(cfg.stream_mode, StreamMode::Off);
+        assert!(cfg.stream_notify_on_complete);
+        assert_eq!(cfg.stream_min_initial_chars, 42);
         assert_eq!(cfg.allowlist, vec!["user1", "user2"]);
         // defaults for unspecified fields
         assert_eq!(cfg.group_policy, GroupPolicy::Open);
+    }
+
+    #[test]
+    fn default_config_has_empty_overrides() {
+        let cfg = TelegramAccountConfig::default();
+        assert!(cfg.channel_overrides.is_empty());
+        assert!(cfg.user_overrides.is_empty());
+    }
+
+    #[test]
+    fn resolve_model_user_overrides_channel() {
+        let mut cfg = TelegramAccountConfig {
+            model: Some("default-model".into()),
+            ..Default::default()
+        };
+        cfg.channel_overrides
+            .insert("-100123".into(), ChannelOverride {
+                model: Some("channel-model".into()),
+                ..Default::default()
+            });
+        cfg.user_overrides.insert("456".into(), UserOverride {
+            model: Some("user-model".into()),
+            ..Default::default()
+        });
+
+        // User override wins
+        assert_eq!(cfg.resolve_model("-100123", "456"), Some("user-model"));
+        // Channel override wins when no user override
+        assert_eq!(cfg.resolve_model("-100123", "999"), Some("channel-model"));
+        // Account default when no overrides
+        assert_eq!(cfg.resolve_model("-100999", "999"), Some("default-model"));
+    }
+
+    #[test]
+    fn overrides_round_trip() {
+        let json = serde_json::json!({
+            "token": "123:ABC",
+            "channel_overrides": {
+                "-100123": { "model": "gpt-4" }
+            },
+            "user_overrides": {
+                "456": { "model": "claude-sonnet", "model_provider": "anthropic" }
+            }
+        });
+        let cfg: TelegramAccountConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(cfg.channel_model("-100123"), Some("gpt-4"));
+        assert!(cfg.channel_model_provider("-100123").is_none());
+        assert_eq!(cfg.user_model("456"), Some("claude-sonnet"));
+        assert_eq!(cfg.user_model_provider("456"), Some("anthropic"));
+
+        // Round-trip preserves overrides
+        let value = serde_json::to_value(&cfg).unwrap();
+        let cfg2: TelegramAccountConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(cfg2.channel_model("-100123"), Some("gpt-4"));
+        assert_eq!(cfg2.user_model("456"), Some("claude-sonnet"));
+    }
+
+    #[test]
+    fn redacted_hides_token() {
+        let cfg = TelegramAccountConfig {
+            token: Secret::new("123:ABC".into()),
+            model: Some("gpt-4o".into()),
+            ..Default::default()
+        };
+        let redacted = serde_json::to_value(RedactedConfig(&cfg)).unwrap();
+        assert_eq!(redacted["token"], "[REDACTED]");
+        assert_eq!(redacted["model"], "gpt-4o");
+        assert_eq!(
+            redacted["stream_mode"],
+            serde_json::to_value(&cfg.stream_mode).unwrap()
+        );
+
+        // Storage path still exposes the token
+        let storage = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(storage["token"], "123:ABC");
     }
 
     #[test]

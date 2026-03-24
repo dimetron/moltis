@@ -1,19 +1,29 @@
 //! McpManager: lifecycle management for multiple MCP server connections.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use {
-    anyhow::{Context, Result},
+    secrecy::ExposeSecret,
     tokio::sync::RwLock,
     tracing::{info, warn},
 };
 
 use crate::{
+    auth::{McpAuthState, McpOAuthOverride, McpOAuthProvider, SharedAuthProvider},
     client::{McpClient, McpClientState},
-    registry::{McpRegistry, McpServerConfig},
+    error::{Context, Error, Result},
+    registry::{McpOAuthConfig, McpRegistry, McpServerConfig, TransportType},
+    remote::{ResolvedRemoteConfig, header_names, sanitize_url_for_display},
     tool_bridge::McpToolBridge,
     traits::McpClientTrait,
-    types::McpToolDef,
+    types::{McpManagerError, McpToolDef, McpTransportError},
 };
 
 /// Status of a managed MCP server.
@@ -27,37 +37,133 @@ pub struct ServerStatus {
     pub command: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_timeout_secs: Option<u64>,
+    pub configured_request_timeout_secs: u64,
     pub transport: crate::registry::TransportType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub header_names: Vec<String>,
+    /// OAuth authentication state (only for SSE servers with auth).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_state: Option<McpAuthState>,
+    /// Pending OAuth URL to open in browser (when auth_state is awaiting_browser).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+    /// Custom display name for the server (shown in UI).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// Mutable state behind the single `RwLock` on [`McpManager`].
+pub struct McpManagerInner {
+    pub clients: HashMap<String, Arc<RwLock<dyn McpClientTrait>>>,
+    pub tools: HashMap<String, Vec<McpToolDef>>,
+    pub registry: McpRegistry,
+    /// OAuth auth providers for SSE servers, keyed by server name.
+    pub auth_providers: HashMap<String, SharedAuthProvider>,
+    pub env_overrides: HashMap<String, String>,
 }
 
 /// Manages the lifecycle of multiple MCP server connections.
 pub struct McpManager {
-    clients: RwLock<HashMap<String, Arc<RwLock<dyn McpClientTrait>>>>,
-    /// Cached tools per server.
-    tools: RwLock<HashMap<String, Vec<McpToolDef>>>,
-    registry: RwLock<McpRegistry>,
+    pub inner: RwLock<McpManagerInner>,
+    request_timeout_secs: AtomicU64,
 }
 
 impl McpManager {
     pub fn new(registry: McpRegistry) -> Self {
+        Self::new_with_env_overrides(registry, HashMap::new(), Duration::from_secs(30))
+    }
+
+    pub fn new_with_request_timeout(registry: McpRegistry, request_timeout: Duration) -> Self {
+        Self::new_with_env_overrides(registry, HashMap::new(), request_timeout)
+    }
+
+    pub fn new_with_env_overrides(
+        registry: McpRegistry,
+        env_overrides: HashMap<String, String>,
+        request_timeout: Duration,
+    ) -> Self {
+        let request_timeout_secs = request_timeout.as_secs().max(1);
         Self {
-            clients: RwLock::new(HashMap::new()),
-            tools: RwLock::new(HashMap::new()),
-            registry: RwLock::new(registry),
+            inner: RwLock::new(McpManagerInner {
+                clients: HashMap::new(),
+                tools: HashMap::new(),
+                registry,
+                auth_providers: HashMap::new(),
+                env_overrides,
+            }),
+            request_timeout_secs: AtomicU64::new(request_timeout_secs),
         }
+    }
+
+    pub async fn set_env_overrides(&self, env_overrides: HashMap<String, String>) {
+        self.inner.write().await.env_overrides = env_overrides;
+    }
+
+    pub fn set_request_timeout_secs(&self, request_timeout_secs: u64) {
+        self.request_timeout_secs
+            .store(request_timeout_secs.max(1), Ordering::Relaxed);
+    }
+
+    fn default_request_timeout_secs(&self) -> u64 {
+        self.request_timeout_secs.load(Ordering::Relaxed).max(1)
+    }
+
+    fn effective_timeout_for(&self, config: &McpServerConfig) -> Duration {
+        Duration::from_secs(
+            config
+                .request_timeout_secs
+                .filter(|secs| *secs > 0)
+                .unwrap_or(self.default_request_timeout_secs()),
+        )
+    }
+
+    fn effective_timeout_secs_for(&self, config: &McpServerConfig) -> u64 {
+        self.effective_timeout_for(config).as_secs()
+    }
+
+    fn build_auth_provider(
+        name: &str,
+        remote: &ResolvedRemoteConfig,
+        oauth: Option<&McpOAuthConfig>,
+    ) -> SharedAuthProvider {
+        let provider = if let Some(ov) = oauth {
+            McpOAuthProvider::new(name, remote.request_url()).with_oauth_override(
+                McpOAuthOverride {
+                    client_id: ov.client_id.clone(),
+                    auth_url: ov.auth_url.clone(),
+                    token_url: ov.token_url.clone(),
+                    scopes: ov.scopes.clone(),
+                },
+            )
+        } else {
+            McpOAuthProvider::new(name, remote.request_url())
+        };
+        Arc::new(provider)
+    }
+
+    fn should_attempt_auth_connection(
+        has_existing_auth_provider: bool,
+        has_oauth_override: bool,
+        has_stored_token: bool,
+    ) -> bool {
+        has_existing_auth_provider || has_oauth_override || has_stored_token
     }
 
     /// Start all enabled servers from the registry.
     pub async fn start_enabled(&self) -> Vec<String> {
-        let registry = self.registry.read().await;
-        let enabled: Vec<(String, McpServerConfig)> = registry
-            .enabled_servers()
-            .into_iter()
-            .map(|(name, cfg)| (name.to_string(), cfg.clone()))
-            .collect();
-        drop(registry);
+        let enabled: Vec<(String, McpServerConfig)> = {
+            let inner = self.inner.read().await;
+            inner
+                .registry
+                .enabled_servers()
+                .into_iter()
+                .map(|(name, cfg)| (name.to_string(), cfg.clone()))
+                .collect()
+        };
 
         let mut started = Vec::new();
         for (name, config) in enabled {
@@ -70,26 +176,117 @@ impl McpManager {
     }
 
     /// Start a single server connection.
+    ///
+    /// For SSE servers: attempts unauthenticated first. On 401 Unauthorized,
+    /// stores auth context and returns `McpManagerError::OAuthRequired`.
     pub async fn start_server(&self, name: &str, config: &McpServerConfig) -> Result<()> {
-        use crate::registry::TransportType;
-
         // Shut down existing connection if any.
         self.stop_server(name).await;
 
-        let mut client = match config.transport {
+        // Network work happens outside the lock.
+        let (client, auth_provider) = match config.transport {
             TransportType::Sse => {
-                let url = config
-                    .url
-                    .as_deref()
+                let env_overrides = {
+                    let inner = self.inner.read().await;
+                    inner.env_overrides.clone()
+                };
+                let remote = ResolvedRemoteConfig::from_server_config(config, &env_overrides)
                     .with_context(|| format!("SSE transport for '{name}' requires a url"))?;
-                McpClient::connect_sse(name, url).await?
+
+                // Check if we already have an auth provider (from a previous connection).
+                let existing_auth = {
+                    let inner = self.inner.read().await;
+                    inner.auth_providers.get(name).cloned()
+                };
+
+                let has_existing_auth_provider = existing_auth.is_some();
+                let auth_provider = existing_auth.unwrap_or_else(|| {
+                    Self::build_auth_provider(name, &remote, config.oauth.as_ref())
+                });
+
+                // If we have a stored token, prefer auth transport immediately.
+                // This avoids forced re-auth at process start for OAuth-backed servers.
+                let has_stored_token = if has_existing_auth_provider {
+                    false
+                } else {
+                    auth_provider.access_token().await?.is_some()
+                };
+
+                if Self::should_attempt_auth_connection(
+                    has_existing_auth_provider,
+                    config.oauth.is_some(),
+                    has_stored_token,
+                ) {
+                    let client = McpClient::connect_sse_with_auth(
+                        name,
+                        &remote,
+                        auth_provider.clone(),
+                        self.effective_timeout_for(config),
+                    )
+                    .await?;
+                    (client, Some(auth_provider))
+                } else {
+                    // No hint that auth is needed yet, probe unauthenticated first.
+                    match McpClient::connect_sse(name, &remote, self.effective_timeout_for(config))
+                        .await
+                    {
+                        Ok(client) => (client, None),
+                        Err(e) => {
+                            // Check if it's a 401 Unauthorized.
+                            if let Error::Transport(McpTransportError::Unauthorized {
+                                www_authenticate,
+                            }) = &e
+                            {
+                                info!(
+                                    server = %name,
+                                    "SSE server requires auth"
+                                );
+
+                                // Mark auth as required and persist challenge metadata.
+                                let auth_ok = auth_provider
+                                    .handle_unauthorized(www_authenticate.as_deref())
+                                    .await?;
+
+                                if !auth_ok {
+                                    let mut inner = self.inner.write().await;
+                                    inner.auth_providers.insert(name.to_string(), auth_provider);
+                                    return Err(McpManagerError::OAuthRequired {
+                                        server: name.to_string(),
+                                    }
+                                    .into());
+                                }
+
+                                // Retry with auth.
+                                let client = McpClient::connect_sse_with_auth(
+                                    name,
+                                    &remote,
+                                    auth_provider.clone(),
+                                    self.effective_timeout_for(config),
+                                )
+                                .await?;
+                                (client, Some(auth_provider))
+                            } else {
+                                return Err(e);
+                            }
+                        },
+                    }
+                }
             },
             TransportType::Stdio => {
-                McpClient::connect(name, &config.command, &config.args, &config.env).await?
+                let client = McpClient::connect(
+                    name,
+                    &config.command,
+                    &config.args,
+                    &config.env,
+                    self.effective_timeout_for(config),
+                )
+                .await?;
+                (client, None)
             },
         };
 
         // Fetch tools.
+        let mut client = client;
         let tool_defs = client.list_tools().await?.to_vec();
         info!(
             server = %name,
@@ -97,42 +294,128 @@ impl McpManager {
             "MCP server started with tools"
         );
 
+        // Atomic insert of client, tools, and auth provider.
         let client: Arc<RwLock<dyn McpClientTrait>> = Arc::new(RwLock::new(client));
-        self.clients.write().await.insert(name.to_string(), client);
-        self.tools.write().await.insert(name.to_string(), tool_defs);
+        let mut inner = self.inner.write().await;
+        inner.clients.insert(name.to_string(), client);
+        inner.tools.insert(name.to_string(), tool_defs);
+
+        if let Some(auth) = auth_provider {
+            inner.auth_providers.insert(name.to_string(), auth);
+        }
 
         Ok(())
     }
 
     /// Stop a server connection.
     pub async fn stop_server(&self, name: &str) {
-        if let Some(client) = self.clients.write().await.remove(name) {
+        // Atomically remove client and tools, then drop the lock before async shutdown.
+        // Keep auth_providers for potential reconnection.
+        let client = {
+            let mut inner = self.inner.write().await;
+            inner.tools.remove(name);
+            inner.clients.remove(name)
+        };
+        if let Some(client) = client {
             let mut c = client.write().await;
             c.shutdown().await;
         }
-        self.tools.write().await.remove(name);
     }
 
     /// Restart a server.
     pub async fn restart_server(&self, name: &str) -> Result<()> {
         let config = {
-            let reg = self.registry.read().await;
-            reg.get(name)
+            let inner = self.inner.read().await;
+            inner
+                .registry
+                .get(name)
                 .cloned()
                 .with_context(|| format!("MCP server '{name}' not found in registry"))?
         };
         self.start_server(name, &config).await
     }
 
+    /// Start OAuth for an SSE server and return the browser authorization URL.
+    pub async fn oauth_start_server(&self, name: &str, redirect_uri: &str) -> Result<String> {
+        let config =
+            {
+                let inner = self.inner.read().await;
+                inner.registry.get(name).cloned().ok_or_else(|| {
+                    McpManagerError::ServerNotFound {
+                        server: name.to_string(),
+                    }
+                })?
+            };
+
+        if !matches!(config.transport, TransportType::Sse) {
+            return Err(McpManagerError::NotSseTransport {
+                server: name.to_string(),
+            }
+            .into());
+        }
+
+        let env_overrides = {
+            let inner = self.inner.read().await;
+            inner.env_overrides.clone()
+        };
+        let remote = ResolvedRemoteConfig::from_server_config(&config, &env_overrides)?;
+
+        let existing_auth = {
+            let inner = self.inner.read().await;
+            inner.auth_providers.get(name).cloned()
+        };
+        let has_existing_auth_provider = existing_auth.is_some();
+        let auth_provider = existing_auth
+            .unwrap_or_else(|| Self::build_auth_provider(name, &remote, config.oauth.as_ref()));
+
+        if !has_existing_auth_provider {
+            let mut inner = self.inner.write().await;
+            inner
+                .auth_providers
+                .insert(name.to_string(), auth_provider.clone());
+        }
+
+        auth_provider
+            .start_oauth(redirect_uri, None)
+            .await?
+            .with_context(|| format!("MCP server '{name}' does not support OAuth"))
+    }
+
+    /// Complete an OAuth callback by matching state across MCP auth providers.
+    ///
+    /// Returns the server name whose OAuth flow was completed.
+    pub async fn oauth_complete_callback(&self, state: &str, code: &str) -> Result<String> {
+        let providers: Vec<(String, SharedAuthProvider)> = {
+            let inner = self.inner.read().await;
+            inner
+                .auth_providers
+                .iter()
+                .map(|(name, provider)| (name.clone(), provider.clone()))
+                .collect()
+        };
+
+        for (name, provider) in providers {
+            if provider.complete_oauth(state, code).await? {
+                self.restart_server(&name).await?;
+                return Ok(name);
+            }
+        }
+
+        Err(McpManagerError::OAuthStateNotFound.into())
+    }
+
+    /// Trigger re-authentication for an SSE server.
+    pub async fn reauth_server(&self, name: &str, redirect_uri: &str) -> Result<String> {
+        self.oauth_start_server(name, redirect_uri).await
+    }
+
     /// Get the status of all configured servers.
     pub async fn status_all(&self) -> Vec<ServerStatus> {
-        let registry = self.registry.read().await;
-        let clients = self.clients.read().await;
-        let tools = self.tools.read().await;
+        let inner = self.inner.read().await;
 
         let mut statuses = Vec::new();
-        for (name, config) in &registry.servers {
-            let state = if let Some(client) = clients.get(name) {
+        for (name, config) in &inner.registry.servers {
+            let state = if let Some(client) = inner.clients.get(name) {
                 let c = client.read().await;
                 match c.state() {
                     McpClientState::Ready => {
@@ -143,23 +426,38 @@ impl McpManager {
                         }
                     },
                     McpClientState::Connected => "connecting",
+                    McpClientState::Authenticating => "authenticating",
                     McpClientState::Closed => "stopped",
                 }
             } else {
                 "stopped"
             };
 
+            let auth_state = inner.auth_providers.get(name).map(|a| a.auth_state());
             statuses.push(ServerStatus {
                 name: name.clone(),
                 state: state.into(),
                 enabled: config.enabled,
-                tool_count: tools.get(name).map_or(0, |t| t.len()),
+                tool_count: inner.tools.get(name).map_or(0, |t| t.len()),
                 server_info: None,
                 command: config.command.clone(),
                 args: config.args.clone(),
-                env: config.env.clone(),
+                env: if matches!(config.transport, TransportType::Sse) {
+                    HashMap::new()
+                } else {
+                    config.env.clone()
+                },
+                request_timeout_secs: config.request_timeout_secs,
+                configured_request_timeout_secs: self.effective_timeout_secs_for(config),
                 transport: config.transport,
-                url: config.url.clone(),
+                url: config
+                    .url
+                    .as_ref()
+                    .map(|raw| sanitize_url_for_display(raw.expose_secret())),
+                header_names: header_names(&config.headers),
+                auth_state,
+                auth_url: None,
+                display_name: config.display_name.clone(),
             });
         }
         statuses
@@ -172,12 +470,11 @@ impl McpManager {
 
     /// Get tool bridges for all running servers (for registration into ToolRegistry).
     pub async fn tool_bridges(&self) -> Vec<McpToolBridge> {
-        let clients = self.clients.read().await;
-        let tools = self.tools.read().await;
+        let inner = self.inner.read().await;
         let mut bridges = Vec::new();
 
-        for (name, client) in clients.iter() {
-            if let Some(tool_defs) = tools.get(name) {
+        for (name, client) in inner.clients.iter() {
+            if let Some(tool_defs) = inner.tools.get(name) {
                 bridges.extend(McpToolBridge::from_client(
                     name,
                     tool_defs,
@@ -191,7 +488,7 @@ impl McpManager {
 
     /// Get tools for a specific server.
     pub async fn server_tools(&self, name: &str) -> Option<Vec<McpToolDef>> {
-        self.tools.read().await.get(name).cloned()
+        self.inner.read().await.tools.get(name).cloned()
     }
 
     // ── Registry operations ─────────────────────────────────────────
@@ -205,8 +502,8 @@ impl McpManager {
     ) -> Result<()> {
         let enabled = config.enabled;
         {
-            let mut reg = self.registry.write().await;
-            reg.add(name.clone(), config.clone())?;
+            let mut inner = self.inner.write().await;
+            inner.registry.add(name.clone(), config.clone())?;
         }
         if start && enabled {
             self.start_server(&name, &config).await?;
@@ -217,18 +514,19 @@ impl McpManager {
     /// Remove a server from the registry and stop it.
     pub async fn remove_server(&self, name: &str) -> Result<bool> {
         self.stop_server(name).await;
-        let mut reg = self.registry.write().await;
-        reg.remove(name)
+        let mut inner = self.inner.write().await;
+        inner.auth_providers.remove(name);
+        inner.registry.remove(name)
     }
 
     /// Enable a server and start it.
     pub async fn enable_server(&self, name: &str) -> Result<bool> {
         let config = {
-            let mut reg = self.registry.write().await;
-            if !reg.enable(name)? {
+            let mut inner = self.inner.write().await;
+            if !inner.registry.enable(name)? {
                 return Ok(false);
             }
-            reg.get(name).cloned()
+            inner.registry.get(name).cloned()
         };
         if let Some(config) = config {
             self.start_server(name, &config).await?;
@@ -239,37 +537,27 @@ impl McpManager {
     /// Disable a server and stop it.
     pub async fn disable_server(&self, name: &str) -> Result<bool> {
         self.stop_server(name).await;
-        let mut reg = self.registry.write().await;
-        reg.disable(name)
+        let mut inner = self.inner.write().await;
+        inner.registry.disable(name)
     }
 
     /// Get a snapshot of the registry for serialization.
     pub async fn registry_snapshot(&self) -> McpRegistry {
-        self.registry.read().await.clone()
-    }
-
-    /// Get read access to the registry.
-    pub async fn registry_read(&self) -> tokio::sync::RwLockReadGuard<'_, McpRegistry> {
-        self.registry.read().await
-    }
-
-    /// Get write access to the registry.
-    pub async fn registry_write(&self) -> tokio::sync::RwLockWriteGuard<'_, McpRegistry> {
-        self.registry.write().await
+        self.inner.read().await.registry.clone()
     }
 
     /// Update a server's configuration and restart it if running.
     pub async fn update_server(&self, name: &str, config: McpServerConfig) -> Result<()> {
         let was_running = {
-            let clients = self.clients.read().await;
-            clients.contains_key(name)
+            let inner = self.inner.read().await;
+            inner.clients.contains_key(name)
         };
         {
-            let mut reg = self.registry.write().await;
-            let enabled = reg.get(name).is_none_or(|c| c.enabled);
+            let mut inner = self.inner.write().await;
+            let enabled = inner.registry.get(name).is_none_or(|c| c.enabled);
             let mut new_config = config;
             new_config.enabled = enabled;
-            reg.add(name.to_string(), new_config)?;
+            inner.registry.add(name.to_string(), new_config)?;
         }
         if was_running {
             self.restart_server(name).await?;
@@ -279,7 +567,7 @@ impl McpManager {
 
     /// Shut down all servers.
     pub async fn shutdown_all(&self) {
-        let names: Vec<String> = self.clients.read().await.keys().cloned().collect();
+        let names: Vec<String> = self.inner.read().await.clients.keys().cloned().collect();
         for name in names {
             self.stop_server(&name).await;
         }
@@ -288,12 +576,45 @@ impl McpManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+
+    use {
+        super::*,
+        crate::auth::{McpAuthProvider, McpAuthState},
+    };
 
     #[test]
     fn test_manager_creation() {
         let reg = McpRegistry::new();
         let _mgr = McpManager::new(reg);
+    }
+
+    #[test]
+    fn test_should_attempt_auth_connection_with_existing_provider() {
+        assert!(McpManager::should_attempt_auth_connection(
+            true, false, false
+        ));
+    }
+
+    #[test]
+    fn test_should_attempt_auth_connection_with_oauth_override() {
+        assert!(McpManager::should_attempt_auth_connection(
+            false, true, false
+        ));
+    }
+
+    #[test]
+    fn test_should_attempt_auth_connection_with_stored_token() {
+        assert!(McpManager::should_attempt_auth_connection(
+            false, false, true
+        ));
+    }
+
+    #[test]
+    fn test_should_attempt_auth_connection_without_auth_signals() {
+        assert!(!McpManager::should_attempt_auth_connection(
+            false, false, false
+        ));
     }
 
     #[tokio::test]
@@ -323,5 +644,159 @@ mod tests {
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].state, "stopped");
         assert!(statuses[0].enabled);
+        assert!(statuses[0].auth_state.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_status_sanitizes_remote_url_and_hides_remote_env_values() {
+        let mut reg = McpRegistry::new();
+        reg.servers.insert("remote".into(), McpServerConfig {
+            transport: TransportType::Sse,
+            url: Some(secrecy::Secret::new(
+                "https://mcp.example.com/mcp?token=secret-value".to_string(),
+            )),
+            headers: HashMap::from([(
+                "X-Workspace".to_string(),
+                secrecy::Secret::new("top-secret".to_string()),
+            )]),
+            env: HashMap::from([("SHOULD_NOT_LEAK".to_string(), "value".to_string())]),
+            ..Default::default()
+        });
+        let mgr = McpManager::new(reg);
+
+        let statuses = mgr.status_all().await;
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(
+            statuses[0].url.as_deref(),
+            Some("https://mcp.example.com/mcp?token=[REDACTED]")
+        );
+        assert_eq!(statuses[0].header_names, vec!["X-Workspace".to_string()]);
+        assert!(statuses[0].env.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_status_hides_pending_oauth_url() {
+        struct PendingAuthProvider;
+
+        #[async_trait::async_trait]
+        impl McpAuthProvider for PendingAuthProvider {
+            async fn access_token(&self) -> Result<Option<secrecy::Secret<String>>> {
+                Ok(None)
+            }
+
+            async fn handle_unauthorized(&self, _: Option<&str>) -> Result<bool> {
+                Ok(false)
+            }
+
+            async fn start_oauth(&self, _: &str, _: Option<&str>) -> Result<Option<String>> {
+                Ok(Some(
+                    "https://auth.example.com/authorize?state=fresh".to_string(),
+                ))
+            }
+
+            async fn complete_oauth(&self, _: &str, _: &str) -> Result<bool> {
+                Ok(false)
+            }
+
+            fn pending_auth_url(&self) -> Option<String> {
+                Some("https://auth.example.com/authorize?state=super-secret".to_string())
+            }
+
+            fn auth_state(&self) -> McpAuthState {
+                McpAuthState::AwaitingBrowser
+            }
+        }
+
+        let mut reg = McpRegistry::new();
+        reg.servers.insert("remote".into(), McpServerConfig {
+            transport: TransportType::Sse,
+            url: Some(secrecy::Secret::new(
+                "https://mcp.example.com/mcp".to_string(),
+            )),
+            ..Default::default()
+        });
+        let mgr = McpManager::new(reg);
+        mgr.inner
+            .write()
+            .await
+            .auth_providers
+            .insert("remote".to_string(), Arc::new(PendingAuthProvider));
+
+        let statuses = mgr.status_all().await;
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].auth_state, Some(McpAuthState::AwaitingBrowser));
+        assert!(statuses[0].auth_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_status_clamps_zero_timeouts_to_one_second() {
+        let mut reg = McpRegistry::new();
+        reg.servers.insert("test".into(), McpServerConfig {
+            command: "echo".into(),
+            request_timeout_secs: Some(0),
+            ..Default::default()
+        });
+        let mgr = McpManager::new_with_request_timeout(reg, Duration::from_secs(0));
+
+        let statuses = mgr.status_all().await;
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].configured_request_timeout_secs, 1);
+    }
+
+    #[tokio::test]
+    async fn test_status_uses_updated_default_timeout() {
+        let mut reg = McpRegistry::new();
+        reg.servers.insert("test".into(), McpServerConfig {
+            command: "echo".into(),
+            ..Default::default()
+        });
+        let mgr = McpManager::new_with_request_timeout(reg, Duration::from_secs(30));
+
+        mgr.set_request_timeout_secs(75);
+
+        let statuses = mgr.status_all().await;
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].configured_request_timeout_secs, 75);
+    }
+
+    #[tokio::test]
+    async fn test_reauth_server_no_auth_provider() {
+        let mgr = McpManager::new(McpRegistry::new());
+        let result = mgr
+            .reauth_server("nonexistent", "https://example.com/auth/callback")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_oauth_start_server_requires_sse_transport() {
+        let mut reg = McpRegistry::new();
+        reg.servers.insert("stdio".into(), McpServerConfig {
+            command: "echo".into(),
+            transport: TransportType::Stdio,
+            ..Default::default()
+        });
+        let mgr = McpManager::new(reg);
+        let err = mgr
+            .oauth_start_server("stdio", "https://example.com/auth/callback")
+            .await
+            .expect_err("expected oauth start to fail for stdio transport");
+        assert!(matches!(
+            err,
+            Error::Manager(McpManagerError::NotSseTransport { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_oauth_complete_callback_unknown_state() {
+        let mgr = McpManager::new(McpRegistry::new());
+        let err = mgr
+            .oauth_complete_callback("unknown-state", "code")
+            .await
+            .expect_err("expected unknown state to fail");
+        assert!(matches!(
+            err,
+            Error::Manager(McpManagerError::OAuthStateNotFound)
+        ));
     }
 }

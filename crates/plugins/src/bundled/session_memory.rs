@@ -3,53 +3,27 @@
 use std::{path::PathBuf, sync::Arc};
 
 use {
-    anyhow::Result,
     async_trait::async_trait,
     tracing::{debug, info, warn},
 };
 
 use {
-    moltis_common::hooks::{HookAction, HookEvent, HookHandler, HookPayload},
+    moltis_common::{
+        Result,
+        hooks::{HookAction, HookEvent, HookHandler, HookPayload},
+    },
     moltis_sessions::store::SessionStore,
 };
 
-/// Format current UTC date as YYYY-MM-DD from unix timestamp.
-fn unix_date_string() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Days since epoch → civil date (simplified Rata Die algorithm).
-    let days = (secs / 86400) as i64;
-    let y;
-    let m;
-    let d;
-    {
-        // Algorithm from https://howardhinnant.github.io/date_algorithms.html
-        let z = days + 719468;
-        let era = (if z >= 0 {
-            z
-        } else {
-            z - 146096
-        }) / 146097;
-        let doe = (z - era * 146097) as u32;
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-        let yr = yoe as i64 + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        d = doy - (153 * mp + 2) / 5 + 1;
-        m = if mp < 10 {
-            mp + 3
-        } else {
-            mp - 9
-        };
-        y = if m <= 2 {
-            yr + 1
-        } else {
-            yr
-        };
-    }
-    format!("{y:04}-{m:02}-{d:02}")
+/// Format current UTC date as YYYY-MM-DD.
+fn utc_date_string() -> String {
+    let d = time::OffsetDateTime::now_utc().date();
+    format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
+}
+
+#[must_use]
+fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
+    &text[..text.floor_char_boundary(max_bytes)]
 }
 
 /// Saves session conversation log to `<workspace>/memory/session-<key>-<date>.md`
@@ -122,7 +96,7 @@ impl HookHandler for SessionMemoryHook {
         }
 
         // Generate a simple slug from the session key.
-        let date = unix_date_string();
+        let date = utc_date_string();
         let slug = session_key
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == '-')
@@ -151,7 +125,10 @@ impl HookHandler for SessionMemoryHook {
             let text = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
             // Truncate very long messages to keep the memory file manageable.
             let truncated = if text.len() > 2000 {
-                format!("{}...\n\n_(truncated)_", &text[..2000])
+                format!(
+                    "{}...\n\n_(truncated)_",
+                    truncate_at_char_boundary(text, 2000)
+                )
             } else {
                 text.to_string()
             };
@@ -177,6 +154,7 @@ impl HookHandler for SessionMemoryHook {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +272,13 @@ mod tests {
         assert!(content.contains("_(truncated)_"));
         // Should not contain the full 5000 chars
         assert!(content.len() < 4000);
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_handles_multibyte_boundary() {
+        let text = format!("{}л{}", "a".repeat(1999), "z".repeat(10));
+        let truncated = truncate_at_char_boundary(&text, 2000);
+        assert_eq!(truncated.len(), 1999);
+        assert!(truncated.chars().all(|c| c == 'a'));
     }
 }

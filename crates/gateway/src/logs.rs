@@ -27,7 +27,7 @@ use {
     serde_json::Value,
     tokio::sync::broadcast,
     tracing::field::{Field, Visit},
-    tracing_subscriber::{Layer, layer::Context},
+    tracing_subscriber::{Layer, filter::LevelFilter, layer::Context},
 };
 
 use crate::services::{LogsService, ServiceResult};
@@ -45,9 +45,35 @@ pub struct LogEntry {
     pub fields: serde_json::Map<String, Value>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnabledLogLevels {
+    pub debug: bool,
+    pub trace: bool,
+}
+
+impl EnabledLogLevels {
+    #[must_use]
+    pub const fn from_max_level_hint(hint: Option<LevelFilter>) -> Self {
+        match hint {
+            Some(LevelFilter::TRACE) => Self {
+                debug: true,
+                trace: true,
+            },
+            Some(LevelFilter::DEBUG) => Self {
+                debug: true,
+                trace: false,
+            },
+            _ => Self {
+                debug: false,
+                trace: false,
+            },
+        }
+    }
+}
+
 // ── LogBuffer ───────────────────────────────────────────────────────────────
 
-const DEFAULT_CAPACITY: usize = 10_000;
+const DEFAULT_CAPACITY: usize = 1_000;
 const DEFAULT_BROADCAST_CAPACITY: usize = 512;
 
 #[derive(Clone)]
@@ -68,6 +94,8 @@ pub struct LogBuffer {
     /// Snapshot of totals at last ack (visit).
     acked_warns: Arc<AtomicU64>,
     acked_errors: Arc<AtomicU64>,
+    /// Log-level capabilities derived from the active tracing filter.
+    enabled_levels: Arc<RwLock<EnabledLogLevels>>,
 }
 
 impl LogBuffer {
@@ -84,6 +112,7 @@ impl LogBuffer {
             total_errors: Arc::new(AtomicU64::new(0)),
             acked_warns: Arc::new(AtomicU64::new(0)),
             acked_errors: Arc::new(AtomicU64::new(0)),
+            enabled_levels: Arc::new(RwLock::new(EnabledLogLevels::default())),
         }
     }
 
@@ -235,6 +264,11 @@ impl LogBuffer {
         ring.into()
     }
 
+    /// Return the path to the persisted JSONL file, if persistence is enabled.
+    pub fn file_path(&self) -> Option<PathBuf> {
+        self.file_path.read().ok().and_then(|fp| fp.clone())
+    }
+
     /// O(1) count of unseen warn/error entries since the last ack.
     pub fn count_unseen(&self) -> (u64, u64) {
         let tw = self.total_warns.load(Ordering::Relaxed);
@@ -256,6 +290,20 @@ impl LogBuffer {
         {
             let _ = std::fs::write(path, format!("{tw} {te}"));
         }
+    }
+
+    pub fn set_enabled_levels(&self, levels: EnabledLogLevels) {
+        if let Ok(mut current) = self.enabled_levels.write() {
+            *current = levels;
+        }
+    }
+
+    #[must_use]
+    pub fn enabled_levels(&self) -> EnabledLogLevels {
+        self.enabled_levels
+            .read()
+            .map(|levels| *levels)
+            .unwrap_or_default()
     }
 }
 
@@ -453,17 +501,25 @@ impl LogsService for LiveLogsService {
 
     async fn status(&self) -> ServiceResult {
         let (warns, errors) = self.buffer.count_unseen();
-        Ok(serde_json::json!({ "unseen_warns": warns, "unseen_errors": errors }))
+        let enabled_levels = self.buffer.enabled_levels();
+        Ok(
+            serde_json::json!({ "unseen_warns": warns, "unseen_errors": errors, "enabled_levels": enabled_levels }),
+        )
     }
 
     async fn ack(&self) -> ServiceResult {
         self.buffer.ack_visit();
         Ok(serde_json::json!({}))
     }
+
+    fn log_file_path(&self) -> Option<PathBuf> {
+        self.buffer.file_path()
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +580,38 @@ mod tests {
         );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].level, "ERROR");
+    }
+
+    #[test]
+    fn enabled_levels_from_max_hint() {
+        assert_eq!(
+            EnabledLogLevels::from_max_level_hint(Some(LevelFilter::TRACE)),
+            EnabledLogLevels {
+                debug: true,
+                trace: true
+            }
+        );
+        assert_eq!(
+            EnabledLogLevels::from_max_level_hint(Some(LevelFilter::DEBUG)),
+            EnabledLogLevels {
+                debug: true,
+                trace: false
+            }
+        );
+        assert_eq!(
+            EnabledLogLevels::from_max_level_hint(Some(LevelFilter::INFO)),
+            EnabledLogLevels {
+                debug: false,
+                trace: false
+            }
+        );
+        assert_eq!(
+            EnabledLogLevels::from_max_level_hint(None),
+            EnabledLogLevels {
+                debug: false,
+                trace: false
+            }
+        );
     }
 
     #[test]
@@ -831,6 +919,10 @@ mod tests {
 
         let buf = LogBuffer::default();
         buf.enable_persistence(path);
+        buf.set_enabled_levels(EnabledLogLevels {
+            debug: true,
+            trace: false,
+        });
 
         buf.push(make_entry_ts("ERROR", "a", "e", 100));
         buf.push(make_entry_ts("WARN", "a", "w", 200));
@@ -841,11 +933,47 @@ mod tests {
         let status = svc.status().await.unwrap();
         assert_eq!(status["unseen_errors"], 1);
         assert_eq!(status["unseen_warns"], 1);
+        assert_eq!(status["enabled_levels"]["debug"], true);
+        assert_eq!(status["enabled_levels"]["trace"], false);
 
         // Ack clears them.
         svc.ack().await.unwrap();
         let status = svc.status().await.unwrap();
         assert_eq!(status["unseen_errors"], 0);
         assert_eq!(status["unseen_warns"], 0);
+        assert_eq!(status["enabled_levels"]["debug"], true);
+        assert_eq!(status["enabled_levels"]["trace"], false);
+    }
+
+    #[test]
+    fn file_path_none_without_persistence() {
+        let buf = LogBuffer::default();
+        assert!(buf.file_path().is_none());
+    }
+
+    #[test]
+    fn file_path_returns_path_with_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logs.jsonl");
+        let buf = LogBuffer::default();
+        buf.enable_persistence(path.clone());
+        assert_eq!(buf.file_path().unwrap(), path);
+    }
+
+    #[test]
+    fn log_file_path_via_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logs.jsonl");
+        let buf = LogBuffer::default();
+        buf.enable_persistence(path.clone());
+        let svc = LiveLogsService::new(buf);
+        assert_eq!(svc.log_file_path().unwrap(), path);
+    }
+
+    #[test]
+    fn log_file_path_none_without_persistence() {
+        let buf = LogBuffer::default();
+        let svc = LiveLogsService::new(buf);
+        assert!(svc.log_file_path().is_none());
     }
 }

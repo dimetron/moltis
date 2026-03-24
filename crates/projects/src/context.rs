@@ -3,9 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use {anyhow::Result, tracing::debug};
+use tracing::info;
 
-use crate::types::ContextFile;
+use crate::{Result, types::ContextFile};
 
 /// Names of context files to collect when walking the directory hierarchy.
 const CONTEXT_FILE_NAMES: &[&str] = &["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
@@ -32,7 +32,7 @@ pub fn load_context_files(project_dir: &Path) -> Result<Vec<ContextFile>> {
                 && let Ok(content) = fs::read_to_string(&file_path)
                 && !content.trim().is_empty()
             {
-                debug!(path = %file_path.display(), "loaded context file");
+                info!(path = %file_path.display(), "loaded context file");
                 layer.push(ContextFile {
                     path: file_path,
                     content,
@@ -62,7 +62,7 @@ pub fn load_context_files(project_dir: &Path) -> Result<Vec<ContextFile>> {
             if let Ok(content) = fs::read_to_string(&path)
                 && !content.trim().is_empty()
             {
-                debug!(path = %path.display(), "loaded rule file");
+                info!(path = %path.display(), "loaded rule file");
                 files.push(ContextFile { path, content });
             }
         }
@@ -71,6 +71,7 @@ pub fn load_context_files(project_dir: &Path) -> Result<Vec<ContextFile>> {
     Ok(files)
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;

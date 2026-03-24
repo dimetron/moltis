@@ -1,11 +1,8 @@
 //! MCP client: manages the protocol handshake and tool interactions with a single MCP server.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use {
-    anyhow::{Context, Result},
-    tracing::{debug, info, warn},
-};
+use tracing::{debug, info, warn};
 
 #[cfg(feature = "metrics")]
 use std::time::Instant;
@@ -14,6 +11,9 @@ use std::time::Instant;
 use moltis_metrics::{counter, gauge, histogram, labels, mcp as mcp_metrics};
 
 use crate::{
+    auth::SharedAuthProvider,
+    error::{Context, Error, Result},
+    remote::ResolvedRemoteConfig,
     sse_transport::SseTransport,
     traits::{McpClientTrait, McpTransport},
     transport::StdioTransport,
@@ -30,6 +30,8 @@ pub enum McpClientState {
     Connected,
     /// `initialize` completed, `initialized` notification sent.
     Ready,
+    /// OAuth authentication in progress (waiting for browser).
+    Authenticating,
     /// Server process exited or was shut down.
     Closed,
 }
@@ -50,9 +52,11 @@ impl McpClient {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        request_timeout: Duration,
     ) -> Result<Self> {
         info!(server = %server_name, command = %command, args = ?args, "connecting to MCP server");
-        let transport = StdioTransport::spawn(command, args, env).await?;
+        let transport =
+            StdioTransport::spawn_with_timeout(command, args, env, request_timeout).await?;
 
         let mut client = Self {
             server_name: server_name.into(),
@@ -79,9 +83,17 @@ impl McpClient {
     }
 
     /// Connect to a remote MCP server over HTTP/SSE.
-    pub async fn connect_sse(server_name: &str, url: &str) -> Result<Self> {
-        info!(server = %server_name, url = %url, "connecting to MCP server via SSE");
-        let transport = SseTransport::new(url)?;
+    pub async fn connect_sse(
+        server_name: &str,
+        remote: &ResolvedRemoteConfig,
+        request_timeout: Duration,
+    ) -> Result<Self> {
+        info!(
+            server = %server_name,
+            url = %remote.display_url(),
+            "connecting to MCP server via SSE"
+        );
+        let transport = SseTransport::new_with_remote(remote.clone(), request_timeout)?;
 
         let mut client = Self {
             server_name: server_name.into(),
@@ -98,13 +110,50 @@ impl McpClient {
         Ok(client)
     }
 
+    /// Connect to a remote MCP server over HTTP/SSE with an OAuth auth provider.
+    pub async fn connect_sse_with_auth(
+        server_name: &str,
+        remote: &ResolvedRemoteConfig,
+        auth: SharedAuthProvider,
+        request_timeout: Duration,
+    ) -> Result<Self> {
+        info!(
+            server = %server_name,
+            url = %remote.display_url(),
+            "connecting to MCP server via SSE (with auth)"
+        );
+        let transport = SseTransport::with_auth_remote(remote.clone(), auth, request_timeout)?;
+
+        let mut client = Self {
+            server_name: server_name.into(),
+            transport,
+            state: McpClientState::Connected,
+            server_info: None,
+            tools: Vec::new(),
+        };
+
+        if let Err(e) = client.initialize().await {
+            warn!(server = %server_name, error = %e, "MCP SSE (auth) initialize handshake failed");
+            return Err(e);
+        }
+
+        #[cfg(feature = "metrics")]
+        {
+            counter!(mcp_metrics::SERVER_CONNECTIONS_TOTAL, labels::SERVER => server_name.to_string())
+                .increment(1);
+            gauge!(mcp_metrics::SERVERS_CONNECTED).increment(1.0);
+        }
+
+        Ok(client)
+    }
+
     async fn initialize(&mut self) -> Result<()> {
         let params = InitializeParams {
             protocol_version: PROTOCOL_VERSION.into(),
             capabilities: ClientCapabilities::default(),
             client_info: ClientInfo {
                 name: "moltis".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: moltis_config::VERSION.into(),
             },
         };
 
@@ -138,11 +187,10 @@ impl McpClient {
 
     fn ensure_ready(&self) -> Result<()> {
         if self.state != McpClientState::Ready {
-            anyhow::bail!(
+            return Err(Error::message(format!(
                 "MCP client for '{}' is not ready (state: {:?})",
-                self.server_name,
-                self.state
-            );
+                self.server_name, self.state
+            )));
         }
         Ok(())
     }
@@ -260,6 +308,10 @@ mod tests {
     fn test_client_state_debug() {
         assert_eq!(format!("{:?}", McpClientState::Connected), "Connected");
         assert_eq!(format!("{:?}", McpClientState::Ready), "Ready");
+        assert_eq!(
+            format!("{:?}", McpClientState::Authenticating),
+            "Authenticating"
+        );
         assert_eq!(format!("{:?}", McpClientState::Closed), "Closed");
     }
 }

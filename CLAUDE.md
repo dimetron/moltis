@@ -1,551 +1,192 @@
+---
+description: "Moltis engineering guide for Claude/Codex agents: Rust architecture, testing, security, and release workflows"
+alwaysApply: true
+---
+
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## General
-
-This is doing a Rust version of openclaw. Openclaw documentation is available at
-https://docs.openclaw.ai and its code is at https://github.com/openclaw/openclaw
-
-All code you write must have tests with high coverage. Always check for Security
-to make code safe.
+Rust version of openclaw ([docs](https://docs.openclaw.ai), [code](https://github.com/openclaw/openclaw)).
+All code must have tests with high coverage. Always check for security.
 
 ## Cargo Features
 
-When adding a new feature behind a cargo feature flag, **always enable it by
-default** in the CLI crate (`crates/cli/Cargo.toml`) unless explicitly asked
-otherwise. Features should be opt-out, not opt-in. This prevents the common
-bug where a feature works when tested in isolation but isn't compiled into
-the main binary.
-
-Example: when adding a `foo` feature to the gateway crate, also add:
+Enable new feature flags **by default** in `crates/cli/Cargo.toml` (opt-out, not opt-in):
 ```toml
-# crates/cli/Cargo.toml
 [features]
-default = ["foo", ...]  # Add to defaults
-foo = ["moltis-gateway/foo"]  # Forward to gateway
+default = ["foo", ...]
+foo = ["moltis-gateway/foo"]
 ```
 
 ## Workspace Dependencies
 
-**Always add new third-party crates to `[workspace.dependencies]` in the
-root `Cargo.toml`**, then reference them with `{ workspace = true }` in
-each crate's `Cargo.toml`. Never add a version directly in a crate's
-`Cargo.toml` — centralising versions in the workspace avoids duplicate
-versions in the lock file and makes upgrades easier.
-
-```toml
-# Root Cargo.toml
-[workspace.dependencies]
-some-crate = "1.2"
-
-# crates/gateway/Cargo.toml
-[dependencies]
-some-crate = { workspace = true }
-```
+Add new crates to `[workspace.dependencies]` in root `Cargo.toml`, reference with `{ workspace = true }`.
+Never add versions directly in crate `Cargo.toml`. Use latest stable crates.io version.
 
 ## Config Schema and Validation
 
-When adding or renaming fields in `MoltisConfig` (or any nested config
-struct in `crates/config/src/schema.rs`), **you must also update the
-schema map in `crates/config/src/validate.rs`** (`build_schema_map()`).
-This map drives the `moltis config check` command — if a field exists in
-the struct but not in the map, the schema drift guard test will fail:
-
-```
-schema map is missing keys present in MoltisConfig::default(): ["new_field"]
-```
-
-The same applies when adding new enum variants for string-typed fields
-(e.g. `tailscale.mode`, `sandbox.backend`, `memory.provider`): update
-the corresponding `valid_*` list in `check_semantic_warnings()`.
+When adding/renaming fields in `MoltisConfig` (`crates/config/src/schema.rs`), also update
+`build_schema_map()` in `crates/config/src/validate.rs`. New enum variants for string-typed
+fields need updates in `check_semantic_warnings()`.
 
 ## Rust Style and Idioms
 
-Write idiomatic, Rustacean code. Prioritize clarity, modularity, and
-zero-cost abstractions.
-
-### Traits and generics
-
-- Always use traits to define behaviour boundaries — this allows alternative
-  implementations (e.g. swapping MCP transports, storage backends, provider
-  SDKs) and makes testing with mocks straightforward.
-- Prefer generic parameters (`fn foo<T: MyTrait>(t: T)`) for hot paths where
-  monomorphization matters. Use `dyn Trait` (behind `Arc` / `Box`) when you
-  need heterogeneous collections or the concrete type isn't known until
-  runtime.
-- Derive `Default` on structs whenever all fields have sensible defaults — it
-  pairs well with struct update syntax and `unwrap_or_default()`.
-
-### Typed data over loose JSON
-
-Use concrete Rust types (`struct`, `enum`) instead of `serde_json::Value`
-wherever the shape is known. This gives compile-time guarantees, better
-documentation, and avoids stringly-typed field access. Reserve
-`serde_json::Value` for truly dynamic / schema-less data.
-
-### Concurrency
-
-- Always prefer streaming over non-streaming API calls when possible.
-  Streaming provides a better, friendlier user experience by showing
-  responses as they arrive.
-- Run independent async work concurrently with `tokio::join!`,
-  `futures::join_all`, or `FuturesUnordered` instead of sequential `.await`
-  loops. Sequential awaits are fine when each step depends on the previous
-  result.
-- Never use `block_on` or any blocking call inside an async context (see
-  "Async all the way down" below).
-
-### Error handling
-
-- Use `anyhow::Result` for application-level errors and `thiserror` for
-  library-level errors that callers need to match on.
-- Propagate errors with `?`; avoid `.unwrap()` outside of tests.
-
-### General style
-
-- Prefer iterators and combinators (`.map()`, `.filter()`, `.collect()`)
-  over manual loops when they express intent more clearly.
-- Use `Cow<'_, str>` when a function may or may not need to allocate.
-- Keep public API surfaces small: expose only what downstream crates need
-  via `pub use` re-exports in `lib.rs`.
-- Prefer `#[must_use]` on functions whose return value should not be
-  silently ignored.
+- Use traits for behaviour boundaries. Prefer generics for hot paths, `dyn Trait` for heterogeneous/runtime dispatch.
+- Derive `Default` when all fields have sensible defaults.
+- Use concrete types (`struct`/`enum`) over `serde_json::Value` wherever shape is known.
+- **Match on types, never strings.** Only convert to strings at serialization/display boundaries.
+- Prefer `From`/`Into`/`TryFrom`/`TryInto` over manual conversions. Ask before adding manual conversion paths.
+- Prefer streaming over non-streaming API calls.
+- Run independent async work concurrently (`tokio::join!`, `futures::join_all`).
+- Never use `block_on` inside async context.
+- **Forbidden:** `Mutex<()>` / `Arc<Mutex<()>>` — mutex must guard actual state.
+- Use `anyhow::Result` for app errors, `thiserror` for library errors. Propagate with `?`.
+- **Never `.unwrap()`/`.expect()` in production.** Workspace lints deny these. Use `?`, `ok_or_else`, `unwrap_or_default`, `unwrap_or_else(|e| e.into_inner())` for locks.
+- Use `time` crate (workspace dep) for date/time — no manual epoch math or magic constants like `86400`.
+- Prefer `chrono` only if already imported in the crate; default to `time` for new code.
+- Prefer crates over subprocesses (`std::process::Command`). Use subprocesses only when no mature crate exists.
+- Prefer guard clauses (early returns) over nested `if` blocks.
+- Prefer iterators/combinators over manual loops. Use `Cow<'_, str>` when allocation is conditional.
+- Keep public API surfaces small. Use `#[must_use]` where return values matter.
 
 ### Tracing and Metrics
 
-**All crates must include tracing and metrics instrumentation.** This is
-critical for telemetry, debugging, and production observability.
+All crates must have `tracing` and `metrics` features, gated with `#[cfg(feature = "...")]`.
+Use `tracing::instrument` on async functions. Record metrics at key points (counts, durations, errors).
+See `docs/metrics-and-tracing.md`.
 
-- Add `tracing` feature to crate's `Cargo.toml` and gate instrumentation
-  with `#[cfg(feature = "tracing")]`
-- Add `metrics` feature and gate counters/gauges/histograms with
-  `#[cfg(feature = "metrics")]`
-- Use `tracing::instrument` on async functions for automatic span creation
-- Record metrics at key points: operation counts, durations, errors, and
-  resource usage
-
-```rust
-#[cfg(feature = "tracing")]
-use tracing::{debug, instrument, warn};
-
-#[cfg(feature = "metrics")]
-use moltis_metrics::{counter, histogram, labels};
-
-#[cfg_attr(feature = "tracing", instrument(skip(self)))]
-pub async fn process_request(&self, req: Request) -> Result<Response> {
-    #[cfg(feature = "metrics")]
-    let start = std::time::Instant::now();
-
-    // ... do work ...
-
-    #[cfg(feature = "metrics")]
-    {
-        counter!("my_crate_requests_total").increment(1);
-        histogram!("my_crate_request_duration_seconds")
-            .record(start.elapsed().as_secs_f64());
-    }
-
-    Ok(response)
-}
-```
-
-See `docs/metrics-and-tracing.md` for the full list of available metrics,
-Prometheus endpoint configuration, and best practices.
-
-## Build and Development Commands
+## Build Commands
 
 ```bash
-cargo build              # Build the project
-cargo build --release    # Build with optimizations
-cargo run                # Run the project
-cargo run --release      # Run with optimizations
+cargo build                  # Debug build
+cargo build --release        # Release build
+cargo run / cargo run --release
 ```
 
 ## Web UI Assets
 
-Assets live in `crates/gateway/src/assets/` (JS, CSS, HTML). The gateway
-serves them in two modes:
+Assets in `crates/web/src/assets/` (JS, CSS, HTML). Dev mode serves from disk (edit and reload);
+release mode embeds via `include_dir!` with versioned URLs.
 
-- **Dev (filesystem)**: When `cargo run` detects the source tree, assets are
-  served directly from disk. Edit JS/CSS and reload the browser — no Rust
-  recompile needed. You can also set `MOLTIS_ASSETS_DIR` to point elsewhere.
-- **Release (embedded)**: When the binary runs outside the repo, assets are
-  served from the copy embedded at compile time via `include_dir!`. URLs are
-  versioned (`/assets/v/<hash>/...`) with immutable caching; the hash changes
-  automatically on each build.
+- **Always** run `biome check --write` when JS files change.
+- Avoid creating HTML from JS — add hidden elements in `index.html`, toggle visibility. Preact/HTM exceptions allowed.
+- **Always use Tailwind classes** instead of inline `style="..."`.
+- Reuse CSS classes from `components.css`: `provider-btn`, `provider-btn-secondary`, `provider-btn-danger`.
+- Match button heights/text sizes when elements sit together.
+- **Rebuild Tailwind** after adding new classes:
+  ```bash
+  cd crates/web/ui && npx tailwindcss -i input.css -o ../src/assets/style.css --minify
+  ```
 
-When editing JavaScript files, run `biome check --write` to lint and format
-them. No separate asset build step is required.
+### Selection Cards
 
-**HTML in JS**: Avoid creating HTML elements from JavaScript. Instead, add
-hidden elements in `index.html` (with `style="display:none"`) and have JS
-toggle their visibility. This keeps markup in HTML where it belongs and makes
-the structure easier to inspect. Preact components (HTM templates) are the
-exception — they use `html` tagged templates by design.
+Use clickable cards (`.model-card`, `.backend-card` in `input.css`) instead of dropdowns for option selection.
+States: `.selected`, `.disabled`, default. Badges: `.recommended-badge`, `.tier-badge`.
 
-### Styling and UI Consistency
+### Provider Config Storage
 
-**Always use Tailwind utility classes instead of inline `style="..."` attributes.**
-This applies to all properties — spacing (`p-4`, `gap-3`), colors
-(`text-[var(--muted)]`, `bg-[var(--surface)]`), typography (`font-mono`,
-`text-xs`, `font-medium`), layout (`flex`, `grid`, `items-center`), borders
-(`border`, `rounded-md`), and anything else Tailwind covers. Only fall back to
-inline styles for truly one-off values that have no Tailwind equivalent (e.g. a
-specific `max-width` or `grid-template-columns` pattern).
-
-Keep buttons, links, and other interactive elements visually consistent with
-the existing UI. Reuse the shared CSS classes defined in `components.css`:
-
-- **Primary action**: `provider-btn` (green background, white text).
-- **Secondary action**: `provider-btn provider-btn-secondary` (surface
-  background, border).
-- **Destructive action**: `provider-btn provider-btn-danger` (red background,
-  white text). Never combine `provider-btn` with inline color overrides for
-  destructive buttons.
-
-When buttons or selects sit next to each other (e.g. in a header row), they
-must share the same height and text size so they look like a cohesive group.
-Use `provider-btn` variants for all of them rather than mixing ad-hoc Tailwind
-button styles with different padding/font sizes.
-
-Before creating a new CSS class, check whether an existing one already covers
-the use case. Duplicating styles (e.g. a second green-button class) leads to
-drift — consolidate instead.
-
-**Building Tailwind**: After adding or changing Tailwind utility classes in JS
-or HTML files, you **MUST** rebuild the CSS for the changes to take effect.
-Tailwind only generates CSS for classes it finds in the source files at build
-time — new classes won't work until CSS is rebuilt:
-
-```bash
-cd crates/gateway/ui
-npm install              # first time only
-npx tailwindcss -i input.css -o ../src/assets/style.css --minify
-```
-
-Use `npm run watch` during development for automatic rebuilds on file changes.
-If styles don't appear after adding new Tailwind classes, this rebuild step was
-likely missed.
-
-### Selection Card UI Pattern
-
-When presenting users with a choice between options (backends, models, plans),
-use **clickable cards** instead of dropdowns. Cards provide better UX because:
-- Users can see all options at once with descriptions
-- Visual feedback (selected state) is clearer
-- Badges can highlight recommended options or availability status
-
-**Card structure** (see `.model-card`, `.backend-card` in `input.css`):
-```html
-<div class="backend-card selected">
-  <div class="flex items-center justify-between">
-    <span class="text-sm font-medium">Option Name</span>
-    <div class="flex gap-2">
-      <span class="recommended-badge">Recommended</span>
-    </div>
-  </div>
-  <div class="text-xs text-[var(--muted)] mt-1">Description text</div>
-</div>
-```
-
-**States**:
-- `.selected` — highlighted with accent border/background
-- `.disabled` — dimmed, cursor not-allowed, not clickable
-- Default — hover shows border-strong and bg-hover
-
-**Badges**:
-- `.recommended-badge` — accent color, for the suggested option
-- `.tier-badge` — muted color, for metadata (RAM requirements, "Not installed")
-
-**Install hints**: When an option requires installation, show clear instructions:
-```html
-<div class="install-hint">Install with: <code>pip install mlx-lm</code></div>
-```
-
-### Provider Configuration Storage
-
-Provider credentials and settings are stored in `~/.config/moltis/provider_keys.json`.
-The `KeyStore` in `provider_setup.rs` manages this with:
-
-- **Per-provider config object**: `{ "apiKey": "...", "baseUrl": "...", "model": "..." }`
-- **Backward compatibility**: Migrates from old string-only format automatically
-- **Partial updates**: `save_config()` preserves existing fields when updating
-
-When adding new provider fields, update both:
-1. `ProviderConfig` struct in `provider_setup.rs`
-2. `available()` response to expose the field to the frontend
-3. `save_key()` to accept and persist the new field
+Provider keys in `~/.config/moltis/provider_keys.json` via `KeyStore` in `provider_setup.rs`.
+When adding fields, update: `ProviderConfig` struct, `available()` response, `save_key()`.
 
 ### Server-Injected Data (gon pattern)
 
-When the frontend needs server-side data **at page load** (before any async
-fetch completes), use the gon pattern instead of inline `<script>` DOM
-manipulation or extra API calls:
+For server data needed at page load: add to `GonData` in `server.rs` / `build_gon_data()`.
+JS side: `import * as gon from "./gon.js"` — use `gon.get()`, `gon.onChange()`, `gon.refresh()`.
+Never inject inline `<script>` tags or build HTML in Rust.
 
-**Rust side** — add a field to `GonData` in `server.rs` and populate it in
-`build_gon_data()`. The struct is serialized and injected into `<head>` as
-`<script>window.__MOLTIS__={...};</script>` on every page serve. Only put
-request-independent data here (no cookies, no sessions — those still need
-`/api/auth/status`).
+### Event Bus
 
-```rust
-// server.rs
-#[derive(serde::Serialize)]
-struct GonData {
-    identity: moltis_config::ResolvedIdentity,
-    // add new fields here
-}
-```
-
-**JS side** — import `gon.js`:
-
-```js
-import * as gon from "./gon.js";
-
-// Read server-injected data synchronously at module load.
-var identity = gon.get("identity");
-
-// React to changes (from set() or refresh()).
-gon.onChange("identity", (id) => { /* update DOM */ });
-
-// After a mutation (e.g. saving identity), refresh all gon data
-// from the server. This re-fetches /api/gon and notifies all
-// onChange listeners — no need to update specific fields manually.
-gon.refresh();
-```
-
-**Do NOT**: inject inline `<script>` tags with `document.getElementById`
-calls, build HTML strings in Rust, or use `body.replace` for DOM side effects.
-All of those are fragile. The gon blob is the single injection point.
-When data changes at runtime, call `gon.refresh()` instead of manually
-updating individual fields — it keeps everything consistent.
-
-### Event Bus (WebSocket events in JS)
-
-Server-side broadcasts reach the UI via WebSocket frames. The JS event bus
-lives in `events.js`:
-
-```js
-import { onEvent } from "./events.js";
-
-// Subscribe to a named event. Returns an unsubscribe function.
-var off = onEvent("mcp.status", (payload) => {
-  // payload is the deserialized JSON from the broadcast
-});
-
-// In a Preact useEffect, return the unsubscribe for cleanup:
-useEffect(() => {
-  var off = onEvent("some.event", handler);
-  return off;
-}, []);
-```
-
-The WebSocket reader in `websocket.js` dispatches incoming event frames to
-all registered listeners via `eventListeners[frame.event]`. Do **not** use
-`window.addEventListener` / `CustomEvent` for server events — use this bus.
+Server events via WebSocket: `import { onEvent } from "./events.js"`. Returns unsubscribe function.
+Do **not** use `window.addEventListener`/`CustomEvent` for server events.
 
 ## API Namespace Convention
 
-Each navigation tab in the UI should have its own API namespace, both for
-REST endpoints (`/api/<feature>/...`) and RPC methods (`<feature>.*`). This
-keeps concerns separated and makes it straightforward to gate each feature
-behind a cargo feature flag (e.g. `#[cfg(feature = "skills")]`).
+Each UI tab gets its own API namespace: REST `/api/<feature>/...` and RPC `<feature>.*`.
+Never merge features into a single endpoint.
 
-Examples: `/api/skills`, `/api/plugins`, `/api/channels`, with RPC methods
-`skills.list`, `plugins.install`, `channels.status`, etc. Never merge
-multiple features into a single endpoint.
+## Channel Message Handling
+
+**Always respond to approved senders** — no silent failures. Send error/fallback messages
+for LLM failures, transcription failures, unhandled message types. Access control via
+allowlist/OTP flow.
+
 ## Authentication Architecture
 
-The gateway supports password and passkey (WebAuthn) authentication, managed
-in `crates/gateway/src/auth.rs` with routes in `auth_routes.rs` and middleware
-in `auth_middleware.rs`.
+Password + passkey (WebAuthn) auth in `crates/gateway/src/auth.rs`, routes in `auth_routes.rs`,
+middleware in `auth_middleware.rs`. Setup code printed to terminal on first run.
+`RequireAuth` middleware protects `/api/*` except `/api/auth/*` and `/api/gon`.
+`CredentialStore` persists argon2-hashed passwords, passkeys, API keys, sessions to JSON.
 
-Key concepts:
-
-- **Setup code**: On first run (no password set), a random code is printed to
-  the terminal. The user enters it on the `/setup` page to set a password or
-  register a passkey. The code is single-use and cleared after setup.
-- **Auth states**: `auth_disabled` (explicit `[auth] disabled = true` in
-  config) and localhost-no-password (safe default) are distinct states.
-  `auth_disabled` is a deliberate user choice; localhost-no-password is the
-  initial state before setup.
-- **Session cookies**: HTTP-only `moltis_session` cookie, validated by the
-  auth middleware.
-- **API keys**: Bearer token auth via `Authorization: Bearer <key>` header,
-  managed through the settings UI.
-- **Credential store**: `CredentialStore` in `auth.rs` persists passwords
-  (argon2 hashed), passkeys, API keys, and session tokens to a JSON file.
-
-The auth middleware (`RequireAuth`) protects all `/api/*` routes except
-`/api/auth/*` and `/api/gon`.
+CLI: `moltis auth reset-password`, `moltis auth reset-identity`.
 
 ## Testing
 
 ```bash
-cargo test                           # Run all tests
-cargo test <test_name>               # Run a specific test
-cargo test <module>::               # Run all tests in a module
-cargo test -- --nocapture            # Run tests with stdout visible
+cargo test                           # All tests
+cargo test <test_name>               # Specific test
+cargo test -- --nocapture            # With stdout
 ```
+
+### E2E Tests (Web UI)
+
+**Every web UI change needs E2E tests.** Tests in `crates/web/ui/e2e/specs/` using Playwright.
+Helpers in `e2e/helpers.js`.
+
+```bash
+cd crates/web/ui
+npx playwright test                              # All
+npx playwright test e2e/specs/chat-input.spec.js # Specific
+```
+
+Rules: use `getByRole()`/`getByText({ exact: true })` selectors, shared helpers
+(`navigateAndWait`, `waitForWsConnected`, `watchPageErrors`), assert no JS errors,
+avoid `waitForTimeout()`.
 
 ## Code Quality
 
-```bash
-cargo +nightly fmt       # Format code (uses nightly)
-cargo +nightly clippy    # Run linter (uses nightly)
-cargo check              # Fast compile check without producing binary
-taplo fmt                # Format TOML files (Cargo.toml, etc.)
-biome check --write      # Lint & format JavaScript files (installed via mise)
-```
+- Never run `cargo fmt` on stable in this repo. Always use the pinned nightly rustfmt (`just format`, `just format-check`, or `cargo +nightly-2025-11-30 fmt ...`).
 
-When editing `Cargo.toml` or other TOML files, run `taplo fmt` to format them
-according to the project's `taplo.toml` configuration.
+```bash
+just format              # Format Rust (pinned nightly)
+just format-check        # CI format check
+just release-preflight   # fmt + clippy gates
+cargo check              # Fast compile check
+taplo fmt                # Format TOML files
+biome check --write      # Lint/format JS
+```
 
 ## Sandbox Architecture
 
-The gateway runs user commands inside isolated containers (Docker or Apple
-Container). Key files:
+Containers (Docker or Apple Container) in `crates/tools/src/sandbox.rs` (trait + impls),
+`exec.rs` (ExecTool), `crates/cli/src/sandbox_commands.rs` (CLI), `crates/config/src/schema.rs` (config).
 
-- `crates/tools/src/sandbox.rs` — `Sandbox` trait, `DockerSandbox`,
-  `AppleContainerSandbox`, `SandboxRouter`, image build/list/clean helpers
-- `crates/tools/src/exec.rs` — `ExecTool` that routes commands through the
-  sandbox
-- `crates/cli/src/sandbox_commands.rs` — `moltis sandbox` CLI subcommands
-- `crates/config/src/schema.rs` — `SandboxConfig` with default packages list
+Pre-built images use deterministic hash tags from base image + packages. Default packages
+in `default_sandbox_packages()`. CLI: `moltis sandbox {list,build,remove,clean}`.
 
-### Pre-built images
+## Logging Levels
 
-Both backends support `build_image`: generate a Dockerfile with `FROM <base>`
-+ `RUN apt-get install ...`, then run `docker build` / `container build`.
-The image tag is a deterministic hash of the base image + sorted package
-list (`sandbox_image_tag`). The gateway pre-builds at startup; if the image
-already exists it's a no-op.
-
-### Config-driven packages
-
-Default packages are defined in `default_sandbox_packages()` in `schema.rs`.
-On first run (no config file), a `moltis.toml` is written with all defaults
-including the full packages list. Users edit that file to add/remove packages
-and restart — the image tag changes automatically, triggering a rebuild.
-
-### Shared helpers
-
-`sandbox_image_tag`, `sandbox_image_exists`, `list_sandbox_images`,
-`remove_sandbox_image`, `clean_sandbox_images` are module-level public
-functions in `sandbox.rs`, parameterised by CLI binary name. The
-`SandboxConfig::from(&config_schema::SandboxConfig)` impl converts the
-config-crate types to tools-crate types — use it instead of manual
-field-by-field conversion.
+- `error!` — unrecoverable. `warn!` — unexpected but recoverable. `info!` — operational milestones.
+- `debug!` — detailed diagnostics. `trace!` — very verbose per-item data.
+- **Common mistake:** `warn!` for unconfigured providers — use `debug!` for expected "not configured" states.
 
 ## Security
 
-### WebSocket Origin validation (CSWSH protection)
-
-The WebSocket upgrade handler in `server.rs` validates the `Origin` header.
-Cross-origin requests are rejected with 403. Loopback variants (`localhost`,
-`127.0.0.1`, `::1`) are treated as equivalent. Non-browser clients (no
-Origin header) are allowed through.
-
-This prevents the attack class from GHSA-g8p2-7wf7-98mq where a malicious
-webpage could connect to the local gateway WebSocket from the victim's
-browser.
-
-### SSRF protection
-
-`web_fetch.rs` resolves DNS and checks the resulting IP against blocked
-ranges (loopback, private, link-local, CGNAT) before making HTTP requests.
-Any changes to web_fetch must preserve this check.
-
-## CLI Auth Commands
-
-The `auth` subcommand (`crates/cli/src/auth_commands.rs`) provides:
-
-- `moltis auth reset-password` — clear the stored password
-- `moltis auth reset-identity` — clear identity and user profile (triggers
-  onboarding on next load)
-
-## CLI Sandbox Commands
-
-The `sandbox` subcommand (`crates/cli/src/sandbox_commands.rs`) provides:
-
-- `moltis sandbox list` — list pre-built `moltis-sandbox:*` images
-- `moltis sandbox build` — build image from config (base + packages)
-- `moltis sandbox remove <tag>` — remove a specific image
-- `moltis sandbox clean` — remove all sandbox images
-
-## Sensitive Data Handling
-
-Never use plain `String` for passwords, API keys, tokens, or any secret
-material. Use `secrecy::Secret<String>` instead — it redacts `Debug` output,
-prevents accidental `Display`, and zeroes memory on drop.
-
-```rust
-use secrecy::{ExposeSecret, Secret};
-
-// Store secrets wrapped
-struct Config {
-    api_key: Secret<String>,
-}
-
-// Construct: wrap at the boundary
-let cfg = Config { api_key: Secret::new(raw_key) };
-
-// Use: expose only at the point of consumption
-req.header("Authorization", format!("Bearer {}", cfg.api_key.expose_secret()));
-```
-
-Rules:
-- **Struct fields** holding secrets must be `Secret<String>` (or
-  `Option<Secret<String>>`).
-- **Function parameters** can stay `&str`; call `.expose_secret()` at the call
-  site.
-- **Serde deserialize** works automatically (secrecy's `serde` feature).
-- **Serde serialize** requires a custom helper when round-tripping is needed
-  (config files, token storage). See `serialize_secret` /
-  `serialize_option_secret` in `crates/oauth/src/types.rs`.
-- **Debug impls**: replace `#[derive(Debug)]` with a manual impl that prints
-  `[REDACTED]` for secret fields.
-- **RwLock guards**: when a `RwLock<Option<Secret<String>>>` read guard is
-  followed by a write in the same function, scope the read guard in a block
-  `{ let guard = lock.read().await; ... }` to avoid deadlocks.
+- **WebSocket Origin validation**: `server.rs` rejects cross-origin WS upgrades (403). Loopback variants equivalent.
+- **SSRF protection**: `web_fetch.rs` blocks loopback/private/link-local/CGNAT IPs. Preserve this on changes.
+- **Secrets**: Use `secrecy::Secret<String>` for all passwords/keys/tokens. `expose_secret()` only at consumption point. Manual `Debug` impl with `[REDACTED]`. Scope `RwLock` read guards in blocks to avoid deadlocks. See `crates/oauth/src/types.rs` for serde helpers.
+- **Never commit** passwords, credentials, `.env` with real values, or PII.
+- If secrets accidentally committed: `git reset HEAD~1`, remove, re-commit. If pushed, rotate immediately.
 
 ## Data and Config Directories
 
-Moltis uses two directories, **never** the current working directory:
-
-- **Config dir** (`moltis_config::config_dir()`) — `~/.moltis/` by default.
-  Contains `moltis.toml`, `credentials.json`, `mcp-servers.json`.
-  Overridable via `--config-dir` or `MOLTIS_CONFIG_DIR`.
-- **Data dir** (`moltis_config::data_dir()`) — `~/.moltis/` by default.
-  Contains `moltis.db`, `memory.db`, `sessions/`, `logs.jsonl`,
-  `MEMORY.md`, `memory/*.md`.
-  Overridable via `--data-dir` or `MOLTIS_DATA_DIR`.
-
-**Rules:**
-- **Never use `std::env::current_dir()`** to resolve paths for persistent
-  storage (databases, memory files, config). Always use `data_dir()` or
-  `config_dir()`. Writing to cwd leaks files into the user's repo.
-- When a function needs a storage path, pass `data_dir` explicitly or call
-  `moltis_config::data_dir()`. Don't assume the process was started from a
-  specific directory.
-- The gateway's `run()` function resolves `data_dir` once at startup
-  (`server.rs`) and threads it through. Prefer using that resolved value
-  over calling `data_dir()` repeatedly.
+- **Config**: `moltis_config::config_dir()` (`~/.moltis/`). Contains `moltis.toml`, `credentials.json`, `mcp-servers.json`.
+- **Data**: `moltis_config::data_dir()` (`~/.moltis/`). Contains DBs, sessions, logs, memory files.
+- **Never** use `directories::BaseDirs` outside `moltis-config`. Never use `std::env::current_dir()` for storage.
+- Workspace-scoped files (`MEMORY.md`, `memory/*.md`, etc.) resolve relative to `data_dir()`.
+- Gateway resolves `data_dir` once at startup; prefer that value over repeated calls.
 
 ## Database Migrations
 
-Schema changes are managed via **sqlx migrations**. Each crate owns its migrations
-in its own `migrations/` directory. See [docs/sqlite-migration.md](docs/sqlite-migration.md)
-for full documentation.
-
-**Architecture:**
-
-- Each crate has its own `migrations/` directory and `run_migrations()` function
-- Gateway orchestrates migrations at startup in dependency order
-- Timestamp-based versioning (`YYYYMMDDHHMMSS_description.sql`) for global uniqueness
-
-**Crate ownership:**
+sqlx migrations, each crate owns its `migrations/` directory. See `docs/sqlite-migration.md`.
 
 | Crate | Tables |
 |-------|--------|
@@ -555,143 +196,209 @@ for full documentation.
 | `moltis-gateway` | `auth_*`, `passkeys`, `api_keys`, `env_variables`, `message_log`, `channels` |
 | `moltis-memory` | `files`, `chunks`, `embedding_cache`, `chunks_fts` |
 
-**Adding a migration to an existing crate:**
+New migration: `crates/<crate>/migrations/YYYYMMDDHHMMSS_description.sql` (use `IF NOT EXISTS`).
+New crate: add `run_migrations()` to `lib.rs`, call from `server.rs` in dependency order.
 
-1. Create `crates/<crate>/migrations/YYYYMMDDHHMMSS_description.sql`
-2. Write the SQL (use `IF NOT EXISTS` for new tables)
-3. Rebuild (`cargo build`) to embed the migration
+## Provider Implementation
 
-**Adding a new crate with migrations:**
-
-1. Create `crates/new-crate/migrations/` directory
-2. Add `run_migrations()` to `lib.rs`
-3. Call it from `server.rs` in dependency order
-
-## Provider Implementation Guidelines
-
-### Async all the way down
-
-Never use `block_on`, `std::thread::scope` + `rt.block_on`, or any blocking
-call inside an async context (tokio runtime). This causes a panic:
-"Cannot start a runtime from within a runtime". All token exchanges,
-HTTP calls, and I/O in provider methods (`complete`, `stream`) must be `async`
-and use `.await`. If a helper needs to make HTTP requests, make it `async fn`.
-
-### Model lists for providers
-
-When adding a new LLM provider, make the model list as complete as possible.
-Models vary by plan/org and can change, so keep the list intentionally broad —
-if a model isn't available the provider API will return an error and the user
-can remove it from their config.
-
-To find the correct model IDs:
-- Check the upstream open-source implementations in `../clawdbot/` (TypeScript
-  reference), as well as projects like OpenAI Codex CLI, Claude Code, opencode,
-  etc.
-- For "bring your own model" providers (OpenRouter, Venice, Ollama), don't
-  hardcode a model list — require the user to specify a model via config.
-- Ideally, query the provider's `/models` endpoint at registration time to
-  build the list dynamically (not yet implemented).
-
-## Plans and Session History
-
-Plans are stored in `prompts/` (configured via `.claude/settings.json`).
-When entering plan mode, plans are automatically saved there. After completing
-a significant piece of work, write a brief session summary to
-`prompts/session-YYYY-MM-DD-<topic>.md` capturing what was done, key decisions,
-and any open items.
+- **Async all the way down** — never `block_on` in async context. All HTTP/IO must be async.
+- Make model lists broad (API errors handle unavailable models). Check `../clawdbot/` for reference.
+- BYOM providers (OpenRouter, Ollama): require user config, don't hardcode models.
 
 ## Changelog
 
-This project keeps a changelog at `CHANGELOG.md` following
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). When making
-user-facing changes, **always** update the `[Unreleased]` section with a
-bullet under the appropriate heading:
-
-- **Added** — new features
-- **Changed** — changes in existing functionality
-- **Deprecated** — soon-to-be removed features
-- **Removed** — now removed features
-- **Fixed** — bug fixes
-- **Security** — vulnerability fixes
-
-At release time the `[Unreleased]` section is renamed to the version number
-with a date.
+- Do **not** add manual `CHANGELOG.md` entries in normal PRs.
+- `CHANGELOG.md` entries are generated from commit history via `git-cliff` (`cliff.toml`).
+- Use conventional commits and preview unreleased notes with `just changelog-unreleased`.
+- PR CI enforces this via `scripts/check-changelog-guard.sh`.
 
 ## Git Workflow
 
-Follow conventional commit format: `feat|fix|refactor|docs|test|chore(scope): description`
+Conventional commits: `feat|fix|docs|style|refactor|test|chore(scope): description`
+**No `Co-Authored-By` trailers.** Update `README.md` features list with `feat` commits.
 
-**No Co-Authored-By trailers.** Never add `Co-Authored-By` lines (e.g.
-`Co-Authored-By: Claude ...`) to commit messages or documentation. Commits
-should only contain the message itself — no AI attribution trailers.
+### Releases
 
-When adding a new feature (`feat` commits), update the features list in
-`README.md` as part of the same branch/PR.
+- Date-based versioning: `YYYYMMDD.NN` (e.g., `20260311.01`). Cargo.toml stays at static `0.1.0`; real version injected via `MOLTIS_VERSION` env var at build time.
+- Never overwrite tags — always create new version.
+- Use `./scripts/prepare-release.sh [YYYYMMDD.NN]` for release prep (auto-computes next version if omitted).
+- Deploy template tags updated automatically by CI — don't manually update.
 
-**Never overwrite existing tags.** When a release build fails or needs fixes,
-always create a new version tag (e.g. `v0.1.7` instead of re-tagging `v0.1.6`).
-Moving or deleting published tags breaks downstream caches, package managers,
-and anyone who already pulled that version. Always move forward.
+### Lockfile
 
-**Merging main into your branch:** When merging `main` into your current branch
-and encountering conflicts, resolve them by keeping both sides of the changes.
-Don't discard either the incoming changes from main or your local changes —
-integrate them together so nothing is lost.
+- `cargo fetch` to sync (not `cargo update`). Verify with `cargo fetch --locked`. `local-validate.sh` auto-handles.
+- `cargo update --workspace` only for intentional upgrades.
 
-**You MUST run all checks before every commit and fix any issues they report:**
-1. `cargo +nightly fmt --all` — format all Rust code (CI runs `cargo fmt --all -- --check`)
-2. `just lint` — run linter (OS-aware local-LLM backend checks; must pass with zero warnings)
-3. `just test` — run tests (OS-aware local-LLM backend checks)
-4. `biome check --write` (when JS files were modified; CI runs `biome ci`)
-5. `taplo fmt` (when TOML files were modified)
+### Local Validation
+
+**Always** run `./scripts/local-validate.sh <PR_NUMBER>` when a PR exists.
+
+For incremental local edits before full validation:
+- JS changed: run `biome check --write`.
+- Rust changed: run `cargo +nightly-2025-11-30 fmt --all -- --check`.
+- JS + Rust changed: run both.
+
+Exact commands (must match `local-validate.sh`):
+- Fmt: `cargo +nightly-2025-11-30 fmt --all -- --check`
+- Clippy: `just lint` (OS-aware: on macOS excludes CUDA features, on Linux uses `--all-features`)
+- Tests: `just test` (OS-aware: on macOS uses nextest without CUDA features, on Linux uses `--all-features`)
+- macOS app (Darwin hosts): `./scripts/build-swift-bridge.sh && ./scripts/generate-swift-project.sh && ./scripts/lint-swift.sh && xcodebuild -project apps/macos/Moltis.xcodeproj -scheme Moltis -configuration Release -destination "platform=macOS" -derivedDataPath apps/macos/.derivedData-local-validate build`
+- iOS app (Darwin hosts): `cargo run -p moltis-schema-export -- apps/ios/GraphQL/Schema/schema.graphqls && ./scripts/generate-ios-graphql.sh && ./scripts/generate-ios-project.sh && xcodebuild -project apps/ios/Moltis.xcodeproj -scheme Moltis -configuration Debug -destination "generic/platform=iOS" CODE_SIGNING_ALLOWED=NO build`
+
+### PR Descriptions
+
+Required sections: `## Summary`, `## Validation` (checkboxes, split into `### Completed` / `### Remaining`
+with exact commands), `## Manual QA`. Include concrete test steps.
+
+## Code Quality Checklist
+
+**Run before every commit:**
+- [ ] No secrets or private tokens (CRITICAL)
+- [ ] `taplo fmt` (TOML changes)
+- [ ] `biome check --write` (JS changes)
+- [ ] Rust fmt passes (exact command above)
+- [ ] `just lint` passes (OS-aware clippy)
+- [ ] `just release-preflight` passes
+- [ ] `just test` passes
+- [ ] Conventional commit message
+- [ ] No debug code or temp files
 
 ## Documentation
 
-Documentation source files live in `docs/src/` (not `docs/` directly) and are built
-with [mdBook](https://rust-lang.github.io/mdBook/). The site is automatically deployed
-to [docs.moltis.org](https://docs.moltis.org) on push to `main`.
+Source in `docs/src/` (mdBook). Auto-deployed to docs.moltis.org on push to main.
+Update `docs/src/SUMMARY.md` when adding pages. Preview: `cd docs && mdbook serve`.
 
-**When adding or renaming docs:**
+**Keep docs in sync with code.** When adding or changing user-facing features
+(config fields, CLI commands, channel behavior, API endpoints, tools), update
+the relevant `docs/src/` pages and the config template (`crates/config/src/template.rs`)
+in the same PR. Documentation drift causes real user confusion — treat outdated
+docs as a bug.
 
-1. Add/edit your `.md` file in `docs/src/` — this is the source directory
-2. Update `docs/src/SUMMARY.md` to include the new page in the navigation
-3. Preview locally with `cd docs && mdbook serve`
+## Session Completion
 
-**Directory structure:**
+**Work is NOT complete until `git push` succeeds.** Mandatory steps:
+1. File issues for remaining work
+2. Run quality gates
+3. Update issue status
+4. **Push**: `git pull --rebase && bd dolt commit && git push && git status`
+   If this repo uses a Dolt remote for beads, also run `bd dolt pull` / `bd dolt push`.
+5. Clean up stashes/branches
+6. Hand off context
 
-```
-docs/
-├── book.toml          # mdBook configuration
-├── src/               # ← Markdown source files go here
-│   ├── SUMMARY.md     # Navigation structure
-│   ├── index.md       # Landing page
-│   └── *.md           # Documentation pages
-├── theme/             # Custom CSS
-└── book/              # Built output (gitignored)
-```
+## Plans and Session History
 
-**Local commands:**
+Plans in `prompts/`. After significant work, write summary to
+`prompts/session-YYYY-MM-DD-<topic>.md`.
+
+<!-- BEGIN BEADS INTEGRATION -->
+## Issue Tracking with bd (beads)
+
+**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+
+### Why bd?
+
+- Dependency-aware: Track blockers and relationships between issues
+- Git-friendly: Dolt-powered version control with native sync
+- Agent-optimized: JSON output, ready work detection, discovered-from links
+- Prevents duplicate tracking systems and confusion
+
+### Quick Start
+
+**Check for ready work:**
 
 ```bash
-cd docs
-mdbook serve      # Preview at http://localhost:3000 (auto-reloads)
-mdbook build      # Build to docs/book/
+bd ready --json
 ```
 
-The theme matches [moltis.org](https://www.moltis.org) with Space Grotesk / Outfit fonts
-and orange accent colors. Use admonish blocks for callouts:
+**Create new issues:**
 
-```markdown
-\`\`\`admonish info title="Note"
-Important information here.
-\`\`\`
-
-\`\`\`admonish warning
-Be careful about this.
-\`\`\`
-
-\`\`\`admonish tip
-Helpful suggestion.
-\`\`\`
+```bash
+bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
+bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
 ```
+
+**Claim and update:**
+
+```bash
+bd update <id> --claim --json
+bd update bd-42 --priority 1 --json
+```
+
+**Complete work:**
+
+```bash
+bd close bd-42 --reason "Completed" --json
+```
+
+### Issue Types
+
+- `bug` - Something broken
+- `feature` - New functionality
+- `task` - Work item (tests, docs, refactoring)
+- `epic` - Large feature with subtasks
+- `chore` - Maintenance (dependencies, tooling)
+
+### Priorities
+
+- `0` - Critical (security, data loss, broken builds)
+- `1` - High (major features, important bugs)
+- `2` - Medium (default, nice-to-have)
+- `3` - Low (polish, optimization)
+- `4` - Backlog (future ideas)
+
+### Workflow for AI Agents
+
+1. **Check ready work**: `bd ready` shows unblocked issues
+2. **Claim your task atomically**: `bd update <id> --claim`
+3. **Work on it**: Implement, test, document
+4. **Discover new work?** Create linked issue:
+   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
+5. **Complete**: `bd close <id> --reason "Done"`
+
+### Auto-Sync
+
+bd automatically syncs via Dolt:
+
+- Each write auto-commits to Dolt history
+- Use `bd dolt push`/`bd dolt pull` for remote sync
+- No manual export/import needed!
+
+### Important Rules
+
+- ✅ Use bd for ALL task tracking
+- ✅ Always use `--json` flag for programmatic use
+- ✅ Link discovered work with `discovered-from` dependencies
+- ✅ Check `bd ready` before asking "what should I work on?"
+- ❌ Do NOT create markdown TODO lists
+- ❌ Do NOT use external issue trackers
+- ❌ Do NOT duplicate tracking systems
+
+For more details, see README.md and docs/QUICKSTART.md.
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+
+<!-- END BEADS INTEGRATION -->

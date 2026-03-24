@@ -1,0 +1,443 @@
+//! Browser automation tool for LLM agents.
+//!
+//! This tool provides full browser automation capabilities including:
+//! - Navigation with JavaScript execution
+//! - Screenshots of pages
+//! - DOM snapshots with numbered element references
+//! - Clicking, typing, scrolling on elements
+//! - JavaScript evaluation
+
+use {
+    crate::sandbox::SandboxRouter,
+    async_trait::async_trait,
+    moltis_agents::tool_registry::AgentTool,
+    moltis_browser::{BrowserManager, BrowserRequest},
+    std::{borrow::Cow, collections::HashMap, sync::Arc},
+    tokio::sync::{OnceCell, RwLock},
+    tracing::debug,
+};
+
+use crate::error::Error;
+
+/// Browser automation tool for interacting with web pages.
+///
+/// Unlike `web_fetch` which just retrieves page content, this tool allows
+/// full browser interaction: clicking buttons, filling forms, taking
+/// screenshots, and executing JavaScript.
+///
+/// This tool automatically tracks and reuses browser session IDs. When
+/// the LLM doesn't provide a session_id (or provides empty string), the
+/// tool will reuse the most recently created browser session for the current
+/// chat session. This prevents pool exhaustion without leaking browser state
+/// across unrelated chats.
+pub struct BrowserTool {
+    config: moltis_browser::BrowserConfig,
+    manager: OnceCell<Arc<BrowserManager>>,
+    sandbox_router: Option<Arc<SandboxRouter>>,
+    /// Track the most recent browser session ID per chat/session context.
+    /// This prevents pool exhaustion when the LLM forgets to pass session_id,
+    /// without reusing a stale browser across different chats.
+    /// Bounded to [`MAX_TRACKED_SESSIONS`] to prevent unbounded growth when
+    /// chats end without an explicit browser close action.
+    session_ids: RwLock<HashMap<String, String>>,
+}
+
+impl BrowserTool {
+    const DEFAULT_SESSION_KEY: &'static str = "main";
+    /// Maximum number of tracked browser sessions. When exceeded the oldest
+    /// entry (by insertion order, approximated by picking an arbitrary key) is
+    /// evicted to prevent unbounded memory growth from abandoned chats.
+    const MAX_TRACKED_SESSIONS: usize = 128;
+
+    /// Create a new browser tool from browser configuration.
+    pub fn new(config: moltis_browser::BrowserConfig) -> Self {
+        Self {
+            config,
+            manager: OnceCell::new(),
+            sandbox_router: None,
+            session_ids: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Attach a sandbox router for per-session sandbox mode resolution.
+    pub fn with_sandbox_router(mut self, router: Arc<SandboxRouter>) -> Self {
+        self.sandbox_router = Some(router);
+        self
+    }
+
+    /// Create from config; returns `None` if browser is disabled.
+    pub fn from_config(config: &moltis_config::schema::BrowserConfig) -> Option<Self> {
+        if !config.enabled {
+            return None;
+        }
+        let browser_config = moltis_browser::BrowserConfig::from(config);
+        Some(Self::new(browser_config))
+    }
+
+    fn cache_key(session_key: Option<&str>) -> Cow<'static, str> {
+        match session_key {
+            Some(k) => Cow::Owned(k.to_string()),
+            None => Cow::Borrowed(Self::DEFAULT_SESSION_KEY),
+        }
+    }
+
+    /// Clear the tracked browser session for the current chat/session context
+    /// (e.g., after explicit close).
+    async fn clear_session(&self, session_key: &str) {
+        let mut guard = self.session_ids.write().await;
+        guard.remove(session_key);
+    }
+
+    /// Save the browser session ID for future reuse in the same chat/session
+    /// context.
+    async fn save_session(&self, session_key: &str, session_id: &str) {
+        if !session_id.is_empty() {
+            let mut guard = self.session_ids.write().await;
+            // Evict an arbitrary entry when at capacity to bound memory.
+            if guard.len() >= Self::MAX_TRACKED_SESSIONS
+                && !guard.contains_key(session_key)
+                && let Some(evict_key) = guard.keys().next().cloned()
+            {
+                debug!(evicted = %evict_key, "browser session cache full, evicting entry");
+                guard.remove(&evict_key);
+            }
+            guard.insert(session_key.to_string(), session_id.to_string());
+        }
+    }
+
+    /// Get the tracked browser session ID for the current chat/session
+    /// context, if available.
+    async fn get_saved_session(&self, session_key: &str) -> Option<String> {
+        let guard = self.session_ids.read().await;
+        guard.get(session_key).cloned()
+    }
+
+    async fn manager(&self) -> Arc<BrowserManager> {
+        Arc::clone(
+            self.manager
+                .get_or_init(|| async {
+                    let config = self.config.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        // Browser detection/container cleanup can block.
+                        moltis_browser::detect::check_and_warn(config.chrome_path.as_deref());
+                        Arc::new(BrowserManager::new(config))
+                    })
+                    .await
+                    {
+                        Ok(manager) => manager,
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                "browser tool warmup worker failed, falling back to inline initialization"
+                            );
+                            let config = self.config.clone();
+                            moltis_browser::detect::check_and_warn(config.chrome_path.as_deref());
+                            Arc::new(BrowserManager::new(config))
+                        },
+                    }
+                })
+                .await,
+        )
+    }
+}
+
+#[async_trait]
+impl AgentTool for BrowserTool {
+    fn name(&self) -> &str {
+        "browser"
+    }
+
+    fn description(&self) -> &str {
+        "Control a real browser to interact with web pages.\n\n\
+         USE THIS TOOL when the user says 'browse', 'browser', 'open in browser', \
+         or needs interaction (clicking, forms, screenshots, JavaScript-heavy pages).\n\n\
+         REQUIRED: You MUST specify an 'action' parameter. Example:\n\
+         {\"action\": \"navigate\", \"url\": \"https://example.com\"}\n\n\
+         Actions: navigate, screenshot, snapshot, click, type, scroll, evaluate, wait, close\n\n\
+         BROWSER CHOICE: optionally set \"browser\" to choose one (auto, chrome, chromium, \
+         edge, brave, opera, vivaldi, arc). If no browser is installed, Moltis will try \
+         to auto-install one.\n\n\
+         SESSION: The browser session is automatically tracked per chat session. \
+         After 'navigate', subsequent actions in the same chat will reuse the same \
+         browser. No need to pass session_id.\n\n\
+         WORKFLOW:\n\
+         1. {\"action\": \"navigate\", \"url\": \"...\"} - opens URL in browser\n\
+         2. {\"action\": \"snapshot\"} - get interactive elements with ref numbers\n\
+         3. {\"action\": \"click\", \"ref_\": N} - click element by ref number\n\
+         4. {\"action\": \"screenshot\"} - capture the current view\n\
+         5. {\"action\": \"close\"} - close the browser when done"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["action"],
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["navigate", "screenshot", "snapshot", "click", "type", "scroll", "evaluate", "wait", "get_url", "get_title", "back", "forward", "refresh", "close"],
+                    "description": "REQUIRED. The browser action to perform. Use 'navigate' with 'url' to open a page, 'snapshot' to see elements, 'screenshot' to capture."
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Browser session ID (omit to create new session, or reuse existing)"
+                },
+                "browser": {
+                    "type": "string",
+                    "enum": ["auto", "chrome", "chromium", "edge", "brave", "opera", "vivaldi", "arc"],
+                    "description": "Browser to use for host mode. Default: auto (first installed browser)."
+                },
+                "url": {
+                    "type": "string",
+                    "description": "URL to navigate to (for 'navigate' action)"
+                },
+                "ref_": {
+                    "type": "integer",
+                    "description": "Element reference number from snapshot (for click/type/scroll)"
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text to type (for 'type' action)"
+                },
+                "code": {
+                    "type": "string",
+                    "description": "JavaScript code to execute (for 'evaluate' action)"
+                },
+                "x": {
+                    "type": "integer",
+                    "description": "Horizontal scroll pixels (for 'scroll' action)"
+                },
+                "y": {
+                    "type": "integer",
+                    "description": "Vertical scroll pixels (for 'scroll' action)"
+                },
+                "full_page": {
+                    "type": "boolean",
+                    "description": "Capture full page screenshot vs viewport only"
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector to wait for (for 'wait' action)"
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Timeout in milliseconds (default: 60000)"
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let mut params = params;
+
+        // Browser sandbox mode follows the session sandbox mode from the shared router.
+        let session_key = Self::cache_key(params.get("_session_key").and_then(|v| v.as_str()));
+        let sandbox_mode = if let Some(ref router) = self.sandbox_router {
+            router.is_sandboxed(&session_key).await
+        } else {
+            debug!(
+                session_key = %session_key,
+                "browser running in host mode (no container backend)"
+            );
+            false
+        };
+
+        // Inject saved session_id if LLM didn't provide one (or provided empty string)
+        if let Some(obj) = params.as_object_mut() {
+            let needs_session = match obj.get("session_id") {
+                None => true,
+                Some(serde_json::Value::String(s)) if s.is_empty() => true,
+                Some(serde_json::Value::Null) => true,
+                _ => false,
+            };
+
+            if needs_session && let Some(saved_sid) = self.get_saved_session(&session_key).await {
+                debug!(
+                    session_key = %session_key,
+                    session_id = %saved_sid,
+                    "injecting saved session_id (LLM didn't provide one)"
+                );
+                obj.insert("session_id".to_string(), serde_json::json!(saved_sid));
+            }
+
+            // Inject sandbox mode from session context
+            obj.insert("sandbox".to_string(), serde_json::json!(sandbox_mode));
+        }
+
+        // Check if this is a "close" action - we'll clear saved session after
+        let is_close = params
+            .get("action")
+            .and_then(|a| a.as_str())
+            .is_some_and(|a| a == "close");
+
+        // Try to parse the request, defaulting to "navigate" if action is missing
+        let request: BrowserRequest = match serde_json::from_value(params.clone()) {
+            Ok(req) => req,
+            Err(e) if e.to_string().contains("missing field `action`") => {
+                // Default to navigate action if action is missing but url is present
+                if let Some(obj) = params.as_object_mut() {
+                    if obj.contains_key("url") {
+                        obj.insert("action".to_string(), serde_json::json!("navigate"));
+                        serde_json::from_value(params)?
+                    } else {
+                        // No URL either - return helpful error
+                        return Err(Error::message(
+                            "Missing required 'action' field. Use: \
+                             {\"action\": \"navigate\", \"url\": \"https://...\"} to open a page",
+                        )
+                        .into());
+                    }
+                } else {
+                    return Err(e.into());
+                }
+            },
+            Err(e) => return Err(e.into()),
+        };
+
+        let manager = self.manager().await;
+        let response = manager.handle_request(request).await;
+
+        // Track the session ID for future reuse
+        if response.success {
+            if is_close {
+                self.clear_session(&session_key).await;
+            } else {
+                self.save_session(&session_key, &response.session_id).await;
+            }
+        }
+
+        Ok(serde_json::to_value(&response)?)
+    }
+
+    async fn warmup(&self) -> anyhow::Result<()> {
+        let started = std::time::Instant::now();
+        let _ = self.manager().await;
+        debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "browser tool warmup complete"
+        );
+        Ok(())
+    }
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_name() {
+        let config = moltis_config::schema::BrowserConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let tool = BrowserTool::from_config(&config).unwrap();
+        assert_eq!(tool.name(), "browser");
+    }
+
+    #[test]
+    fn test_disabled_returns_none() {
+        let config = moltis_config::schema::BrowserConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(BrowserTool::from_config(&config).is_none());
+    }
+
+    #[test]
+    fn test_parameters_schema_has_required_action() {
+        let config = moltis_config::schema::BrowserConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let tool = BrowserTool::from_config(&config).unwrap();
+        let schema = tool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|v| v == "action"),
+            "action should be in required fields"
+        );
+    }
+
+    #[tokio::test]
+    async fn saved_browser_sessions_are_scoped_by_chat_session() {
+        let config = moltis_config::schema::BrowserConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let tool = BrowserTool::from_config(&config).unwrap();
+
+        tool.save_session("web:session:one", "browser-session-one")
+            .await;
+        tool.save_session("web:session:two", "browser-session-two")
+            .await;
+
+        assert_eq!(
+            tool.get_saved_session("web:session:one").await,
+            Some("browser-session-one".to_string())
+        );
+        assert_eq!(
+            tool.get_saved_session("web:session:two").await,
+            Some("browser-session-two".to_string())
+        );
+        assert_eq!(tool.get_saved_session("web:session:three").await, None);
+    }
+
+    #[tokio::test]
+    async fn empty_session_id_is_not_saved() {
+        let config = moltis_config::schema::BrowserConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let tool = BrowserTool::from_config(&config).unwrap();
+        tool.save_session("web:session:one", "").await;
+        assert_eq!(tool.get_saved_session("web:session:one").await, None);
+    }
+
+    #[tokio::test]
+    async fn session_cache_evicts_when_full() {
+        let config = moltis_config::schema::BrowserConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let tool = BrowserTool::from_config(&config).unwrap();
+
+        // Fill the cache to capacity
+        for i in 0..BrowserTool::MAX_TRACKED_SESSIONS {
+            tool.save_session(&format!("session-{i}"), &format!("sid-{i}"))
+                .await;
+        }
+        assert_eq!(
+            tool.session_ids.read().await.len(),
+            BrowserTool::MAX_TRACKED_SESSIONS
+        );
+
+        // Adding one more should evict an entry and stay at capacity
+        tool.save_session("session-new", "sid-new").await;
+        let guard = tool.session_ids.read().await;
+        assert_eq!(guard.len(), BrowserTool::MAX_TRACKED_SESSIONS);
+        assert_eq!(guard.get("session-new"), Some(&"sid-new".to_string()));
+    }
+
+    #[tokio::test]
+    async fn clearing_one_chat_session_keeps_other_browser_sessions() {
+        let config = moltis_config::schema::BrowserConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let tool = BrowserTool::from_config(&config).unwrap();
+
+        tool.save_session("web:session:one", "browser-session-one")
+            .await;
+        tool.save_session("web:session:two", "browser-session-two")
+            .await;
+
+        tool.clear_session("web:session:one").await;
+
+        assert_eq!(tool.get_saved_session("web:session:one").await, None);
+        assert_eq!(
+            tool.get_saved_session("web:session:two").await,
+            Some("browser-session-two".to_string())
+        );
+    }
+}

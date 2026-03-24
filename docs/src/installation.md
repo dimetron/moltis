@@ -20,16 +20,6 @@ This downloads the latest release for your platform and installs it to `~/.local
 brew install moltis-org/tap/moltis
 ```
 
-### Cargo Binstall (Pre-built Binary)
-
-If you have [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) installed:
-
-```bash
-cargo binstall moltis
-```
-
-This downloads a pre-built binary without compiling from source.
-
 ## Linux Packages
 
 ### Debian / Ubuntu (.deb)
@@ -93,15 +83,24 @@ See [Docker Deployment](docker.md) for full instructions on running Moltis in a 
 
 ### Prerequisites
 
-- Rust 1.75 or later
+- Rust 1.91 or later
 - A C compiler (for some dependencies)
+- [just](https://github.com/casey/just) (command runner)
+- Node.js (for building Tailwind CSS)
 
 ### Clone and Build
 
 ```bash
 git clone https://github.com/moltis-org/moltis.git
 cd moltis
-cargo build --release
+just build-css           # Build Tailwind CSS for the web UI
+just build-release       # Build in release mode
+```
+
+For a full release build including WASM sandbox tools:
+
+```bash
+just build-release-with-wasm
 ```
 
 The binary will be at `target/release/moltis`.
@@ -148,18 +147,13 @@ moltis --version
 brew upgrade moltis
 ```
 
-### Cargo Binstall
-
-```bash
-cargo binstall moltis
-```
-
 ### From Source
 
 ```bash
 cd moltis
 git pull
-cargo build --release
+just build-css
+just build-release
 ```
 
 ## Uninstalling

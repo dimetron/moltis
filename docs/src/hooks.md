@@ -1,23 +1,32 @@
 # Hooks
 
-Hooks let you observe, modify, or block actions at key points in the agent lifecycle. Use them for auditing, policy enforcement, notifications, and custom integrations.
+Hooks let you observe, modify, or block actions at key points in the agent lifecycle. Use them for auditing, policy enforcement, prompt injection filtering, notifications, and custom integrations.
 
 ## How Hooks Work
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      Agent Loop                         │
-│                                                         │
-│  User Message → BeforeToolCall → Tool Execution         │
-│                       │                 │               │
-│                       ▼                 ▼               │
-│                 [Your Hook]      AfterToolCall          │
-│                       │                 │               │
-│                 modify/block      [Your Hook]           │
-│                       │                 │               │
-│                       ▼                 ▼               │
-│                   Continue → Response → MessageSent     │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        Agent Loop                            │
+│                                                              │
+│  User Message ─→ BeforeLLMCall ─→ LLM Provider              │
+│                       │                 │                    │
+│                  modify/block      AfterLLMCall              │
+│                                         │                    │
+│                                    modify/block              │
+│                                         │                    │
+│                                         ▼                    │
+│                                  BeforeToolCall              │
+│                                         │                    │
+│                                    modify/block              │
+│                                         │                    │
+│                                    Tool Execution            │
+│                                         │                    │
+│                                    AfterToolCall             │
+│                                         │                    │
+│                                         ▼                    │
+│                              (loop continues or)             │
+│                             Response → MessageSent           │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Event Types
@@ -28,10 +37,13 @@ These events run hooks sequentially. Hooks can modify the payload or block the a
 
 | Event | Description | Can Modify | Can Block |
 |-------|-------------|------------|-----------|
-| `BeforeToolCall` | Before a tool executes | ✅ | ✅ |
-| `BeforeCompaction` | Before context compaction | ✅ | ✅ |
-| `MessageSending` | Before sending a response | ✅ | ✅ |
-| `BeforeAgentStart` | Before agent loop starts | ✅ | ✅ |
+| `BeforeAgentStart` | Before agent loop starts | yes | yes |
+| `BeforeLLMCall` | Before prompt is sent to the LLM provider | yes | yes |
+| `AfterLLMCall` | After LLM response, before tool execution | yes | yes |
+| `BeforeToolCall` | Before a tool executes | yes | yes |
+| `BeforeCompaction` | Before context compaction | yes | yes |
+| `MessageSending` | Before sending a response | yes | yes |
+| `ToolResultPersist` | When a tool result is persisted | yes | yes |
 
 ### Read-Only Events (Parallel)
 
@@ -41,15 +53,107 @@ These events run hooks in parallel for performance. They cannot modify or block.
 |-------|-------------|
 | `AfterToolCall` | After a tool completes |
 | `AfterCompaction` | After context is compacted |
+| `AgentEnd` | When agent loop completes |
 | `MessageReceived` | When a user message arrives |
 | `MessageSent` | After response is delivered |
-| `AgentEnd` | When agent loop completes |
 | `SessionStart` | When a new session begins |
 | `SessionEnd` | When a session ends |
-| `ToolResultPersist` | When tool result is saved |
 | `GatewayStart` | When Moltis starts |
 | `GatewayStop` | When Moltis shuts down |
 | `Command` | When a slash command is used |
+
+## Prompt Injection Filtering
+
+The `BeforeLLMCall` and `AfterLLMCall` hooks provide filtering points for prompt injection defense.
+
+### BeforeLLMCall
+
+Fires before each LLM API call. The payload includes the full message array, provider name, model ID, and iteration count. Use it to:
+
+- Scan prompts for injection patterns before they reach the LLM
+- Redact PII or sensitive data from the conversation
+- Add safety prefixes to system prompts
+- Block requests that match known attack patterns
+
+**Payload fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_key` | string | Session identifier |
+| `provider` | string | Provider name (e.g. "openai", "anthropic") |
+| `model` | string | Model ID (e.g. "gpt-5.2-codex", "qwen2.5-coder-7b-q4_k_m") |
+| `messages` | array | Serialized message array (OpenAI format) |
+| `tool_count` | number | Number of tool schemas sent to the LLM |
+| `iteration` | number | 1-based loop iteration |
+
+### AfterLLMCall
+
+Fires after the LLM response is received but before tool calls execute. For streaming responses, this fires after the full response is accumulated (text has already been streamed to the UI) but blocking still prevents tool execution.
+
+**Payload fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_key` | string | Session identifier |
+| `provider` | string | Provider name |
+| `model` | string | Model ID |
+| `text` | string/null | LLM response text |
+| `tool_calls` | array | Tool calls requested by the LLM |
+| `input_tokens` | number | Tokens consumed by the prompt |
+| `output_tokens` | number | Tokens in the response |
+| `iteration` | number | 1-based loop iteration |
+
+### Example: Block Suspicious Tool Calls
+
+```bash
+#!/bin/bash
+# filter-injection.sh — subscribe to AfterLLMCall
+payload=$(cat)
+event=$(echo "$payload" | jq -r '.event')
+
+if [ "$event" = "AfterLLMCall" ]; then
+    # Check if tool calls contain suspicious patterns
+    tool_names=$(echo "$payload" | jq -r '.tool_calls[].name')
+
+    for name in $tool_names; do
+        # Block unexpected tool calls that might come from injection
+        case "$name" in
+            exec|bash|shell)
+                text=$(echo "$payload" | jq -r '.text // ""')
+                if echo "$text" | grep -qi "ignore previous\|disregard\|new instructions"; then
+                    echo "Blocked suspicious tool call after potential injection" >&2
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+fi
+
+exit 0
+```
+
+### Example: External Proxy Filter
+
+```bash
+#!/bin/bash
+# proxy-filter.sh — subscribe to BeforeLLMCall
+payload=$(cat)
+
+# Send to an external moderation API
+result=$(echo "$payload" | curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "$MODERATION_API_URL/check")
+
+# Block if the API flags it
+if echo "$result" | jq -e '.flagged' > /dev/null 2>&1; then
+    reason=$(echo "$result" | jq -r '.reason // "content policy violation"')
+    echo "$reason" >&2
+    exit 1
+fi
+
+exit 0
+```
 
 ## Creating a Hook
 
@@ -181,14 +285,20 @@ Project-local hooks take precedence over global hooks with the same name.
 You can also define hooks directly in the config file:
 
 ```toml
-[[hooks]]
+[hooks]
+[[hooks.hooks]]
 name = "audit-log"
 command = "./hooks/audit.sh"
 events = ["BeforeToolCall", "AfterToolCall"]
 timeout = 5
-priority = 100  # Higher = runs first
 
-[[hooks]]
+[[hooks.hooks]]
+name = "llm-filter"
+command = "./hooks/filter-injection.sh"
+events = ["BeforeLLMCall", "AfterLLMCall"]
+timeout = 10
+
+[[hooks.hooks]]
 name = "notify-slack"
 command = "./hooks/slack-notify.sh"
 events = ["SessionEnd"]
@@ -242,6 +352,31 @@ Moltis includes several built-in hooks:
 
 Reads `BOOT.md` from the workspace on `GatewayStart` and injects it into the agent context.
 
+`BOOT.md` is intended for short, explicit startup tasks (health checks, reminders,
+"send one startup message", etc.). If the file is missing or empty, nothing is injected.
+
+## Workspace Context Files
+
+Moltis supports several workspace markdown files in `data_dir`.
+
+### TOOLS.md
+
+`TOOLS.md` is loaded as a workspace context file in the system prompt.
+
+Best use is to combine:
+
+- **Local notes**: environment-specific facts (hosts, device names, channel aliases)
+- **Policy constraints**: "prefer read-only tools first", "never run X on startup", etc.
+
+If `TOOLS.md` is empty or missing, it is not injected.
+
+### AGENTS.md (workspace)
+
+Moltis also supports a workspace-level `AGENTS.md` in `data_dir`.
+
+This is separate from project `AGENTS.md`/`CLAUDE.md` discovery. Use workspace
+`AGENTS.md` for global instructions that should apply across projects in this workspace.
+
 ### session-memory
 
 Saves session context when you use the `/new` command, preserving important information for future sessions.
@@ -251,6 +386,36 @@ Saves session context when you use the `/new` command, preserving important info
 Logs all `Command` events to a JSONL file for auditing.
 
 ## Example Hooks
+
+### Recommended: Destructive Command Guard (dcg)
+
+[dcg](https://github.com/Dicklesworthstone/destructive_command_guard) is an
+external tool that scans shell commands against 49+ destructive pattern
+categories, including heredoc/inline-script scanning, database, cloud, and
+infrastructure patterns.
+
+**Install:**
+
+```bash
+cargo install dcg
+```
+
+**Hook setup:**
+
+Copy the bundled hook example to your hooks directory:
+
+```bash
+cp -r examples/hooks/dcg-guard ~/.moltis/hooks/dcg-guard
+chmod +x ~/.moltis/hooks/dcg-guard/handler.sh
+```
+
+The hook subscribes to `BeforeToolCall`, extracts exec commands, pipes them
+through dcg, and blocks any command that dcg flags as destructive. See
+`examples/hooks/dcg-guard/HOOK.md` for details.
+
+> **Note:** dcg complements but does not replace the built-in dangerous command
+> blocklist, sandbox isolation, or the approval system. Use it as an additional
+> defense layer with broader pattern coverage.
 
 ### Slack Notification on Session End
 
@@ -314,3 +479,4 @@ exit 0
 3. **Log for debugging** — Write to a log file, not stdout
 4. **Test locally first** — Pipe sample JSON through your script
 5. **Use jq for JSON** — It's reliable and fast for parsing
+6. **Layer defenses** — Use `BeforeLLMCall` for input filtering and `AfterLLMCall` for output filtering
