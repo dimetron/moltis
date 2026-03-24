@@ -40,26 +40,29 @@ fn resolve_name_or_slug(meta: &mut SkillMetadata, skill_dir: &Path) -> anyhow::R
 
     match slug {
         Some(ref s) if validate_name(s) => {
-            tracing::info!(
+            tracing::debug!(
                 name = %meta.name,
                 slug = %s,
                 "skill name invalid, using slug as internal name"
             );
             meta.display_name = Some(std::mem::take(&mut meta.name));
             meta.name = s.clone();
+            // slug is intentionally left populated so callers can inspect what was in the frontmatter.
             Ok(())
         },
         Some(ref s) => {
             bail!(
                 "skill name '{}' is invalid and slug '{}' is also invalid: \
-                 must be 1-64 lowercase alphanumeric/hyphen chars",
+                 must be 1-64 lowercase alphanumeric, hyphen, or colon chars \
+                 (e.g. 'my-skill' or 'ns:skill')",
                 meta.name, s
             );
         },
         None => {
             bail!(
                 "skill name '{}' is invalid and no slug provided: \
-                 must be 1-64 lowercase alphanumeric/hyphen chars, \
+                 must be 1-64 lowercase alphanumeric, hyphen, or colon chars \
+                 (e.g. 'my-skill' or 'ns:skill'), \
                  or provide a valid 'slug' field",
                 meta.name
             );
