@@ -1289,10 +1289,10 @@ pub struct McpServerEntry {
     /// Optional per-server MCP request timeout override in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout_secs: Option<u64>,
-    /// Transport type: "stdio" (default) or "sse".
+    /// Transport type: "stdio" (default), "sse", or "streamable-http".
     #[serde(default)]
     pub transport: String,
-    /// URL for SSE transport. Required when `transport` is "sse".
+    /// URL for SSE/Streamable HTTP transport. Required when `transport` is "sse" or "streamable-http".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Custom headers for remote HTTP/SSE transport.

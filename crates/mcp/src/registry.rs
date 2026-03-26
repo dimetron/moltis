@@ -20,6 +20,8 @@ pub enum TransportType {
     #[default]
     Stdio,
     Sse,
+    #[serde(rename = "streamable-http", alias = "streamable_http", alias = "http")]
+    StreamableHttp,
 }
 
 /// Manual OAuth override for MCP servers that don't support standard discovery.
@@ -244,6 +246,19 @@ where
 #[cfg(test)]
 mod tests {
     use {super::*, secrecy::ExposeSecret};
+
+    #[test]
+    fn test_transport_type_deserialization() {
+        let json = r#"["stdio", "sse", "streamable-http", "streamable_http", "http"]"#;
+        let transports: Vec<TransportType> = serde_json::from_str(json).unwrap();
+        assert_eq!(transports, vec![
+            TransportType::Stdio,
+            TransportType::Sse,
+            TransportType::StreamableHttp,
+            TransportType::StreamableHttp,
+            TransportType::StreamableHttp,
+        ]);
+    }
 
     #[test]
     fn test_registry_add_remove() {

@@ -84,6 +84,9 @@ fn parse_server_config(
 ) -> Result<moltis_mcp::McpServerConfig, ServiceError> {
     let transport = match params.get("transport").and_then(|v| v.as_str()) {
         Some("sse") => moltis_mcp::TransportType::Sse,
+        Some("streamable-http" | "streamable_http" | "http") => {
+            moltis_mcp::TransportType::StreamableHttp
+        },
         Some(_) => moltis_mcp::TransportType::Stdio,
         None => existing
             .map(|cfg| cfg.transport)
@@ -147,7 +150,10 @@ fn parse_server_config(
         existing.and_then(|cfg| cfg.url.clone())
     };
 
-    let headers = if matches!(transport, moltis_mcp::TransportType::Sse) {
+    let headers = if matches!(
+        transport,
+        moltis_mcp::TransportType::Sse | moltis_mcp::TransportType::StreamableHttp
+    ) {
         if params.get("headers").is_some() {
             parse_secret_string_map(params.get("headers").unwrap_or(&Value::Null))
         } else {
@@ -157,7 +163,10 @@ fn parse_server_config(
         HashMap::new()
     };
 
-    let env = if matches!(transport, moltis_mcp::TransportType::Sse) {
+    let env = if matches!(
+        transport,
+        moltis_mcp::TransportType::Sse | moltis_mcp::TransportType::StreamableHttp
+    ) {
         HashMap::new()
     } else if params.get("env").is_some() {
         parse_string_map(params.get("env").unwrap_or(&Value::Null))
@@ -165,11 +174,13 @@ fn parse_server_config(
         existing.map(|cfg| cfg.env.clone()).unwrap_or_default()
     };
 
-    if matches!(transport, moltis_mcp::TransportType::Sse)
-        && url
-            .as_ref()
-            .map(ExposeSecret::expose_secret)
-            .is_none_or(|candidate| candidate.trim().is_empty())
+    if matches!(
+        transport,
+        moltis_mcp::TransportType::Sse | moltis_mcp::TransportType::StreamableHttp
+    ) && url
+        .as_ref()
+        .map(ExposeSecret::expose_secret)
+        .is_none_or(|candidate| candidate.trim().is_empty())
     {
         return Err(ServiceError::message(
             "missing 'url' parameter for 'sse' transport",
@@ -223,7 +234,10 @@ fn parse_server_config(
         enabled,
         request_timeout_secs,
         transport,
-        url: if matches!(transport, moltis_mcp::TransportType::Sse) {
+        url: if matches!(
+            transport,
+            moltis_mcp::TransportType::Sse | moltis_mcp::TransportType::StreamableHttp
+        ) {
             url
         } else {
             None

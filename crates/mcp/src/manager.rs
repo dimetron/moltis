@@ -185,7 +185,7 @@ impl McpManager {
 
         // Network work happens outside the lock.
         let (client, auth_provider) = match config.transport {
-            TransportType::Sse => {
+            TransportType::Sse | TransportType::StreamableHttp => {
                 let env_overrides = {
                     let inner = self.inner.read().await;
                     inner.env_overrides.clone()
@@ -347,7 +347,10 @@ impl McpManager {
                 })?
             };
 
-        if !matches!(config.transport, TransportType::Sse) {
+        if !matches!(
+            config.transport,
+            TransportType::Sse | TransportType::StreamableHttp
+        ) {
             return Err(McpManagerError::NotSseTransport {
                 server: name.to_string(),
             }
@@ -442,7 +445,10 @@ impl McpManager {
                 server_info: None,
                 command: config.command.clone(),
                 args: config.args.clone(),
-                env: if matches!(config.transport, TransportType::Sse) {
+                env: if matches!(
+                    config.transport,
+                    TransportType::Sse | TransportType::StreamableHttp
+                ) {
                     HashMap::new()
                 } else {
                     config.env.clone()
