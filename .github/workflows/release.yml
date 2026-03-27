@@ -420,7 +420,7 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
           MOLTIS_VERSION: ${{ steps.release_version.outputs.version }}
-        run: cargo generate-rpm -p crates/cli --target "$BUILD_TARGET" --set-metadata="version=$MOLTIS_VERSION"
+        run: cargo generate-rpm -p crates/cli --target "$BUILD_TARGET" --set-metadata="version=\"$MOLTIS_VERSION\""
 
       - name: Sign with Sigstore and generate checksums
         if: ${{ env.RELEASE_DRY_RUN != 'true' }}
@@ -1455,6 +1455,9 @@ jobs:
           persist-credentials: false
           ref: main
 
+      - name: Build changelog HTML
+        run: node website/scripts/build-changelog.mjs
+
       - name: Update image tags in deploy templates
         env:
           TAG: ${{ github.ref_name }}
@@ -1479,8 +1482,9 @@ jobs:
             website/releases.json > website/releases.json.tmp \
             && mv website/releases.json.tmp website/releases.json
 
-          # Check if any files changed
-          if git diff --quiet .do/deploy.template.yaml render.yaml fly.toml website/releases.json; then
+          # Check if any files changed (include changelog)
+          if git diff --quiet .do/deploy.template.yaml render.yaml fly.toml website/releases.json && \
+             [ ! -f website/changelog/index.html ]; then
             echo "No deploy template changes needed"
             exit 0
           fi
@@ -1503,6 +1507,9 @@ jobs:
           RELEASES_BLOB=$(gh api "repos/${REPO}/git/blobs" \
             -f content="$(base64 -w0 website/releases.json)" \
             -f encoding=base64 --jq '.sha')
+          CHANGELOG_BLOB=$(gh api "repos/${REPO}/git/blobs" \
+            -f content="$(base64 -w0 website/changelog/index.html)" \
+            -f encoding=base64 --jq '.sha')
 
           # Create a new tree with the updated files (JSON input for proper array structure)
           TREE_SHA=$(jq -n \
@@ -1511,13 +1518,15 @@ jobs:
             --arg render_sha "$RENDER_BLOB" \
             --arg fly_sha "$FLY_BLOB" \
             --arg releases_sha "$RELEASES_BLOB" \
+            --arg changelog_sha "$CHANGELOG_BLOB" \
             '{
               base_tree: $base,
               tree: [
                 {path: ".do/deploy.template.yaml", mode: "100644", type: "blob", sha: $do_sha},
                 {path: "render.yaml", mode: "100644", type: "blob", sha: $render_sha},
                 {path: "fly.toml", mode: "100644", type: "blob", sha: $fly_sha},
-                {path: "website/releases.json", mode: "100644", type: "blob", sha: $releases_sha}
+                {path: "website/releases.json", mode: "100644", type: "blob", sha: $releases_sha},
+                {path: "website/changelog/index.html", mode: "100644", type: "blob", sha: $changelog_sha}
               ]
             }' | gh api "repos/${REPO}/git/trees" --input - --jq '.sha')
 
