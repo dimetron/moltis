@@ -57,6 +57,36 @@ const BLOCKED_ENV_PREFIXES: &[&str] = &[
 
 const SSH_ID_PREFIX: &str = "ssh:";
 
+pub(crate) fn ssh_node_id(target: &str) -> String {
+    format!("{SSH_ID_PREFIX}{target}")
+}
+
+pub(crate) fn ssh_target_matches(node_ref: &str, target: &str) -> bool {
+    node_ref == "ssh" || node_ref == target || node_ref.strip_prefix(SSH_ID_PREFIX) == Some(target)
+}
+
+pub(crate) fn ssh_node_info(target: &str) -> moltis_tools::nodes::NodeInfo {
+    moltis_tools::nodes::NodeInfo {
+        node_id: ssh_node_id(target),
+        display_name: Some(format!("SSH: {target}")),
+        platform: "ssh".to_string(),
+        capabilities: vec!["system.run".to_string()],
+        commands: vec!["system.run".to_string()],
+        remote_ip: None,
+        mem_total: None,
+        mem_available: None,
+        cpu_count: None,
+        cpu_usage: None,
+        uptime_secs: None,
+        services: vec!["ssh".to_string()],
+        telemetry_stale: false,
+        disk_total: None,
+        disk_available: None,
+        runtimes: Vec::new(),
+        providers: Vec::new(),
+    }
+}
+
 /// Forward a shell command to a connected node for execution.
 ///
 /// Uses `node.invoke` internally with `system.run` as the command.
@@ -465,11 +495,8 @@ impl moltis_tools::exec::NodeExecProvider for GatewayNodeExecProvider {
 
     async fn resolve_node_id(&self, node_ref: &str) -> Option<String> {
         if let Some(target) = &self.ssh_target {
-            if node_ref == "ssh"
-                || node_ref == target
-                || node_ref.strip_prefix(SSH_ID_PREFIX) == Some(target.as_str())
-            {
-                return Some(format!("{SSH_ID_PREFIX}{target}"));
+            if ssh_target_matches(node_ref, target) {
+                return Some(ssh_node_id(target));
             }
         }
 
@@ -519,11 +546,12 @@ fn node_to_info(n: &crate::nodes::NodeSession) -> moltis_tools::nodes::NodeInfo 
 /// reading from the `NodeRegistry` and session metadata in `GatewayState`.
 pub struct GatewayNodeInfoProvider {
     state: Arc<GatewayState>,
+    ssh_target: Option<String>,
 }
 
 impl GatewayNodeInfoProvider {
-    pub fn new(state: Arc<GatewayState>) -> Self {
-        Self { state }
+    pub fn new(state: Arc<GatewayState>, ssh_target: Option<String>) -> Self {
+        Self { state, ssh_target }
     }
 }
 
@@ -531,10 +559,19 @@ impl GatewayNodeInfoProvider {
 impl moltis_tools::nodes::NodeInfoProvider for GatewayNodeInfoProvider {
     async fn list_nodes(&self) -> Vec<moltis_tools::nodes::NodeInfo> {
         let inner = self.state.inner.read().await;
-        inner.nodes.list().iter().map(|n| node_to_info(n)).collect()
+        let mut nodes: Vec<_> = inner.nodes.list().iter().map(|n| node_to_info(n)).collect();
+        if let Some(target) = &self.ssh_target {
+            nodes.push(ssh_node_info(target));
+        }
+        nodes
     }
 
     async fn describe_node(&self, node_ref: &str) -> Option<moltis_tools::nodes::NodeInfo> {
+        if let Some(target) = &self.ssh_target
+            && ssh_target_matches(node_ref, target)
+        {
+            return Some(ssh_node_info(target));
+        }
         let resolved = resolve_node_id(&self.state, node_ref).await?;
         let inner = self.state.inner.read().await;
         inner.nodes.get(&resolved).map(node_to_info)
@@ -546,6 +583,14 @@ impl moltis_tools::nodes::NodeInfoProvider for GatewayNodeInfoProvider {
         node_ref: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         let resolved = match node_ref {
+            Some(r)
+                if self
+                    .ssh_target
+                    .as_deref()
+                    .is_some_and(|target| ssh_target_matches(r, target)) =>
+            {
+                self.ssh_target.as_ref().map(|target| ssh_node_id(target))
+            },
             Some(r) => {
                 let id = resolve_node_id(&self.state, r)
                     .await
@@ -569,6 +614,11 @@ impl moltis_tools::nodes::NodeInfoProvider for GatewayNodeInfoProvider {
     }
 
     async fn resolve_node_id(&self, node_ref: &str) -> Option<String> {
+        if let Some(target) = &self.ssh_target
+            && ssh_target_matches(node_ref, target)
+        {
+            return Some(ssh_node_id(target));
+        }
         resolve_node_id(&self.state, node_ref).await
     }
 }
@@ -615,6 +665,24 @@ mod tests {
         assert_eq!(result.stdout, "hello\n");
         assert_eq!(result.stderr, "");
         assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn ssh_target_matching_accepts_aliases() {
+        assert!(ssh_target_matches("ssh", "deploy@box"));
+        assert!(ssh_target_matches("deploy@box", "deploy@box"));
+        assert!(ssh_target_matches("ssh:deploy@box", "deploy@box"));
+        assert!(!ssh_target_matches("other", "deploy@box"));
+    }
+
+    #[test]
+    fn ssh_node_info_uses_canonical_id() {
+        let info = ssh_node_info("deploy@box");
+        assert_eq!(info.node_id, "ssh:deploy@box");
+        assert_eq!(info.display_name.as_deref(), Some("SSH: deploy@box"));
+        assert_eq!(info.platform, "ssh");
+        assert_eq!(info.capabilities, vec!["system.run".to_string()]);
+        assert_eq!(info.services, vec!["ssh".to_string()]);
     }
 
     #[test]

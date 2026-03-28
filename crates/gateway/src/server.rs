@@ -3372,9 +3372,11 @@ pub async fn prepare_gateway_core(
 
         // Register node info tools (list, describe, select).
         {
-            let node_info_provider: Arc<dyn moltis_tools::nodes::NodeInfoProvider> = Arc::new(
-                crate::node_exec::GatewayNodeInfoProvider::new(Arc::clone(&state)),
-            );
+            let node_info_provider: Arc<dyn moltis_tools::nodes::NodeInfoProvider> =
+                Arc::new(crate::node_exec::GatewayNodeInfoProvider::new(
+                    Arc::clone(&state),
+                    config.tools.exec.ssh_target.clone(),
+                ));
             tool_registry.register(Box::new(moltis_tools::nodes::NodesListTool::new(
                 Arc::clone(&node_info_provider),
             )));

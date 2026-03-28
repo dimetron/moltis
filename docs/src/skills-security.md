@@ -21,6 +21,12 @@ Imported bundles keep provenance metadata (original source, commit SHA when
 available, bundle path, export time) so you can review where they came from
 before clearing quarantine.
 
+The Skills page exposes these bundle flows directly:
+
+- import a `.tar.gz` bundle from disk
+- export an installed repo back to a portable bundle
+- clear quarantine after reviewing provenance and contents
+
 ## Provenance Pinning
 
 Moltis records a pinned `commit_sha` for installed repos:

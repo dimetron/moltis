@@ -117,7 +117,9 @@ Once a node is connected, you can target it from a chat session:
 
 - **UI dropdown**: The chat toolbar shows a node selector next to the model
   picker. Select a node to route all `exec` commands to it. Select "Local" to
-  revert to local execution.
+  revert to local execution. When `tools.exec.host = "ssh"` with
+  `tools.exec.ssh_target` configured, that SSH target also appears here as a
+  first-class execution option.
 - **Agent tools**: The agent can call `nodes_list`, `nodes_describe`, and
   `nodes_select` to programmatically pick a node based on capabilities or
   telemetry.
@@ -137,6 +139,10 @@ Connected nodes report system telemetry every 30 seconds:
 
 This data is visible on the Nodes page and available to the agent via the
 `nodes_describe` tool.
+
+If you configure `tools.exec.host = "ssh"`, the Nodes page also shows the SSH
+target even though it is not a WebSocket-paired node. This makes the active
+remote execution route visible instead of hiding it in config.
 
 ## CLI Reference
 

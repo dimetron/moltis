@@ -71,7 +71,9 @@ host = "local"                 # "local", "node", or "ssh"
 ```
 
 When `host = "ssh"`, Moltis reuses your existing OpenSSH setup, host aliases,
-agent forwarding policy, and `~/.ssh/config`.
+agent forwarding policy, and `~/.ssh/config`. The configured SSH target is also
+surfaced in the Nodes page and chat node picker so users can see where `exec`
+will run without digging through config.
 
 ## Sandbox Configuration
 
