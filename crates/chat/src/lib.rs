@@ -10035,10 +10035,7 @@ mod tests {
         // (e.g. llama.cpp) don't reject the history for having an assistant
         // message without a preceding user message, and so the summary stays
         // in the conversation turn array for the Responses API.  See #501.
-        assert_eq!(
-            history[0].get("role").and_then(Value::as_str),
-            Some("user")
-        );
+        assert_eq!(history[0].get("role").and_then(Value::as_str), Some("user"));
         assert!(
             history[0]
                 .get("content")
@@ -10087,14 +10084,19 @@ mod tests {
             .await
             .expect("seed assistant msg");
 
-        let provider: Arc<dyn LlmProvider> =
-            Arc::new(AutoCompactRegressionProvider { context_window: 100 });
+        let provider: Arc<dyn LlmProvider> = Arc::new(AutoCompactRegressionProvider {
+            context_window: 100,
+        });
         compact_session(&store, session_key, &provider)
             .await
             .expect("compact_session should succeed");
 
         let history = store.read(session_key).await.expect("read compacted");
-        assert_eq!(history.len(), 1, "compaction should leave exactly one message");
+        assert_eq!(
+            history.len(),
+            1,
+            "compaction should leave exactly one message"
+        );
 
         // The compacted message must be a user message.
         assert_eq!(
