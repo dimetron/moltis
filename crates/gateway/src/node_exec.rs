@@ -1,7 +1,9 @@
-//! Route command execution to a remote node via `node.invoke` with `system.run`.
+//! Route command execution to a remote node or SSH target.
 //!
 //! When `tools.exec.host = "node"`, the gateway forwards shell commands to a
-//! connected headless node instead of executing them locally or in a sandbox.
+//! connected headless node via `node.invoke`. When `tools.exec.host = "ssh"`,
+//! it forwards commands through the system `ssh` client using a configured
+//! target alias or `user@host`.
 
 use std::{
     collections::HashMap,
@@ -15,6 +17,7 @@ use std::{
 use {
     async_trait::async_trait,
     serde::{Deserialize, Serialize},
+    tokio::process::Command,
 };
 
 use crate::state::GatewayState;
@@ -51,6 +54,8 @@ const BLOCKED_ENV_PREFIXES: &[&str] = &[
     "GOOGLE_",
     "AZURE_",
 ];
+
+const SSH_ID_PREFIX: &str = "ssh:";
 
 /// Forward a shell command to a connected node for execution.
 ///
@@ -143,6 +148,52 @@ pub async fn exec_on_node(
 
     // Parse the result.
     parse_exec_result(&result)
+}
+
+async fn exec_over_ssh(
+    target: &str,
+    command: &str,
+    timeout_secs: u64,
+    cwd: Option<&str>,
+    env: Option<&HashMap<String, String>>,
+    max_output_bytes: usize,
+) -> anyhow::Result<NodeExecResult> {
+    let mut ssh = Command::new("ssh");
+    ssh.arg("-T")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg(format!("ConnectTimeout={}", timeout_secs.clamp(5, 30)))
+        .arg(target)
+        .arg(format!(
+            "sh -lc {}",
+            shell_single_quote(&build_remote_shell_script(command, cwd, env))
+        ));
+    ssh.stdout(std::process::Stdio::piped());
+    ssh.stderr(std::process::Stdio::piped());
+    ssh.stdin(std::process::Stdio::null());
+
+    let child = ssh.spawn()?;
+    let output = match tokio::time::timeout(
+        Duration::from_secs(timeout_secs.max(5)),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => anyhow::bail!("ssh execution timed out after {timeout_secs}s"),
+    };
+
+    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    truncate_output_for_display(&mut stdout, max_output_bytes);
+    truncate_output_for_display(&mut stderr, max_output_bytes);
+
+    Ok(NodeExecResult {
+        stdout,
+        stderr,
+        exit_code: output.status.code().unwrap_or(-1),
+    })
 }
 
 /// Query a node for its available LLM providers via `system.providers`.
@@ -253,6 +304,44 @@ pub async fn resolve_node_id(state: &Arc<GatewayState>, node_ref: &str) -> Optio
     None
 }
 
+fn truncate_output_for_display(output: &mut String, max_output_bytes: usize) {
+    if output.len() <= max_output_bytes {
+        return;
+    }
+    output.truncate(output.floor_char_boundary(max_output_bytes));
+    output.push_str("\n... [output truncated]");
+}
+
+fn build_remote_shell_script(
+    command: &str,
+    cwd: Option<&str>,
+    env: Option<&HashMap<String, String>>,
+) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(cwd) = cwd {
+        parts.push(format!("cd {}", shell_single_quote(cwd)));
+    }
+
+    if let Some(env) = env {
+        let filtered = filter_env(env);
+        let mut keys: Vec<&String> = filtered.keys().collect();
+        keys.sort();
+        for key in keys {
+            if let Some(value) = filtered.get(key) {
+                parts.push(format!("export {}={}", key, shell_single_quote(value)));
+            }
+        }
+    }
+
+    parts.push(command.to_string());
+    parts.join(" && ")
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 /// Filter environment variables to the safe allowlist.
 fn filter_env(env: &HashMap<String, String>) -> HashMap<String, String> {
     env.iter()
@@ -317,13 +406,25 @@ fn parse_exec_result(value: &serde_json::Value) -> anyhow::Result<NodeExecResult
 pub struct GatewayNodeExecProvider {
     state: Arc<GatewayState>,
     node_count: Arc<AtomicUsize>,
+    ssh_target: Option<String>,
+    max_output_bytes: usize,
 }
 
 impl GatewayNodeExecProvider {
     /// Create with the shared node counter from `GatewayState` so that
     /// `has_connected_nodes()` reflects the real connection state.
-    pub fn new(state: Arc<GatewayState>, node_count: Arc<AtomicUsize>) -> Self {
-        Self { state, node_count }
+    pub fn new(
+        state: Arc<GatewayState>,
+        node_count: Arc<AtomicUsize>,
+        ssh_target: Option<String>,
+        max_output_bytes: usize,
+    ) -> Self {
+        Self {
+            state,
+            node_count,
+            ssh_target,
+            max_output_bytes,
+        }
     }
 }
 
@@ -337,6 +438,23 @@ impl moltis_tools::exec::NodeExecProvider for GatewayNodeExecProvider {
         cwd: Option<&str>,
         env: Option<&HashMap<String, String>>,
     ) -> anyhow::Result<moltis_tools::exec::ExecResult> {
+        if let Some(target) = node_id.strip_prefix(SSH_ID_PREFIX) {
+            let result = exec_over_ssh(
+                target,
+                command,
+                timeout_secs,
+                cwd,
+                env,
+                self.max_output_bytes,
+            )
+            .await?;
+            return Ok(moltis_tools::exec::ExecResult {
+                stdout: result.stdout,
+                stderr: result.stderr,
+                exit_code: result.exit_code,
+            });
+        }
+
         let result = exec_on_node(&self.state, node_id, command, timeout_secs, cwd, env).await?;
         Ok(moltis_tools::exec::ExecResult {
             stdout: result.stdout,
@@ -346,11 +464,20 @@ impl moltis_tools::exec::NodeExecProvider for GatewayNodeExecProvider {
     }
 
     async fn resolve_node_id(&self, node_ref: &str) -> Option<String> {
+        if let Some(target) = &self.ssh_target {
+            if node_ref == "ssh"
+                || node_ref == target
+                || node_ref.strip_prefix(SSH_ID_PREFIX) == Some(target.as_str())
+            {
+                return Some(format!("{SSH_ID_PREFIX}{target}"));
+            }
+        }
+
         resolve_node_id(&self.state, node_ref).await
     }
 
     fn has_connected_nodes(&self) -> bool {
-        self.node_count.load(Ordering::Relaxed) > 0
+        self.node_count.load(Ordering::Relaxed) > 0 || self.ssh_target.is_some()
     }
 }
 
@@ -497,5 +624,18 @@ mod tests {
         });
         let result = parse_exec_result(&value);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_remote_shell_script_quotes_cwd_and_env() {
+        let mut env = HashMap::new();
+        env.insert("LANG".into(), "en_US.UTF-8".into());
+        env.insert("OPENAI_API_KEY".into(), "secret".into());
+
+        let script = build_remote_shell_script("printf '%s' hi", Some("/tmp/it's"), Some(&env));
+        assert!(script.contains("cd '/tmp/it'\"'\"'s'"));
+        assert!(script.contains("export LANG='en_US.UTF-8'"));
+        assert!(!script.contains("OPENAI_API_KEY"));
+        assert!(script.ends_with("printf '%s' hi"));
     }
 }

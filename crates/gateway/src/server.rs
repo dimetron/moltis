@@ -3255,11 +3255,13 @@ pub async fn prepare_gateway_core(
             let provider = Arc::new(crate::node_exec::GatewayNodeExecProvider::new(
                 Arc::clone(&state),
                 Arc::clone(&state.node_count),
+                config.tools.exec.ssh_target.clone(),
+                config.tools.exec.max_output_bytes,
             ));
-            let default_node = if config.tools.exec.host == "node" {
-                config.tools.exec.node.clone()
-            } else {
-                None
+            let default_node = match config.tools.exec.host.as_str() {
+                "node" => config.tools.exec.node.clone(),
+                "ssh" => config.tools.exec.ssh_target.clone(),
+                _ => None,
             };
             exec_tool = exec_tool.with_node_provider(provider, default_node);
         }

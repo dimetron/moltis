@@ -58,6 +58,21 @@ priority_models = ["gpt-5.2"]
 
 See [Providers](providers.md) for the full list of supported providers and configuration options.
 
+## Remote Execution
+
+Command execution can stay local, route to a paired node, or use the system
+`ssh` client:
+
+```toml
+[tools.exec]
+host = "local"                 # "local", "node", or "ssh"
+# node = "mac-mini"            # default paired node when host = "node"
+# ssh_target = "deploy@box"    # default SSH target when host = "ssh"
+```
+
+When `host = "ssh"`, Moltis reuses your existing OpenSSH setup, host aliases,
+agent forwarding policy, and `~/.ssh/config`.
+
 ## Sandbox Configuration
 
 Commands run inside isolated containers for security:
