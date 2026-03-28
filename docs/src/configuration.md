@@ -60,8 +60,7 @@ See [Providers](providers.md) for the full list of supported providers and confi
 
 ## Remote Execution
 
-Command execution can stay local, route to a paired node, or use the system
-`ssh` client:
+Command execution can stay local, route to a paired node, or use SSH:
 
 ```toml
 [tools.exec]
@@ -70,10 +69,19 @@ host = "local"                 # "local", "node", or "ssh"
 # ssh_target = "deploy@box"    # default SSH target when host = "ssh"
 ```
 
-When `host = "ssh"`, Moltis reuses your existing OpenSSH setup, host aliases,
-agent forwarding policy, and `~/.ssh/config`. The configured SSH target is also
-surfaced in the Nodes page and chat node picker so users can see where `exec`
-will run without digging through config.
+When `host = "ssh"`, Moltis can work in two modes:
+
+- **System OpenSSH**: reuse your existing host aliases, agent forwarding policy,
+  and `~/.ssh/config`.
+- **Managed targets**: create or import a deploy key in **Settings → SSH**,
+  then bind that key to a named target. Moltis stores the private key in its
+  credential store and encrypts it with the vault whenever the vault is
+  unsealed.
+
+Managed targets appear in the Nodes page and chat node picker, so users can see
+where `exec` will run without digging through config. If multiple managed
+targets exist, the default one is used when `tools.exec.host = "ssh"` and no
+session-specific route is selected.
 
 ## Sandbox Configuration
 

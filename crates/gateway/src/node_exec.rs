@@ -7,6 +7,8 @@
 
 use std::{
     collections::HashMap,
+    io::Write,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -16,11 +18,16 @@ use std::{
 
 use {
     async_trait::async_trait,
+    secrecy::ExposeSecret,
     serde::{Deserialize, Serialize},
     tokio::process::Command,
+    tracing::warn,
 };
 
-use crate::state::GatewayState;
+use crate::{
+    auth::{CredentialStore, SshAuthMode, SshResolvedTarget},
+    state::GatewayState,
+};
 
 /// Result of a remote command execution on a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,9 +63,14 @@ const BLOCKED_ENV_PREFIXES: &[&str] = &[
 ];
 
 const SSH_ID_PREFIX: &str = "ssh:";
+const SSH_TARGET_ID_PREFIX: &str = "ssh:target:";
 
 pub(crate) fn ssh_node_id(target: &str) -> String {
     format!("{SSH_ID_PREFIX}{target}")
+}
+
+fn ssh_stored_node_id(id: i64) -> String {
+    format!("{SSH_TARGET_ID_PREFIX}{id}")
 }
 
 pub(crate) fn ssh_target_matches(node_ref: &str, target: &str) -> bool {
@@ -79,6 +91,32 @@ pub(crate) fn ssh_node_info(target: &str) -> moltis_tools::nodes::NodeInfo {
         cpu_usage: None,
         uptime_secs: None,
         services: vec!["ssh".to_string()],
+        telemetry_stale: false,
+        disk_total: None,
+        disk_available: None,
+        runtimes: Vec::new(),
+        providers: Vec::new(),
+    }
+}
+
+fn ssh_target_node_info(target: &SshResolvedTarget) -> moltis_tools::nodes::NodeInfo {
+    let auth_service = match target.auth_mode {
+        SshAuthMode::System => "ssh-system",
+        SshAuthMode::Managed => "ssh-managed",
+    };
+    moltis_tools::nodes::NodeInfo {
+        node_id: ssh_stored_node_id(target.id),
+        display_name: Some(format!("SSH: {}", target.label)),
+        platform: "ssh".to_string(),
+        capabilities: vec!["system.run".to_string()],
+        commands: vec!["system.run".to_string()],
+        remote_ip: None,
+        mem_total: None,
+        mem_available: None,
+        cpu_count: None,
+        cpu_usage: None,
+        uptime_secs: None,
+        services: vec!["ssh".to_string(), auth_service.to_string()],
         telemetry_stale: false,
         disk_total: None,
         disk_available: None,
@@ -182,6 +220,8 @@ pub async fn exec_on_node(
 
 async fn exec_over_ssh(
     target: &str,
+    port: Option<u16>,
+    identity_file: Option<&Path>,
     command: &str,
     timeout_secs: u64,
     cwd: Option<&str>,
@@ -193,12 +233,18 @@ async fn exec_over_ssh(
         .arg("-o")
         .arg("BatchMode=yes")
         .arg("-o")
-        .arg(format!("ConnectTimeout={}", timeout_secs.clamp(5, 30)))
-        .arg(target)
-        .arg(format!(
-            "sh -lc {}",
-            shell_single_quote(&build_remote_shell_script(command, cwd, env))
-        ));
+        .arg(format!("ConnectTimeout={}", timeout_secs.clamp(5, 30)));
+    if let Some(identity_file) = identity_file {
+        ssh.arg("-o").arg("IdentitiesOnly=yes");
+        ssh.arg("-i").arg(identity_file);
+    }
+    if let Some(port) = port {
+        ssh.arg("-p").arg(port.to_string());
+    }
+    ssh.arg(target).arg(format!(
+        "sh -lc {}",
+        shell_single_quote(&build_remote_shell_script(command, cwd, env))
+    ));
     ssh.stdout(std::process::Stdio::piped());
     ssh.stderr(std::process::Stdio::piped());
     ssh.stdin(std::process::Stdio::null());
@@ -224,6 +270,67 @@ async fn exec_over_ssh(
         stderr,
         exit_code: output.status.code().unwrap_or(-1),
     })
+}
+
+fn write_temp_ssh_private_key(
+    private_key: &secrecy::Secret<String>,
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(private_key.expose_secret().as_bytes())?;
+    file.flush()?;
+    Ok(file)
+}
+
+pub async fn exec_resolved_ssh_target(
+    credential_store: &CredentialStore,
+    target: &SshResolvedTarget,
+    command: &str,
+    timeout_secs: u64,
+    cwd: Option<&str>,
+    env: Option<&HashMap<String, String>>,
+    max_output_bytes: usize,
+) -> anyhow::Result<NodeExecResult> {
+    match target.auth_mode {
+        SshAuthMode::System => {
+            exec_over_ssh(
+                &target.target,
+                target.port,
+                None,
+                command,
+                timeout_secs,
+                cwd,
+                env,
+                max_output_bytes,
+            )
+            .await
+        },
+        SshAuthMode::Managed => {
+            let key_id = target
+                .key_id
+                .ok_or_else(|| anyhow::anyhow!("managed ssh target has no key configured"))?;
+            let private_key = credential_store
+                .get_ssh_private_key(key_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("ssh key {key_id} not found"))?;
+            let temp_key = write_temp_ssh_private_key(&private_key)?;
+            exec_over_ssh(
+                &target.target,
+                target.port,
+                Some(temp_key.path()),
+                command,
+                timeout_secs,
+                cwd,
+                env,
+                max_output_bytes,
+            )
+            .await
+        },
+    }
 }
 
 /// Query a node for its available LLM providers via `system.providers`.
@@ -436,7 +543,8 @@ fn parse_exec_result(value: &serde_json::Value) -> anyhow::Result<NodeExecResult
 pub struct GatewayNodeExecProvider {
     state: Arc<GatewayState>,
     node_count: Arc<AtomicUsize>,
-    ssh_target: Option<String>,
+    ssh_target_count: Arc<AtomicUsize>,
+    legacy_ssh_target: Option<String>,
     max_output_bytes: usize,
 }
 
@@ -446,13 +554,15 @@ impl GatewayNodeExecProvider {
     pub fn new(
         state: Arc<GatewayState>,
         node_count: Arc<AtomicUsize>,
-        ssh_target: Option<String>,
+        ssh_target_count: Arc<AtomicUsize>,
+        legacy_ssh_target: Option<String>,
         max_output_bytes: usize,
     ) -> Self {
         Self {
             state,
             node_count,
-            ssh_target,
+            ssh_target_count,
+            legacy_ssh_target,
             max_output_bytes,
         }
     }
@@ -468,21 +578,45 @@ impl moltis_tools::exec::NodeExecProvider for GatewayNodeExecProvider {
         cwd: Option<&str>,
         env: Option<&HashMap<String, String>>,
     ) -> anyhow::Result<moltis_tools::exec::ExecResult> {
-        if let Some(target) = node_id.strip_prefix(SSH_ID_PREFIX) {
-            let result = exec_over_ssh(
-                target,
-                command,
-                timeout_secs,
-                cwd,
-                env,
-                self.max_output_bytes,
-            )
-            .await?;
-            return Ok(moltis_tools::exec::ExecResult {
-                stdout: result.stdout,
-                stderr: result.stderr,
-                exit_code: result.exit_code,
-            });
+        if node_id.starts_with(SSH_ID_PREFIX) {
+            if let Some(store) = self.state.credential_store.as_ref()
+                && let Some(target) = store.resolve_ssh_target(node_id).await?
+            {
+                let result = exec_resolved_ssh_target(
+                    store,
+                    &target,
+                    command,
+                    timeout_secs,
+                    cwd,
+                    env,
+                    self.max_output_bytes,
+                )
+                .await?;
+                return Ok(moltis_tools::exec::ExecResult {
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    exit_code: result.exit_code,
+                });
+            }
+
+            if let Some(target) = node_id.strip_prefix(SSH_ID_PREFIX) {
+                let result = exec_over_ssh(
+                    target,
+                    None,
+                    None,
+                    command,
+                    timeout_secs,
+                    cwd,
+                    env,
+                    self.max_output_bytes,
+                )
+                .await?;
+                return Ok(moltis_tools::exec::ExecResult {
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    exit_code: result.exit_code,
+                });
+            }
         }
 
         let result = exec_on_node(&self.state, node_id, command, timeout_secs, cwd, env).await?;
@@ -494,7 +628,15 @@ impl moltis_tools::exec::NodeExecProvider for GatewayNodeExecProvider {
     }
 
     async fn resolve_node_id(&self, node_ref: &str) -> Option<String> {
-        if let Some(target) = &self.ssh_target {
+        if let Some(store) = self.state.credential_store.as_ref() {
+            match store.resolve_ssh_target(node_ref).await {
+                Ok(Some(target)) => return Some(target.node_id),
+                Ok(None) => {},
+                Err(error) => warn!(%error, node_ref, "failed to resolve managed ssh target"),
+            }
+        }
+
+        if let Some(target) = &self.legacy_ssh_target {
             if ssh_target_matches(node_ref, target) {
                 return Some(ssh_node_id(target));
             }
@@ -504,7 +646,23 @@ impl moltis_tools::exec::NodeExecProvider for GatewayNodeExecProvider {
     }
 
     fn has_connected_nodes(&self) -> bool {
-        self.node_count.load(Ordering::Relaxed) > 0 || self.ssh_target.is_some()
+        self.node_count.load(Ordering::Relaxed) > 0
+            || self.ssh_target_count.load(Ordering::Relaxed) > 0
+            || self.legacy_ssh_target.is_some()
+    }
+
+    async fn default_node_ref(&self) -> Option<String> {
+        if let Some(store) = self.state.credential_store.as_ref() {
+            match store.get_default_ssh_target().await {
+                Ok(Some(target)) => return Some(target.node_id),
+                Ok(None) => {},
+                Err(error) => warn!(%error, "failed to load default ssh target"),
+            }
+        }
+
+        self.legacy_ssh_target
+            .as_ref()
+            .map(|target| ssh_node_id(target))
     }
 }
 
@@ -546,12 +704,15 @@ fn node_to_info(n: &crate::nodes::NodeSession) -> moltis_tools::nodes::NodeInfo 
 /// reading from the `NodeRegistry` and session metadata in `GatewayState`.
 pub struct GatewayNodeInfoProvider {
     state: Arc<GatewayState>,
-    ssh_target: Option<String>,
+    legacy_ssh_target: Option<String>,
 }
 
 impl GatewayNodeInfoProvider {
-    pub fn new(state: Arc<GatewayState>, ssh_target: Option<String>) -> Self {
-        Self { state, ssh_target }
+    pub fn new(state: Arc<GatewayState>, legacy_ssh_target: Option<String>) -> Self {
+        Self {
+            state,
+            legacy_ssh_target,
+        }
     }
 }
 
@@ -560,14 +721,46 @@ impl moltis_tools::nodes::NodeInfoProvider for GatewayNodeInfoProvider {
     async fn list_nodes(&self) -> Vec<moltis_tools::nodes::NodeInfo> {
         let inner = self.state.inner.read().await;
         let mut nodes: Vec<_> = inner.nodes.list().iter().map(|n| node_to_info(n)).collect();
-        if let Some(target) = &self.ssh_target {
+        drop(inner);
+
+        if let Some(store) = self.state.credential_store.as_ref() {
+            match store.list_ssh_targets().await {
+                Ok(targets) => {
+                    for target in targets {
+                        nodes.push(ssh_target_node_info(&SshResolvedTarget {
+                            id: target.id,
+                            node_id: ssh_stored_node_id(target.id),
+                            label: target.label,
+                            target: target.target,
+                            port: target.port,
+                            auth_mode: target.auth_mode,
+                            key_id: target.key_id,
+                            key_name: target.key_name,
+                        }));
+                    }
+                },
+                Err(error) => warn!(%error, "failed to list managed ssh targets"),
+            }
+        }
+
+        if let Some(target) = &self.legacy_ssh_target
+            && !nodes.iter().any(|node| node.node_id == ssh_node_id(target))
+        {
             nodes.push(ssh_node_info(target));
         }
         nodes
     }
 
     async fn describe_node(&self, node_ref: &str) -> Option<moltis_tools::nodes::NodeInfo> {
-        if let Some(target) = &self.ssh_target
+        if let Some(store) = self.state.credential_store.as_ref() {
+            match store.resolve_ssh_target(node_ref).await {
+                Ok(Some(target)) => return Some(ssh_target_node_info(&target)),
+                Ok(None) => {},
+                Err(error) => warn!(%error, node_ref, "failed to describe managed ssh target"),
+            }
+        }
+
+        if let Some(target) = &self.legacy_ssh_target
             && ssh_target_matches(node_ref, target)
         {
             return Some(ssh_node_info(target));
@@ -583,19 +776,25 @@ impl moltis_tools::nodes::NodeInfoProvider for GatewayNodeInfoProvider {
         node_ref: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         let resolved = match node_ref {
-            Some(r)
-                if self
-                    .ssh_target
-                    .as_deref()
-                    .is_some_and(|target| ssh_target_matches(r, target)) =>
-            {
-                self.ssh_target.as_ref().map(|target| ssh_node_id(target))
-            },
             Some(r) => {
-                let id = resolve_node_id(&self.state, r)
-                    .await
-                    .ok_or_else(|| anyhow::anyhow!("node '{r}' not found or not connected"))?;
-                Some(id)
+                if let Some(store) = self.state.credential_store.as_ref()
+                    && let Some(target) = store.resolve_ssh_target(r).await?
+                {
+                    Some(target.node_id)
+                } else if self
+                    .legacy_ssh_target
+                    .as_deref()
+                    .is_some_and(|target| ssh_target_matches(r, target))
+                {
+                    self.legacy_ssh_target
+                        .as_ref()
+                        .map(|target| ssh_node_id(target))
+                } else {
+                    let id = resolve_node_id(&self.state, r)
+                        .await
+                        .ok_or_else(|| anyhow::anyhow!("node '{r}' not found or not connected"))?;
+                    Some(id)
+                }
             },
             None => None,
         };
@@ -614,7 +813,15 @@ impl moltis_tools::nodes::NodeInfoProvider for GatewayNodeInfoProvider {
     }
 
     async fn resolve_node_id(&self, node_ref: &str) -> Option<String> {
-        if let Some(target) = &self.ssh_target
+        if let Some(store) = self.state.credential_store.as_ref() {
+            match store.resolve_ssh_target(node_ref).await {
+                Ok(Some(target)) => return Some(target.node_id),
+                Ok(None) => {},
+                Err(error) => warn!(%error, node_ref, "failed to resolve managed ssh target"),
+            }
+        }
+
+        if let Some(target) = &self.legacy_ssh_target
             && ssh_target_matches(node_ref, target)
         {
             return Some(ssh_node_id(target));

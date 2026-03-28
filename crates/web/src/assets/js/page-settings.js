@@ -158,6 +158,11 @@ var sections = [
 		icon: html`<span class="icon icon-lock"></span>`,
 	},
 	{
+		id: "ssh",
+		label: "SSH",
+		icon: html`<span class="icon icon-link"></span>`,
+	},
+	{
 		id: "tailscale",
 		label: "Tailscale",
 		icon: html`<span class="icon icon-tailscale"></span>`,
@@ -1662,6 +1667,488 @@ function VaultSection() {
 			</div>`
 					: null
 			}
+		</div>
+	</div>`;
+}
+
+function SshSection() {
+	var [loadingSsh, setLoadingSsh] = useState(true);
+	var [keys, setKeys] = useState([]);
+	var [targets, setTargets] = useState([]);
+	var [sshMsg, setSshMsg] = useState(null);
+	var [sshErr, setSshErr] = useState(null);
+	var [busyAction, setBusyAction] = useState("");
+	var [generateName, setGenerateName] = useState("");
+	var [importName, setImportName] = useState("");
+	var [importPrivateKey, setImportPrivateKey] = useState("");
+	var [targetLabel, setTargetLabel] = useState("");
+	var [targetHost, setTargetHost] = useState("");
+	var [targetPort, setTargetPort] = useState("");
+	var [targetAuthMode, setTargetAuthMode] = useState("managed");
+	var [targetKeyId, setTargetKeyId] = useState("");
+	var [targetIsDefault, setTargetIsDefault] = useState(true);
+	var [copiedKeyId, setCopiedKeyId] = useState(null);
+	var [testResults, setTestResults] = useState({});
+	var vaultStatus = gon.get("vault_status");
+
+	function setMessage(message) {
+		setSshMsg(message);
+		setSshErr(null);
+	}
+
+	function setError(message) {
+		setSshErr(message);
+		setSshMsg(null);
+	}
+
+	function clearFlash() {
+		setSshMsg(null);
+		setSshErr(null);
+	}
+
+	function fetchSshStatus() {
+		setLoadingSsh(true);
+		rerender();
+		return fetch("/api/ssh")
+			.then(async (response) => {
+				if (!response.ok) {
+					throw new Error(localizedApiErrorMessage(await response.json(), "Failed to load SSH settings"));
+				}
+				return response.json();
+			})
+			.then((data) => {
+				setKeys(data.keys || []);
+				setTargets(data.targets || []);
+				if (!targetKeyId && (data.keys || []).length > 0) {
+					setTargetKeyId(String(data.keys[0].id));
+				}
+				setLoadingSsh(false);
+				rerender();
+			})
+			.catch((error) => {
+				setLoadingSsh(false);
+				setError(error.message);
+				rerender();
+			});
+	}
+
+	useEffect(() => {
+		fetchSshStatus();
+	}, []);
+
+	function runSshAction(actionKey, url, payload, successMessage, afterSuccess) {
+		clearFlash();
+		setBusyAction(actionKey);
+		rerender();
+		return fetch(url, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: payload ? JSON.stringify(payload) : "{}",
+		})
+			.then(async (response) => {
+				if (!response.ok) {
+					throw new Error(localizedApiErrorMessage(await response.json(), "SSH action failed"));
+				}
+				return response.json().catch(() => ({}));
+			})
+			.then(async (data) => {
+				if (afterSuccess) await afterSuccess(data);
+				setMessage(successMessage);
+				await fetchSshStatus();
+			})
+			.catch((error) => {
+				setError(error.message);
+			})
+			.finally(() => {
+				setBusyAction("");
+				rerender();
+			});
+	}
+
+	function onGenerateKey(e) {
+		e.preventDefault();
+		var name = generateName.trim();
+		if (!name) {
+			setError("Key name is required.");
+			return;
+		}
+		runSshAction("generate-key", "/api/ssh/keys/generate", { name }, "Deploy key generated.", () => {
+			setGenerateName("");
+		});
+	}
+
+	function onImportKey(e) {
+		e.preventDefault();
+		var name = importName.trim();
+		if (!name) {
+			setError("Key name is required.");
+			return;
+		}
+		if (!importPrivateKey.trim()) {
+			setError("Private key is required.");
+			return;
+		}
+		runSshAction(
+			"import-key",
+			"/api/ssh/keys/import",
+			{ name, private_key: importPrivateKey },
+			"Private key imported.",
+			() => {
+				setImportName("");
+				setImportPrivateKey("");
+			},
+		);
+	}
+
+	function onDeleteKey(id) {
+		clearFlash();
+		setBusyAction(`delete-key:${id}`);
+		rerender();
+		fetch(`/api/ssh/keys/${id}`, { method: "DELETE" })
+			.then(async (response) => {
+				if (!response.ok) {
+					throw new Error(localizedApiErrorMessage(await response.json(), "Failed to delete key"));
+				}
+				setMessage("SSH key deleted.");
+				await fetchSshStatus();
+			})
+			.catch((error) => setError(error.message))
+			.finally(() => {
+				setBusyAction("");
+				rerender();
+			});
+	}
+
+	function onCreateTarget(e) {
+		e.preventDefault();
+		var label = targetLabel.trim();
+		var target = targetHost.trim();
+		var port = targetPort.trim() ? Number.parseInt(targetPort.trim(), 10) : null;
+		var keyId = targetAuthMode === "managed" && targetKeyId ? Number.parseInt(targetKeyId, 10) : null;
+		if (!label) {
+			setError("Target label is required.");
+			return;
+		}
+		if (!target) {
+			setError("SSH target is required.");
+			return;
+		}
+		if (targetAuthMode === "managed" && !keyId) {
+			setError("Choose a managed SSH key for this target.");
+			return;
+		}
+		if (Number.isNaN(port)) {
+			setError("Port must be a valid number.");
+			return;
+		}
+		runSshAction(
+			"create-target",
+			"/api/ssh/targets",
+			{
+				label,
+				target,
+				port,
+				auth_mode: targetAuthMode,
+				key_id: keyId,
+				is_default: targetIsDefault,
+			},
+			"SSH target saved.",
+			() => {
+				setTargetLabel("");
+				setTargetHost("");
+				setTargetPort("");
+				setTargetIsDefault(targets.length === 0);
+			},
+		);
+	}
+
+	function onDeleteTarget(id) {
+		clearFlash();
+		setBusyAction(`delete-target:${id}`);
+		rerender();
+		fetch(`/api/ssh/targets/${id}`, { method: "DELETE" })
+			.then(async (response) => {
+				if (!response.ok) {
+					throw new Error(localizedApiErrorMessage(await response.json(), "Failed to delete target"));
+				}
+				setMessage("SSH target deleted.");
+				await fetchSshStatus();
+			})
+			.catch((error) => setError(error.message))
+			.finally(() => {
+				setBusyAction("");
+				rerender();
+			});
+	}
+
+	function onSetDefaultTarget(id) {
+		runSshAction(`default-target:${id}`, `/api/ssh/targets/${id}/default`, null, "Default SSH target updated.");
+	}
+
+	function onTestTarget(id) {
+		clearFlash();
+		setBusyAction(`test-target:${id}`);
+		rerender();
+		fetch(`/api/ssh/targets/${id}/test`, { method: "POST" })
+			.then(async (response) => {
+				if (!response.ok) {
+					throw new Error(localizedApiErrorMessage(await response.json(), "SSH connectivity test failed"));
+				}
+				return response.json();
+			})
+			.then((data) => {
+				setTestResults({
+					...testResults,
+					[id]: data,
+				});
+				setMessage(data.reachable ? "SSH connectivity test passed." : "SSH connectivity test failed.");
+				rerender();
+			})
+			.catch((error) => setError(error.message))
+			.finally(() => {
+				setBusyAction("");
+				rerender();
+			});
+	}
+
+	function onCopyPublicKey(entry) {
+		navigator.clipboard
+			.writeText(entry.public_key)
+			.then(() => {
+				setCopiedKeyId(entry.id);
+				setTimeout(() => {
+					setCopiedKeyId(null);
+					rerender();
+				}, 1500);
+				rerender();
+			})
+			.catch((error) => setError(error.message));
+	}
+
+	return html`<div class="flex-1 flex flex-col min-w-0 p-4 gap-4 overflow-y-auto">
+		<h2 class="text-lg font-medium text-[var(--text-strong)]">SSH</h2>
+		<div class="rounded border border-[var(--border)] bg-[var(--surface2)] p-3 max-w-[760px]">
+			<p class="text-xs text-[var(--muted)] m-0 mb-1.5 leading-relaxed">
+				Manage outbound SSH keys and named remote exec targets. Generated deploy keys use
+				<strong class="text-[var(--text)]">Ed25519</strong>, the private half stays inside Moltis,
+				and the public half is shown so you can install it in <code class="text-[var(--text)]">authorized_keys</code>.
+			</p>
+			<p class="text-xs text-[var(--muted)] m-0 leading-relaxed">
+				Current auth path:
+				<strong class="text-[var(--text)]">
+					${
+						vaultStatus === "unsealed"
+							? " vault-backed managed keys are available"
+							: vaultStatus === "sealed"
+								? " vault is locked, managed keys cannot be used until unlocked"
+								: " system OpenSSH remains available, managed keys stay plaintext until the vault is enabled"
+					}
+				</strong>
+			</p>
+		</div>
+
+		${sshMsg ? html`<div class="text-xs text-[var(--accent)]">${sshMsg}</div>` : null}
+		${sshErr ? html`<div class="text-xs text-[var(--error)]">${sshErr}</div>` : null}
+
+		<div class="grid gap-4 lg:grid-cols-2 max-w-[1100px]">
+			<div class="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
+				<h3 class="text-sm font-medium text-[var(--text-strong)] m-0 mb-2">Deploy Keys</h3>
+				<p class="text-xs text-[var(--muted)] m-0 mb-3">
+					Generate a new keypair for a host, or import an existing unencrypted private key.
+				</p>
+				<div class="mb-3 rounded border border-[var(--border)] bg-[var(--surface2)] p-2 text-xs text-[var(--muted)] leading-relaxed">
+					Recommended flow: generate one deploy key per remote host, copy the public key below, then add it to that
+					host&apos;s <code class="text-[var(--text)]">~/.ssh/authorized_keys</code>.
+				</div>
+				<form onSubmit=${onGenerateKey} class="flex flex-col gap-2 mb-4">
+					<label class="text-xs text-[var(--muted)]">Generate deploy key</label>
+					<div class="flex gap-2 flex-wrap">
+						<input
+							class="provider-key-input flex-1 min-w-[180px]"
+							type="text"
+							value=${generateName}
+							onInput=${(e) => setGenerateName(e.target.value)}
+							placeholder="production-box"
+						/>
+						<button type="submit" class="provider-btn" disabled=${busyAction === "generate-key"}>
+							${busyAction === "generate-key" ? "Generating…" : "Generate"}
+						</button>
+					</div>
+				</form>
+
+				<form onSubmit=${onImportKey} class="flex flex-col gap-2">
+					<label class="text-xs text-[var(--muted)]">Import private key</label>
+					<input
+						class="provider-key-input"
+						type="text"
+						value=${importName}
+						onInput=${(e) => setImportName(e.target.value)}
+						placeholder="existing-deploy-key"
+					/>
+					<textarea
+						class="provider-key-input min-h-[140px] font-mono text-xs"
+						value=${importPrivateKey}
+						onInput=${(e) => setImportPrivateKey(e.target.value)}
+						placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+					></textarea>
+					<button type="submit" class="provider-btn self-start" disabled=${busyAction === "import-key"}>
+						${busyAction === "import-key" ? "Importing…" : "Import Key"}
+					</button>
+				</form>
+
+				<div class="mt-4 flex flex-col gap-2">
+					${
+						loadingSsh
+							? html`<div class="text-xs text-[var(--muted)]">Loading keys…</div>`
+							: keys.length === 0
+								? html`<div class="text-xs text-[var(--muted)]">No managed SSH keys yet.</div>`
+								: keys.map(
+										(entry) => html`<div class="provider-item" key=${entry.id}>
+										<div class="flex-1 min-w-0">
+											<div class="provider-item-name">${entry.name}</div>
+											<div class="text-xs text-[var(--muted)] break-all">${entry.fingerprint}</div>
+											<div class="text-xs text-[var(--muted)] mt-1">
+												${entry.encrypted ? "Encrypted in vault" : "Stored plaintext until the vault is available"}
+												${entry.target_count > 0 ? `, used by ${entry.target_count} target${entry.target_count === 1 ? "" : "s"}` : ""}
+											</div>
+											<pre class="mt-2 whitespace-pre-wrap break-all rounded border border-[var(--border)] bg-[var(--surface2)] p-2 text-[11px] leading-relaxed text-[var(--muted)]">${entry.public_key}</pre>
+										</div>
+										<div class="flex flex-col gap-2">
+											<button type="button" class="provider-btn provider-btn-secondary" onClick=${() => onCopyPublicKey(entry)}>
+												${copiedKeyId === entry.id ? "Copied" : "Copy Public Key"}
+											</button>
+											<button
+												type="button"
+												class="provider-btn provider-btn-danger"
+												onClick=${() => onDeleteKey(entry.id)}
+												disabled=${busyAction === `delete-key:${entry.id}` || entry.target_count > 0}
+											>
+												${busyAction === `delete-key:${entry.id}` ? "Deleting…" : "Delete"}
+											</button>
+										</div>
+									</div>`,
+									)
+					}
+				</div>
+			</div>
+
+			<div class="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
+				<h3 class="text-sm font-medium text-[var(--text-strong)] m-0 mb-2">SSH Targets</h3>
+				<p class="text-xs text-[var(--muted)] m-0 mb-3">
+					Add named hosts for remote execution. Targets can use your system OpenSSH setup or one of the managed keys above.
+				</p>
+				<form onSubmit=${onCreateTarget} class="flex flex-col gap-2 mb-4">
+					<input
+						class="provider-key-input"
+						type="text"
+						value=${targetLabel}
+						onInput=${(e) => setTargetLabel(e.target.value)}
+						placeholder="prod-box"
+					/>
+					<input
+						class="provider-key-input"
+						type="text"
+						value=${targetHost}
+						onInput=${(e) => setTargetHost(e.target.value)}
+						placeholder="deploy@example.com"
+					/>
+					<div class="flex gap-2 flex-wrap">
+						<input
+							class="provider-key-input w-[120px]"
+							type="number"
+							min="1"
+							max="65535"
+							value=${targetPort}
+							onInput=${(e) => setTargetPort(e.target.value)}
+							placeholder="22"
+						/>
+						<select
+							class="provider-key-input flex-1 min-w-[180px]"
+							value=${targetAuthMode}
+							onInput=${(e) => setTargetAuthMode(e.target.value)}
+						>
+							<option value="managed">Managed key</option>
+							<option value="system">System OpenSSH</option>
+						</select>
+					</div>
+					${
+						targetAuthMode === "managed"
+							? html`<select
+								class="provider-key-input"
+								value=${targetKeyId}
+								onInput=${(e) => setTargetKeyId(e.target.value)}
+							>
+								<option value="">Choose a managed key</option>
+								${keys.map((entry) => html`<option value=${entry.id}>${entry.name}</option>`)}
+							</select>`
+							: null
+					}
+					${
+						targetAuthMode === "managed" && keys.length === 0
+							? html`<div class="text-xs text-[var(--muted)]">
+								Generate or import a deploy key first. Moltis cannot connect with a managed target until a private key exists.
+							</div>`
+							: null
+					}
+					<label class="text-xs text-[var(--muted)] flex items-center gap-2">
+						<input type="checkbox" checked=${targetIsDefault} onInput=${(e) => setTargetIsDefault(e.target.checked)} />
+						Set as default remote SSH target
+					</label>
+					<button
+						type="submit"
+						class="provider-btn self-start"
+						disabled=${busyAction === "create-target" || (targetAuthMode === "managed" && keys.length === 0)}
+					>
+						${busyAction === "create-target" ? "Saving…" : "Add Target"}
+					</button>
+				</form>
+
+				<div class="flex flex-col gap-2">
+					${
+						loadingSsh
+							? html`<div class="text-xs text-[var(--muted)]">Loading targets…</div>`
+							: targets.length === 0
+								? html`<div class="text-xs text-[var(--muted)]">No SSH targets configured.</div>`
+								: targets.map(
+										(entry) => html`<div class="provider-item" key=${entry.id}>
+										<div class="flex-1 min-w-0">
+											<div class="provider-item-name flex items-center gap-2 flex-wrap">
+												<span>${entry.label}</span>
+												${entry.is_default ? html`<span class="provider-item-badge configured">Default</span>` : null}
+												<span class="provider-item-badge muted">${entry.auth_mode === "managed" ? "Managed key" : "System SSH"}</span>
+											</div>
+											<div class="text-xs text-[var(--muted)] break-all">
+												${entry.target}${entry.port ? `:${entry.port}` : ""}
+											</div>
+											<div class="text-xs text-[var(--muted)]">
+												${entry.key_name ? `Key: ${entry.key_name}` : "Uses your local ssh config / agent"}
+											</div>
+											${
+												testResults[entry.id]
+													? html`<div class="text-xs ${testResults[entry.id].reachable ? "text-[var(--accent)]" : "text-[var(--error)]"} mt-1">
+														${testResults[entry.id].reachable ? "Reachable" : "Unreachable"}
+													</div>`
+													: null
+											}
+										</div>
+										<div class="flex flex-col gap-2">
+											<button type="button" class="provider-btn provider-btn-secondary" onClick=${() => onTestTarget(entry.id)} disabled=${busyAction === `test-target:${entry.id}`}>
+												${busyAction === `test-target:${entry.id}` ? "Testing…" : "Test"}
+											</button>
+											${
+												entry.is_default
+													? null
+													: html`<button type="button" class="provider-btn provider-btn-secondary" onClick=${() => onSetDefaultTarget(entry.id)} disabled=${busyAction === `default-target:${entry.id}`}>Make Default</button>`
+											}
+											<button type="button" class="provider-btn provider-btn-danger" onClick=${() => onDeleteTarget(entry.id)} disabled=${busyAction === `delete-target:${entry.id}`}>
+												${busyAction === `delete-target:${entry.id}` ? "Deleting…" : "Delete"}
+											</button>
+										</div>
+									</div>`,
+									)
+					}
+				</div>
+			</div>
 		</div>
 	</div>`;
 }
@@ -4029,6 +4516,7 @@ function SettingsPage() {
 					${section === "environment" ? html`<${EnvironmentSection} />` : null}
 						${section === "security" ? html`<${SecuritySection} />` : null}
 						${section === "vault" ? html`<${VaultSection} />` : null}
+						${section === "ssh" ? html`<${SshSection} />` : null}
 						${section === "tailscale" ? html`<${TailscaleSection} />` : null}
 						${
 							section === "voice"

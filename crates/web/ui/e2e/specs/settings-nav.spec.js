@@ -105,6 +105,7 @@ test.describe("Settings navigation", () => {
 		{ id: "crons", heading: "Cron Jobs" },
 		{ id: "voice", heading: "Voice" },
 		{ id: "security", heading: "Security" },
+		{ id: "ssh", heading: "SSH" },
 		{ id: "tailscale", heading: "Tailscale" },
 		{ id: "network-audit", heading: "Network Audit" },
 		{ id: "notifications", heading: "Notifications" },
@@ -375,6 +376,7 @@ test.describe("Settings navigation", () => {
 			"Authentication",
 		];
 		if (navItems.includes("Encryption")) expectedPrefix.push("Encryption");
+		if (navItems.includes("SSH")) expectedPrefix.push("SSH");
 		expectedPrefix.push("Tailscale", "Network Audit", "Sandboxes", "Channels", "Hooks", "LLMs", "MCP", "Skills");
 		const expectedSystem = ["Terminal", "Monitoring", "Logs"];
 		const expected = [...expectedPrefix];

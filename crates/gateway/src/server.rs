@@ -4,7 +4,7 @@ use std::{
     io::Write,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
 };
 
 use secrecy::{ExposeSecret, Secret};
@@ -2140,9 +2140,7 @@ pub async fn prepare_gateway_core(
             let deferred_for_build = Arc::clone(&deferred_state);
             // Mark the build as in-progress so the UI can show a banner
             // even if the WebSocket broadcast fires before the client connects.
-            sandbox_router
-                .building_flag
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            sandbox_router.building_flag.store(true, Ordering::Relaxed);
             let build_router = Arc::clone(&sandbox_router);
             tokio::spawn(async move {
                 // Broadcast build start event.
@@ -2167,9 +2165,7 @@ pub async fn prepare_gateway_core(
                             "sandbox image pre-build complete"
                         );
                         router.set_global_image(Some(result.tag.clone())).await;
-                        build_router
-                            .building_flag
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        build_router.building_flag.store(false, Ordering::Relaxed);
 
                         if let Some(state) = deferred_for_build.get() {
                             broadcast(
@@ -2192,15 +2188,11 @@ pub async fn prepare_gateway_core(
                         debug!(
                             "sandbox image pre-build: no-op (no packages or unsupported backend)"
                         );
-                        build_router
-                            .building_flag
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        build_router.building_flag.store(false, Ordering::Relaxed);
                     },
                     Err(e) => {
                         tracing::warn!("sandbox image pre-build failed: {e}");
-                        build_router
-                            .building_flag
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        build_router.building_flag.store(false, Ordering::Relaxed);
                         if let Some(state) = deferred_for_build.get() {
                             broadcast(
                                 state,
@@ -3066,6 +3058,11 @@ pub async fn prepare_gateway_core(
     );
     startup_mem_probe.checkpoint("gateway_state.created");
 
+    match credential_store.ssh_target_count().await {
+        Ok(count) => state.ssh_target_count.store(count, Ordering::Relaxed),
+        Err(error) => warn!(%error, "failed to load ssh target count"),
+    }
+
     // Store discovered hook info, disabled set, and config overrides in state for the web UI.
     {
         let mut inner = state.inner.write().await;
@@ -3255,6 +3252,7 @@ pub async fn prepare_gateway_core(
             let provider = Arc::new(crate::node_exec::GatewayNodeExecProvider::new(
                 Arc::clone(&state),
                 Arc::clone(&state.node_count),
+                Arc::clone(&state.ssh_target_count),
                 config.tools.exec.ssh_target.clone(),
                 config.tools.exec.max_output_bytes,
             ));
