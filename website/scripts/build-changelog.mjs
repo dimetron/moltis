@@ -212,14 +212,7 @@ function buildHtml(contentHtml) {
             }
         });
 
-        // GitHub stars
-        fetch('https://api.github.com/repos/moltis-org/moltis')
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
-                var el = document.getElementById('github-stars');
-                if (el && d.stargazers_count != null) el.textContent = d.stargazers_count;
-            })
-            .catch(function() {});
+        // GitHub stars are fetched by the shared nav partial script.
     </script>
 </body>
 </html>

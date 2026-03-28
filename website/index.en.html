@@ -1084,45 +1084,14 @@
         // Intercept nav tab clicks to prevent default hash jump
         document.querySelectorAll('.nav-tab').forEach(function(tab) {
             tab.addEventListener('click', function(e) {
-                if (!tab.dataset.page) return; // let non-SPA links navigate normally
+                var href = tab.getAttribute('href') || '';
+                if (!tab.dataset.page || !href.startsWith('#') && !href.startsWith('/#')) return;
                 e.preventDefault();
                 navigateTo(tab.dataset.page);
             });
         });
 
-        // ============================================================
-        // GitHub stars
-        // ============================================================
-        (function() {
-            fetch('https://api.github.com/repos/moltis-org/moltis')
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (data.stargazers_count != null) {
-                        var count = data.stargazers_count;
-                        var formatted;
-                        if (count >= 1000) {
-                            formatted = (count / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-                        } else {
-                            formatted = String(count);
-                        }
-                        var el = document.getElementById('github-stars');
-                        // Build star icon + count using safe DOM methods
-                        el.textContent = '';
-                        var star = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                        star.setAttribute('width', '12');
-                        star.setAttribute('height', '12');
-                        star.setAttribute('viewBox', '0 0 24 24');
-                        star.setAttribute('fill', 'currentColor');
-                        star.setAttribute('class', 'text-amber-400 inline');
-                        var polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-                        polygon.setAttribute('points', '12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2');
-                        star.appendChild(polygon);
-                        el.appendChild(star);
-                        el.appendChild(document.createTextNode(' ' + formatted));
-                    }
-                })
-                .catch(function() {});
-        })();
+        // GitHub stars are fetched by the shared nav partial script.
 
         // ============================================================
         // Installation tabs
