@@ -27,6 +27,7 @@ var doctorLoading = signal(false);
 var doctorError = signal("");
 var doctorTest = signal(null);
 var doctorTestLoading = signal(false);
+var doctorPinLoading = signal(false);
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -159,6 +160,78 @@ async function testActiveSshRoute() {
 		showToast(doctorError.value, "error");
 	} finally {
 		doctorTestLoading.value = false;
+	}
+}
+
+async function repairActiveRouteHostPin() {
+	var snapshot = doctor.value;
+	var activeRoute = snapshot?.active_route || null;
+	if (!activeRoute?.target_id) {
+		showToast("The active SSH route cannot be managed from the doctor panel", "error");
+		return;
+	}
+
+	doctorPinLoading.value = true;
+	doctorError.value = "";
+	try {
+		var scanResponse = await fetch("/api/ssh/host-key/scan", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				target: activeRoute.target,
+				port: activeRoute.port ?? null,
+			}),
+		});
+		var scanData = await scanResponse.json();
+		if (!scanResponse.ok) {
+			throw new Error(scanData?.error || "Failed to scan SSH host key");
+		}
+
+		var pinResponse = await fetch(`/api/ssh/targets/${activeRoute.target_id}/pin`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ known_host: scanData.known_host }),
+		});
+		var pinData = await pinResponse.json();
+		if (!pinResponse.ok) {
+			throw new Error(pinData?.error || "Failed to pin SSH host key");
+		}
+
+		await refreshDoctor();
+		showToast(activeRoute.host_pinned ? "Active SSH host pin refreshed" : "Active SSH host pinned", "success");
+	} catch (error) {
+		doctorError.value = error.message || "Failed to repair SSH host pin";
+		showToast(doctorError.value, "error");
+	} finally {
+		doctorPinLoading.value = false;
+	}
+}
+
+async function clearActiveRouteHostPin() {
+	var snapshot = doctor.value;
+	var activeRoute = snapshot?.active_route || null;
+	if (!activeRoute?.target_id) {
+		showToast("The active SSH route cannot be managed from the doctor panel", "error");
+		return;
+	}
+
+	doctorPinLoading.value = true;
+	doctorError.value = "";
+	try {
+		var response = await fetch(`/api/ssh/targets/${activeRoute.target_id}/pin`, {
+			method: "DELETE",
+		});
+		var data = await response.json();
+		if (!response.ok) {
+			throw new Error(data?.error || "Failed to clear SSH host pin");
+		}
+		await refreshDoctor();
+		showToast("Active SSH host pin cleared", "success");
+	} catch (error) {
+		doctorError.value = error.message || "Failed to clear SSH host pin";
+		showToast(doctorError.value, "error");
+	} finally {
+		doctorPinLoading.value = false;
 	}
 }
 
@@ -376,6 +449,7 @@ function RemoteExecStatusCard() {
 	var execHost = snapshot?.exec_host || "local";
 	var activeRoute = snapshot?.active_route || null;
 	var checkList = snapshot?.checks || [];
+	var canManageActivePin = Boolean(activeRoute?.target_id);
 
 	return html`<div class="rounded-lg border border-[var(--border)] bg-[var(--surface-alt)] p-4 flex flex-col gap-3">
 		<div class="flex items-start justify-between gap-3 flex-wrap">
@@ -386,6 +460,19 @@ function RemoteExecStatusCard() {
 					<strong class="text-[var(--text-strong)]"> ${execHost}</strong>
 					${activeRoute ? html` using <code>${activeRoute.label}</code>` : null}.
 				</p>
+				${
+					activeRoute
+						? html`<div class="text-xs text-[var(--text-muted)] mt-1">
+							${
+								activeRoute.host_pinned
+									? "Active route is pinned to a stored host key."
+									: canManageActivePin
+										? "Active route is currently inheriting global known_hosts policy."
+										: "Active route is not directly manageable here because it comes from legacy config."
+							}
+						</div>`
+						: null
+				}
 			</div>
 			<div class="flex gap-2 flex-wrap">
 				<button
@@ -403,6 +490,28 @@ function RemoteExecStatusCard() {
 							disabled=${doctorTestLoading.value}
 						>
 							${doctorTestLoading.value ? "Testing..." : "Test Active SSH Route"}
+						</button>`
+						: null
+				}
+				${
+					execHost === "ssh" && activeRoute && canManageActivePin
+						? html`<button
+							class="provider-btn provider-btn-secondary provider-btn-sm"
+							onClick=${repairActiveRouteHostPin}
+							disabled=${doctorPinLoading.value}
+						>
+							${doctorPinLoading.value ? "Scanning..." : activeRoute.host_pinned ? "Refresh Active Pin" : "Pin Active Route"}
+						</button>`
+						: null
+				}
+				${
+					execHost === "ssh" && activeRoute?.host_pinned && canManageActivePin
+						? html`<button
+							class="provider-btn provider-btn-secondary provider-btn-sm"
+							onClick=${clearActiveRouteHostPin}
+							disabled=${doctorPinLoading.value}
+						>
+							${doctorPinLoading.value ? "Clearing..." : "Clear Active Pin"}
 						</button>`
 						: null
 				}

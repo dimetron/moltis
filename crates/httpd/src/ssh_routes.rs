@@ -105,8 +105,13 @@ pub struct SshDoctorCheck {
 
 #[derive(Clone, Serialize)]
 pub struct SshDoctorRoute {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_id: Option<i64>,
     label: String,
     target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    host_pinned: bool,
     auth_mode: &'static str,
     source: &'static str,
 }
@@ -546,8 +551,11 @@ pub async fn ssh_doctor(
         default_target
             .as_ref()
             .map(|target| SshDoctorRoute {
+                target_id: Some(target.id),
                 label: format!("SSH: {}", target.label),
                 target: target.target.clone(),
+                port: target.port,
+                host_pinned: target.known_host.is_some(),
                 auth_mode: match target.auth_mode {
                     SshAuthMode::Managed => "managed",
                     SshAuthMode::System => "system",
@@ -558,8 +566,11 @@ pub async fn ssh_doctor(
                 legacy_target
                     .as_ref()
                     .map(|target: &String| SshDoctorRoute {
+                        target_id: None,
                         label: format!("SSH: {target}"),
                         target: target.clone(),
+                        port: None,
+                        host_pinned: false,
                         auth_mode: "system",
                         source: "legacy_config",
                     })

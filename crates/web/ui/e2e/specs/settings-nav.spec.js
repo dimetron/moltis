@@ -155,6 +155,80 @@ test.describe("Settings navigation", () => {
 		expect(pageErrors).toEqual([]);
 	});
 
+	test("nodes doctor can repair and clear the active SSH host pin", async ({ page }) => {
+		const pageErrors = watchPageErrors(page);
+		let hostPinned = false;
+
+		await page.route("**/api/ssh/doctor", async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: JSON.stringify({
+					ok: true,
+					exec_host: "ssh",
+					ssh_binary_available: true,
+					ssh_binary_version: "OpenSSH_9.9",
+					paired_node_count: 0,
+					managed_key_count: 1,
+					encrypted_key_count: 1,
+					managed_target_count: 1,
+					pinned_target_count: hostPinned ? 1 : 0,
+					configured_node: null,
+					legacy_target: null,
+					active_route: {
+						target_id: 42,
+						label: "SSH: prod-box",
+						target: "deploy@example.com",
+						port: 2222,
+						host_pinned: hostPinned,
+						auth_mode: "managed",
+						source: "managed",
+					},
+					checks: [],
+				}),
+			});
+		});
+		await page.route("**/api/ssh/host-key/scan", async (route) => {
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: JSON.stringify({
+					ok: true,
+					host: "example.com",
+					port: 2222,
+					known_host: "|1|salt|hash ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey",
+				}),
+			});
+		});
+		await page.route("**/api/ssh/targets/42/pin", async (route) => {
+			if (route.request().method() === "POST") {
+				hostPinned = true;
+			}
+			if (route.request().method() === "DELETE") {
+				hostPinned = false;
+			}
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: JSON.stringify({ ok: true, id: 42 }),
+			});
+		});
+
+		await navigateAndWait(page, "/settings/nodes");
+
+		await expect(page.getByRole("button", { name: "Pin Active Route", exact: true })).toBeVisible();
+		await page.getByRole("button", { name: "Pin Active Route", exact: true }).click();
+		await expect(page.getByRole("button", { name: "Refresh Active Pin", exact: true })).toBeVisible();
+		await expect(page.getByRole("button", { name: "Clear Active Pin", exact: true })).toBeVisible();
+		await expect(page.getByText("stored host key", { exact: false })).toBeVisible();
+
+		await page.getByRole("button", { name: "Clear Active Pin", exact: true }).click();
+		await expect(page.getByRole("button", { name: "Pin Active Route", exact: true })).toBeVisible();
+		await expect(page.getByText("inheriting global known_hosts policy", { exact: false })).toBeVisible();
+
+		expect(pageErrors).toEqual([]);
+	});
+
 	test("identity name fields autosave on blur", async ({ page }) => {
 		const pageErrors = watchPageErrors(page);
 		await navigateAndWait(page, "/settings/identity");

@@ -166,6 +166,8 @@ lightweight doctor:
   active target or a managed key that cannot be decrypted because the vault is
   locked
 - warns when the active managed SSH route is not host-pinned
+- lets you pin, refresh, or clear the active managed route directly from the
+  doctor panel
 - lets you test the active SSH route without leaving the page
 
 The CLI now mirrors the basic setup view with `moltis doctor`, including:
