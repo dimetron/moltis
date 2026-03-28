@@ -342,9 +342,9 @@ install_deb() {
         *) error "Unsupported architecture for .deb: $arch" ;;
     esac
 
-    # Package naming: moltis_VERSION-REV_ARCH.deb
+    # Package naming: moltis_VERSION_ARCH.deb (cargo-deb with --deb-version, no revision)
     tag=$(release_tag "$version")
-    deb_file="moltis_${version}-1_${deb_arch}.deb"
+    deb_file="moltis_${version}_${deb_arch}.deb"
     url="https://github.com/${GITHUB_REPO}/releases/download/${tag}/${deb_file}"
 
     info "Downloading ${deb_file}..."
