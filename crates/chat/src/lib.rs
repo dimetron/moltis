@@ -5157,6 +5157,7 @@ struct ChannelReplyTargetKey {
     account_id: String,
     chat_id: String,
     message_id: Option<String>,
+    thread_id: Option<String>,
 }
 
 impl From<&moltis_channels::ChannelReplyTarget> for ChannelReplyTargetKey {
@@ -5166,6 +5167,7 @@ impl From<&moltis_channels::ChannelReplyTarget> for ChannelReplyTargetKey {
             account_id: target.account_id.clone(),
             chat_id: target.chat_id.clone(),
             message_id: target.message_id.clone(),
+            thread_id: target.thread_id.clone(),
         }
     }
 }
@@ -5234,16 +5236,16 @@ impl ChannelStreamDispatcher {
             let outbound = Arc::clone(&self.outbound);
             let completed = Arc::clone(&self.completed);
             let account_id = target.account_id.clone();
-            let chat_id = target.chat_id.clone();
+            let to = target.outbound_to().into_owned();
             let reply_to = target.message_id.clone();
             let key_for_insert = key.clone();
             let account_for_log = account_id.clone();
-            let chat_for_log = chat_id.clone();
+            let chat_for_log = to.clone();
 
             self.workers.push(ChannelStreamWorker { sender: tx });
             self.tasks.push(tokio::spawn(async move {
                 match outbound
-                    .send_stream(&account_id, &chat_id, reply_to.as_deref(), rx)
+                    .send_stream(&account_id, &to, reply_to.as_deref(), rx)
                     .await
                 {
                     Ok(()) => {
@@ -7554,9 +7556,10 @@ async fn send_channel_logbook_follow_up_to_targets(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let html = html.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             if let Err(e) = outbound
-                .send_html(&target.account_id, &target.chat_id, &html, None)
+                .send_html(&target.account_id, &to, &html, None)
                 .await
             {
                 warn!(
@@ -7619,10 +7622,11 @@ async fn send_retry_status_to_channels(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let message = message.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let reply_to = target.message_id.as_deref();
             if let Err(e) = outbound
-                .send_text_silent(&target.account_id, &target.chat_id, &message, reply_to)
+                .send_text_silent(&target.account_id, &to, &message, reply_to)
                 .await
             {
                 warn!(
@@ -7661,17 +7665,18 @@ async fn deliver_channel_error(state: &Arc<dyn ChatRuntime>, session_key: &str, 
         let outbound = Arc::clone(&outbound);
         let error_text = error_text.clone();
         let logbook_html = logbook_html.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let reply_to = target.message_id.as_deref();
             let send_result = if logbook_html.is_empty() {
                 outbound
-                    .send_text(&target.account_id, &target.chat_id, &error_text, reply_to)
+                    .send_text(&target.account_id, &to, &error_text, reply_to)
                     .await
             } else {
                 outbound
                     .send_text_with_suffix(
                         &target.account_id,
-                        &target.chat_id,
+                        &to,
                         &error_text,
                         &logbook_html,
                         reply_to,
@@ -7719,6 +7724,7 @@ async fn deliver_channel_replies_to_targets(
         // caption/follow-up and only send the TTS voice audio.
         let text_already_streamed =
             streamed_target_keys.contains(&ChannelReplyTargetKey::from(&target));
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let tts_payload = match desired_reply_medium {
                 ReplyMedium::Voice => build_tts_payload(&state, &session_key, &target, &text).await,
@@ -7733,7 +7739,7 @@ async fn deliver_channel_replies_to_targets(
                         if text_already_streamed {
                             // Text was already streamed — send voice audio only.
                             if let Err(e) = outbound
-                                .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                                .send_media(&target.account_id, &to, &payload, reply_to)
                                 .await
                             {
                                 warn!(
@@ -7745,12 +7751,7 @@ async fn deliver_channel_replies_to_targets(
                             // Send logbook as a follow-up if present.
                             if !logbook_html.is_empty()
                                 && let Err(e) = outbound
-                                    .send_html(
-                                        &target.account_id,
-                                        &target.chat_id,
-                                        &logbook_html,
-                                        None,
-                                    )
+                                    .send_html(&target.account_id, &to, &logbook_html, None)
                                     .await
                             {
                                 warn!(
@@ -7765,7 +7766,7 @@ async fn deliver_channel_replies_to_targets(
                             // Short transcript fits as a caption on the voice message.
                             payload.text = transcript;
                             if let Err(e) = outbound
-                                .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                                .send_media(&target.account_id, &to, &payload, reply_to)
                                 .await
                             {
                                 warn!(
@@ -7777,12 +7778,7 @@ async fn deliver_channel_replies_to_targets(
                             // Send logbook as a follow-up if present.
                             if !logbook_html.is_empty()
                                 && let Err(e) = outbound
-                                    .send_html(
-                                        &target.account_id,
-                                        &target.chat_id,
-                                        &logbook_html,
-                                        None,
-                                    )
+                                    .send_html(&target.account_id, &to, &logbook_html, None)
                                     .await
                             {
                                 warn!(
@@ -7795,7 +7791,7 @@ async fn deliver_channel_replies_to_targets(
                             // Transcript too long for a caption — send voice
                             // without caption, then the full text as a follow-up.
                             if let Err(e) = outbound
-                                .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                                .send_media(&target.account_id, &to, &payload, reply_to)
                                 .await
                             {
                                 warn!(
@@ -7806,18 +7802,13 @@ async fn deliver_channel_replies_to_targets(
                             }
                             let text_result = if logbook_html.is_empty() {
                                 outbound
-                                    .send_text(
-                                        &target.account_id,
-                                        &target.chat_id,
-                                        &transcript,
-                                        None,
-                                    )
+                                    .send_text(&target.account_id, &to, &transcript, None)
                                     .await
                             } else {
                                 outbound
                                     .send_text_with_suffix(
                                         &target.account_id,
-                                        &target.chat_id,
+                                        &to,
                                         &transcript,
                                         &logbook_html,
                                         None,
@@ -7838,7 +7829,7 @@ async fn deliver_channel_replies_to_targets(
                         // only send logbook follow-up if present.
                         if !logbook_html.is_empty()
                             && let Err(e) = outbound
-                                .send_html(&target.account_id, &target.chat_id, &logbook_html, None)
+                                .send_html(&target.account_id, &to, &logbook_html, None)
                                 .await
                         {
                             warn!(
@@ -7851,13 +7842,13 @@ async fn deliver_channel_replies_to_targets(
                     None => {
                         let result = if logbook_html.is_empty() {
                             outbound
-                                .send_text(&target.account_id, &target.chat_id, &text, reply_to)
+                                .send_text(&target.account_id, &to, &text, reply_to)
                                 .await
                         } else {
                             outbound
                                 .send_text_with_suffix(
                                     &target.account_id,
-                                    &target.chat_id,
+                                    &to,
                                     &text,
                                     &logbook_html,
                                     reply_to,
@@ -7876,7 +7867,7 @@ async fn deliver_channel_replies_to_targets(
                 _ => match tts_payload {
                     Some(payload) => {
                         if let Err(e) = outbound
-                            .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                            .send_media(&target.account_id, &to, &payload, reply_to)
                             .await
                         {
                             warn!(
@@ -7891,7 +7882,7 @@ async fn deliver_channel_replies_to_targets(
                         // only send logbook follow-up if present.
                         if !logbook_html.is_empty()
                             && let Err(e) = outbound
-                                .send_html(&target.account_id, &target.chat_id, &logbook_html, None)
+                                .send_html(&target.account_id, &to, &logbook_html, None)
                                 .await
                         {
                             warn!(
@@ -7904,13 +7895,13 @@ async fn deliver_channel_replies_to_targets(
                     None => {
                         let result = if logbook_html.is_empty() {
                             outbound
-                                .send_text(&target.account_id, &target.chat_id, &text, reply_to)
+                                .send_text(&target.account_id, &to, &text, reply_to)
                                 .await
                         } else {
                             outbound
                                 .send_text_with_suffix(
                                     &target.account_id,
-                                    &target.chat_id,
+                                    &to,
                                     &text,
                                     &logbook_html,
                                     reply_to,
@@ -8318,11 +8309,12 @@ async fn send_screenshot_to_channels(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let payload = payload.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             {
                 let reply_to = target.message_id.as_deref();
                 if let Err(e) = outbound
-                    .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                    .send_media(&target.account_id, &to, &payload, reply_to)
                     .await
                 {
                     warn!(
@@ -8333,7 +8325,7 @@ async fn send_screenshot_to_channels(
                     // Notify the user of the error
                     let error_msg = format!("⚠️ Failed to send screenshot: {e}");
                     let _ = outbound
-                        .send_text(&target.account_id, &target.chat_id, &error_msg, reply_to)
+                        .send_text(&target.account_id, &to, &error_msg, reply_to)
                         .await;
                 } else {
                     debug!(
@@ -8374,10 +8366,11 @@ async fn dispatch_document_to_channels(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let payload = payload.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let reply_to = target.message_id.as_deref();
             if let Err(e) = outbound
-                .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                .send_media(&target.account_id, &to, &payload, reply_to)
                 .await
             {
                 warn!(
@@ -8387,7 +8380,7 @@ async fn dispatch_document_to_channels(
                 );
                 let error_msg = format!("\u{26a0}\u{fe0f} Failed to send document: {e}");
                 let _ = outbound
-                    .send_text(&target.account_id, &target.chat_id, &error_msg, reply_to)
+                    .send_text(&target.account_id, &to, &error_msg, reply_to)
                     .await;
             } else {
                 debug!(
@@ -8511,12 +8504,13 @@ async fn send_location_to_channels(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let title_ref = title_owned.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let reply_to = target.message_id.as_deref();
             if let Err(e) = outbound
                 .send_location(
                     &target.account_id,
-                    &target.chat_id,
+                    &to,
                     latitude,
                     longitude,
                     title_ref.as_deref(),
