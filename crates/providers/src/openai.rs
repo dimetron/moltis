@@ -337,7 +337,7 @@ fn models_endpoint(base_url: &str) -> String {
 ///
 /// The Responses API includes `output_index` on most events. Falls back to
 /// `item_index` / `index` for robustness, then to `fallback`.
-async fn fetch_models_from_api(
+pub async fn fetch_models_from_api(
     api_key: secrecy::Secret<String>,
     base_url: String,
 ) -> anyhow::Result<Vec<super::DiscoveredModel>> {
@@ -524,7 +524,9 @@ impl OpenAiProvider {
     }
 
     fn requires_top_level_system_prompt(&self) -> bool {
-        false
+        self.model.starts_with("MiniMax-")
+            || self.provider_name.eq_ignore_ascii_case("minimax")
+            || self.base_url.to_ascii_lowercase().contains("minimax")
     }
 
     fn prepare_request_messages(
@@ -1766,7 +1768,7 @@ mod tests {
     }
 
     #[test]
-    fn minimax_serialization_keeps_system_messages_in_history() {
+    fn minimax_serialization_extracts_system_messages() {
         let provider = OpenAiProvider::new_with_name(
             Secret::new("test-key".to_string()),
             "MiniMax-M2.1".to_string(),
@@ -1779,11 +1781,9 @@ mod tests {
             ChatMessage::system("sys b"),
         ]);
         let (history, system_prompt) = provider.prepare_request_messages(serialized);
-        assert_eq!(history.len(), 3);
-        assert_eq!(history[0]["role"], "system");
-        assert_eq!(history[1]["role"], "user");
-        assert_eq!(history[2]["role"], "system");
-        assert!(system_prompt.is_none());
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["role"], "user");
+        assert_eq!(system_prompt.as_deref(), Some("sys a\n\nsys b"));
     }
 
     #[test]
@@ -1881,7 +1881,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn minimax_stream_request_keeps_system_message_in_messages_array() {
+    async fn minimax_stream_request_uses_top_level_system_prompt() {
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n\
                    data: [DONE]\n\n";
         let (base_url, captured) = start_sse_mock(sse.to_string()).await;
@@ -1902,15 +1902,69 @@ mod tests {
         let reqs = captured.lock().unwrap();
         assert_eq!(reqs.len(), 1);
         let body = reqs[0].body.as_ref().expect("request should have a body");
-        assert!(body.get("system").is_none());
+        assert_eq!(body["system"], "stay deterministic");
 
         let history = body["messages"]
             .as_array()
             .expect("messages should be an array");
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0]["role"], "system");
-        assert_eq!(history[0]["content"], "stay deterministic");
-        assert_eq!(history[1]["role"], "user");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["role"], "user");
+        assert!(
+            history
+                .iter()
+                .all(|entry| entry["role"].as_str() != Some("system")),
+            "system messages must not appear in the messages array for MiniMax"
+        );
+    }
+
+    /// Regression test for <https://github.com/moltis-org/moltis/issues/508>:
+    /// MiniMax API returns error 2013 ("invalid chat setting") when
+    /// `role: "system"` messages appear in the messages array. System messages
+    /// must be extracted into the top-level `"system"` field instead.
+    #[tokio::test]
+    async fn minimax_stream_never_sends_system_role_in_messages_regression_508() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n\
+                   data: [DONE]\n\n";
+        let (base_url, captured) = start_sse_mock(sse.to_string()).await;
+
+        // Detect MiniMax via provider name (as configured by users)
+        let provider = OpenAiProvider::new_with_name(
+            Secret::new("test-key".to_string()),
+            "MiniMax-M2.7".to_string(),
+            base_url,
+            "minimax".to_string(),
+        );
+        assert!(
+            provider.requires_top_level_system_prompt(),
+            "minimax provider must use top-level system prompt"
+        );
+
+        let messages = vec![
+            ChatMessage::system("you are a helpful assistant"),
+            ChatMessage::user("hello"),
+            ChatMessage::system("extra context"),
+        ];
+
+        let mut stream = provider.stream_with_tools(messages, vec![]);
+        while stream.next().await.is_some() {}
+
+        let reqs = captured.lock().unwrap();
+        let body = reqs[0].body.as_ref().expect("request should have a body");
+
+        // System prompt must be in the top-level field, not in messages
+        assert_eq!(
+            body["system"],
+            "you are a helpful assistant\n\nextra context"
+        );
+
+        let history = body["messages"]
+            .as_array()
+            .expect("messages should be an array");
+        assert_eq!(history.len(), 1, "only the user message should remain");
+        assert!(
+            history.iter().all(|m| m["role"].as_str() != Some("system")),
+            "no system role messages should be in the array (MiniMax error 2013)"
+        );
     }
 
     #[tokio::test]

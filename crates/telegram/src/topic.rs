@@ -18,6 +18,7 @@ pub(crate) fn parse_chat_target(to: &str) -> Result<(ChatId, Option<ThreadId>), 
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;
