@@ -1698,6 +1698,11 @@ async fn sealed_vault_allows_bootstrap() {
     let _rk = vault.initialize("testpass123").await.unwrap();
     vault.seal().await;
 
+    let blocked_resp = reqwest::get(format!("http://{addr}/api/skills"))
+        .await
+        .unwrap();
+    assert_eq!(blocked_resp.status(), 423);
+
     let resp = reqwest::get(format!(
         "http://{addr}/api/bootstrap?include_sessions=false"
     ))
@@ -1722,6 +1727,11 @@ async fn sealed_vault_allows_session_history() {
         .unwrap();
     let _rk = vault.initialize("testpass123").await.unwrap();
     vault.seal().await;
+
+    let blocked_resp = reqwest::get(format!("http://{addr}/api/skills"))
+        .await
+        .unwrap();
+    assert_eq!(blocked_resp.status(), 423);
 
     let resp = reqwest::get(format!("http://{addr}/api/sessions/main/history"))
         .await

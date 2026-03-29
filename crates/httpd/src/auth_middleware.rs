@@ -247,7 +247,9 @@ fn is_onboarding_bypass_path(path: &str) -> bool {
 ///
 /// Session history/media and bootstrap payloads are not currently encrypted by
 /// the vault, so they remain accessible while sealed. This keeps the UI honest
-/// about what is actually protected today.
+/// about what is actually protected today. If per-session encryption lands,
+/// narrow the `/api/sessions/*` exemption to only the remaining unencrypted
+/// sub-paths instead of blindly allowing the whole tree.
 #[cfg(feature = "vault")]
 fn is_vault_guard_exempt_path(path: &str) -> bool {
     path.starts_with("/api/auth/")
