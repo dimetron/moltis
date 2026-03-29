@@ -253,7 +253,7 @@ async fn exec_over_ssh(
         ssh.arg("-o").arg("StrictHostKeyChecking=yes");
         ssh.arg("-o").arg(format!(
             "UserKnownHostsFile={}",
-            known_hosts_file.path().display()
+            ssh_config_quote_path(known_hosts_file.path())
         ));
         ssh.arg("-o").arg("GlobalKnownHostsFile=/dev/null");
     }
@@ -535,6 +535,11 @@ fn shell_single_quote(value: &str) -> String {
 
 fn ssh_destination_args(target: &str, remote_command: String) -> [String; 3] {
     ["--".to_string(), target.to_string(), remote_command]
+}
+
+fn ssh_config_quote_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Filter environment variables to the safe allowlist.
@@ -992,5 +997,14 @@ mod tests {
             "deploy@example.com".to_string(),
             "sh -lc 'true'".to_string()
         ]);
+    }
+
+    #[test]
+    fn ssh_config_quote_path_wraps_and_escapes() {
+        let path = Path::new("/tmp/ssh known_hosts\"file");
+        assert_eq!(
+            ssh_config_quote_path(path),
+            "\"/tmp/ssh known_hosts\\\"file\""
+        );
     }
 }
