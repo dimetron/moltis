@@ -854,6 +854,15 @@ pub fn known_providers() -> Vec<KnownProvider> {
             key_optional: false,
         },
         KnownProvider {
+            name: "zai-code",
+            display_name: "Z.AI (Coding Plan)",
+            auth_type: AuthType::ApiKey,
+            env_key: Some("Z_CODE_API_KEY"),
+            default_base_url: Some("https://api.z.ai/api/coding/paas/v4"),
+            requires_model: false,
+            key_optional: false,
+        },
+        KnownProvider {
             name: "venice",
             display_name: "Venice",
             auth_type: AuthType::ApiKey,
@@ -4033,6 +4042,7 @@ mod tests {
         assert!(names.contains(&"minimax"), "missing minimax");
         assert!(names.contains(&"moonshot"), "missing moonshot");
         assert!(names.contains(&"zai"), "missing zai");
+        assert!(names.contains(&"zai-code"), "missing zai-code");
         assert!(names.contains(&"kimi-code"), "missing kimi-code");
         assert!(names.contains(&"venice"), "missing venice");
         assert!(names.contains(&"ollama"), "missing ollama");
@@ -4060,6 +4070,7 @@ mod tests {
             ("minimax", "MINIMAX_API_KEY"),
             ("moonshot", "MOONSHOT_API_KEY"),
             ("zai", "Z_API_KEY"),
+            ("zai-code", "Z_CODE_API_KEY"),
             ("kimi-code", "KIMI_API_KEY"),
             ("venice", "VENICE_API_KEY"),
             ("ollama", "OLLAMA_API_KEY"),
@@ -4091,6 +4102,7 @@ mod tests {
             "minimax",
             "moonshot",
             "zai",
+            "zai-code",
             "kimi-code",
             "venice",
             "ollama",
@@ -4128,6 +4140,7 @@ mod tests {
             "minimax",
             "moonshot",
             "zai",
+            "zai-code",
             "kimi-code",
             "venice",
             "ollama",

@@ -96,7 +96,7 @@ offered = ["local-llm", "github-copilot", "openai-codex", "openai", "anthropic",
 # All available providers:
 #   "anthropic", "openai", "gemini", "groq", "xai", "deepseek",
 #   "fireworks", "mistral", "openrouter", "cerebras", "minimax",
-#   "moonshot", "zai", "venice", "ollama", "local-llm", "openai-codex",
+#   "moonshot", "zai", "zai-code", "venice", "ollama", "local-llm", "openai-codex",
 #   "github-copilot", "kimi-code"
 
 # ── Anthropic (Claude) ────────────────────────────────────────

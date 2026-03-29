@@ -1013,6 +1013,16 @@ const OPENAI_COMPAT_PROVIDERS: &[OpenAiCompatDef] = &[
         local_only: false,
     },
     OpenAiCompatDef {
+        config_name: "zai-code",
+        env_key: "Z_CODE_API_KEY",
+        env_base_url_key: "Z_CODE_BASE_URL",
+        default_base_url: "https://api.z.ai/api/coding/paas/v4",
+        models: ZAI_MODELS,
+        supports_model_discovery: true,
+        requires_api_key: true,
+        local_only: false,
+    },
+    OpenAiCompatDef {
         config_name: "venice",
         env_key: "VENICE_API_KEY",
         env_base_url_key: "VENICE_BASE_URL",
@@ -3089,6 +3099,20 @@ mod tests {
 
         let reg = ProviderRegistry::from_env_with_config(&config);
         assert!(reg.list_models().iter().any(|m| m.provider == "zai"));
+    }
+
+    #[test]
+    fn zai_code_registers_with_api_key() {
+        let mut config = ProvidersConfig::default();
+        config
+            .providers
+            .insert("zai-code".into(), moltis_config::schema::ProviderEntry {
+                api_key: Some(secrecy::Secret::new("sk-test-zai-code".into())),
+                ..Default::default()
+            });
+
+        let reg = ProviderRegistry::from_env_with_config(&config);
+        assert!(reg.list_models().iter().any(|m| m.provider == "zai-code"));
     }
 
     #[test]
