@@ -177,6 +177,44 @@ test.describe("Settings navigation", () => {
 		expect(pageErrors).toEqual([]);
 	});
 
+	test("nodes join URL uses browser location port, not gon port", async ({ page }) => {
+		const pageErrors = watchPageErrors(page);
+		await navigateAndWait(page, "/settings/nodes");
+		await waitForWsConnected(page);
+
+		// Override gon port to a different value to simulate a reverse proxy
+		// scenario where the internal bind port differs from the browser port.
+		await page.evaluate(() => {
+			const appScript = document.querySelector('script[type="module"][src*="js/app.js"]');
+			if (!appScript) throw new Error("app.js module not found");
+			const appUrl = new URL(appScript.src, window.location.origin);
+			const prefix = appUrl.href.slice(0, appUrl.href.length - "js/app.js".length);
+			return import(`${prefix}js/gon.js`).then((gon) => {
+				gon.set("port", 99999);
+			});
+		});
+
+		// Re-navigate so ConnectNodeForm re-renders with the spoofed gon port.
+		await navigateAndWait(page, "/settings/nodes");
+
+		const endpointCode = page.locator("code").filter({ hasText: /^wss?:\/\// });
+		await expect(endpointCode).toBeVisible();
+		const wsUrl = (await endpointCode.textContent()).trim();
+
+		// The URL must use the browser's port (location.port), NOT the spoofed
+		// gon port 99999 — proving we are immune to the behind-proxy bug (#426).
+		expect(wsUrl).not.toContain(":99999");
+		const browserPort = new URL(page.url()).port;
+		if (browserPort) {
+			expect(wsUrl).toContain(`:${browserPort}/ws`);
+		} else {
+			// Running on a default port; the URL should have no port component.
+			expect(wsUrl).toMatch(/^wss?:\/\/[^:]+\/ws$/);
+		}
+
+		expect(pageErrors).toEqual([]);
+	});
+
 	test("nodes doctor can repair and clear the active SSH host pin", async ({ page }) => {
 		const pageErrors = watchPageErrors(page);
 		let hostPinned = false;

@@ -56,8 +56,8 @@ function nodeDisplayLabel(node) {
 
 function gatewayWsUrl() {
 	var proto = location.protocol === "https:" ? "wss:" : "ws:";
-	var port = gon.get("port") || location.port;
 	var host = location.hostname;
+	var port = location.port;
 	return `${proto}//${host}${port ? `:${port}` : ""}/ws`;
 }
 
