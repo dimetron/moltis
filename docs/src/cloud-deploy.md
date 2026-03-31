@@ -63,6 +63,7 @@ Notes:
 
 - The tunnel is feature-gated. Standard CLI builds include it by default, but
   custom minimal builds can opt out of the `ngrok` feature.
+- In the web UI, configure Tailscale and ngrok from Settings -> Remote Access.
 - ngrok forwards into a loopback-only internal HTTP listener. Your normal
   local TLS and bind settings remain unchanged.
 - Keep authentication enabled. Exposing ngrok with `auth.disabled = true`

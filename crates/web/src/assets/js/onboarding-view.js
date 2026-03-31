@@ -3244,7 +3244,7 @@ function SummaryStep({ onBack, onFinish }) {
 						data.tailscale?.tailscale_up
 							? html`Connected`
 							: data.tailscale?.installed
-								? html`Installed but not connected — <a href="/settings/tailscale" class="text-[var(--accent)] underline">Configure in Settings</a>`
+								? html`Installed but not connected — <a href="/settings/remote-access" class="text-[var(--accent)] underline">Configure in Settings</a>`
 								: html`Not installed. Install Tailscale for secure remote access.`
 					}
 				<//>`

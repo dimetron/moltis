@@ -6360,6 +6360,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
+ "tokio-util",
  "toml",
  "tower-http",
  "tracing",
