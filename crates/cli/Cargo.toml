@@ -114,6 +114,7 @@ default = [
   "local-llm-metal",
   "mdns",
   "metrics",
+  "ngrok",
   "openclaw-import",
   "prometheus",
   "push-notifications",
@@ -155,6 +156,7 @@ local-llm-metal    = ["local-llm", "moltis-gateway/local-llm-metal"]
 local-llm-vulkan   = ["local-llm", "moltis-gateway/local-llm-vulkan"]
 mdns               = ["moltis-gateway/mdns"]
 metrics            = ["moltis-httpd/metrics", "moltis-web?/metrics"]
+ngrok              = ["moltis-httpd/ngrok"]
 openclaw-import    = ["dep:moltis-openclaw-import", "moltis-gateway/openclaw-import"]
 prometheus         = ["moltis-httpd/prometheus"]
 push-notifications = ["moltis-httpd/push-notifications", "moltis-web?/push-notifications"]

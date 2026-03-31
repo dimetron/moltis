@@ -31,6 +31,9 @@ use {moltis_channels::ChannelPlugin, moltis_protocol::TICK_INTERVAL_MS};
 
 use moltis_sessions::session_events::{SessionEvent, SessionEventBus};
 
+#[cfg(feature = "ngrok")]
+use secrecy::ExposeSecret;
+
 use moltis_gateway::{
     auth,
     auth_webauthn::SharedWebAuthnRegistry,
@@ -1607,6 +1610,73 @@ pub use prepare_gateway_embedded as prepare_httpd_embedded;
 /// Re-export `openclaw_detected_for_ui` from gateway for web-UI templates.
 pub use moltis_gateway::server::openclaw_detected_for_ui;
 
+#[cfg(feature = "ngrok")]
+async fn start_ngrok_tunnel(
+    app: Router,
+    gateway: Arc<GatewayState>,
+    webauthn_registry: Option<SharedWebAuthnRegistry>,
+    ngrok_config: &moltis_config::NgrokConfig,
+) -> anyhow::Result<(String, Option<String>)> {
+    use ngrok::prelude::{EndpointInfo, ForwarderBuilder};
+
+    let internal_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let internal_addr = internal_listener.local_addr()?;
+    let internal_app = app.clone();
+    tokio::spawn(async move {
+        if let Err(error) = axum::serve(
+            internal_listener,
+            internal_app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
+            warn!(%error, "ngrok loopback forward server exited");
+        }
+    });
+
+    let forward_to = format!("http://{internal_addr}")
+        .parse()
+        .map_err(|error| anyhow::anyhow!("invalid ngrok forward target: {error}"))?;
+
+    let mut session_builder = ngrok::Session::builder();
+    if let Some(authtoken) = ngrok_config.authtoken.as_ref() {
+        session_builder.authtoken(authtoken.expose_secret());
+    } else {
+        session_builder.authtoken_from_env();
+    }
+    let session = session_builder.connect().await?;
+
+    let mut endpoint = session.http_endpoint();
+    if let Some(domain) = ngrok_config.domain.as_deref() {
+        endpoint.domain(domain);
+    }
+    endpoint.forwards_to(format!("moltis://{internal_addr}"));
+    let mut forwarder = endpoint.listen_and_forward(forward_to).await?;
+    let public_url = forwarder.url().to_string();
+    let public_host = url::Url::parse(&public_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string));
+
+    let passkey_warning = moltis_gateway::server::sync_runtime_webauthn_host_and_notice(
+        &gateway,
+        webauthn_registry.as_ref(),
+        public_host.as_deref(),
+        Some(&public_url),
+        "ngrok tunnel",
+    )
+    .await;
+    let forwarder_url = public_url.clone();
+
+    tokio::spawn(async move {
+        match forwarder.join().await {
+            Ok(Ok(())) => info!(url = %forwarder_url, "ngrok tunnel stopped"),
+            Ok(Err(error)) => warn!(url = %forwarder_url, %error, "ngrok tunnel forwarder exited"),
+            Err(error) => warn!(url = %forwarder_url, %error, "ngrok tunnel task join failed"),
+        }
+    });
+
+    Ok((public_url, passkey_warning))
+}
+
 /// Start the gateway HTTP + WebSocket server.
 ///
 /// Thin wrapper around [`prepare_gateway`] that adds the startup banner,
@@ -1687,6 +1757,22 @@ pub async fn start_gateway(
     let app = prepared.app;
     let browser_for_warmup = Arc::clone(&banner.browser_for_lifecycle);
     let browser_tool_for_warmup = banner.browser_tool_for_warmup.clone();
+    #[cfg(feature = "ngrok")]
+    let ngrok_status = if config.ngrok.enabled {
+        Some(
+            start_ngrok_tunnel(
+                app.clone(),
+                Arc::clone(state),
+                banner.webauthn_registry.clone(),
+                &config.ngrok,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    #[cfg(not(feature = "ngrok"))]
+    let ngrok_status: Option<(String, Option<String>)> = None;
 
     #[cfg(feature = "tls")]
     if tls_active {
@@ -1806,6 +1892,16 @@ pub async fn start_gateway(
         format!("openclaw: {}", banner.openclaw_status),
     ];
     lines.extend(startup_passkey_origin_lines(&passkey_origins));
+    if let Some((public_url, passkey_warning)) = ngrok_status.as_ref() {
+        lines.push(format!("ngrok: {public_url}"));
+        if let Some(passkey_warning) = passkey_warning {
+            lines.push(format!("ngrok note: {passkey_warning}"));
+        }
+    } else if config.ngrok.enabled {
+        lines.push(
+            "ngrok: enabled in config but this build does not include the ngrok feature".into(),
+        );
+    }
     // Hint about Apple Container on macOS when using Docker or Podman.
     #[cfg(target_os = "macos")]
     if banner.sandbox_backend_name == "docker" || banner.sandbox_backend_name == "podman" {
