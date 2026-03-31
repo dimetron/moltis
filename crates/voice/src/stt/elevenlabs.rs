@@ -12,6 +12,7 @@ use {
     },
     secrecy::{ExposeSecret, Secret},
     serde::Deserialize,
+    tracing::{debug, info, warn},
 };
 
 use {
@@ -124,6 +125,17 @@ impl SttProvider for ElevenLabsStt {
 
     async fn transcribe(&self, request: TranscribeRequest) -> Result<Transcript> {
         let api_key = self.get_api_key()?;
+        let audio_len = request.audio.len();
+        let language_hint = request.language.as_deref().or(self.language.as_deref());
+
+        info!(
+            model = %self.model,
+            format = ?request.format,
+            audio_bytes = audio_len,
+            language = language_hint.unwrap_or("auto"),
+            has_prompt = request.prompt.is_some(),
+            "ElevenLabs STT transcribe request"
+        );
 
         // Build multipart form
         let file_ext = Self::file_extension(request.format);
@@ -138,7 +150,7 @@ impl SttProvider for ElevenLabsStt {
 
         // Use request language if provided, otherwise fall back to configured language
         if let Some(language) = request.language.as_ref().or(self.language.as_ref()) {
-            form = form.text("language", language.clone());
+            form = form.text("language_code", language.clone());
         }
 
         // Add context text for terminology hints (Scribe v2 feature)
@@ -147,6 +159,7 @@ impl SttProvider for ElevenLabsStt {
         }
 
         let url = format!("{}/speech-to-text", self.base_url);
+        debug!(url = %url, "ElevenLabs STT API call");
 
         let response = self
             .client
@@ -157,9 +170,18 @@ impl SttProvider for ElevenLabsStt {
             .await
             .context("failed to send ElevenLabs transcription request")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("failed to read ElevenLabs response body")?;
+
+        if !status.is_success() {
+            warn!(
+                status = %status,
+                body = %body,
+                "ElevenLabs STT API error"
+            );
             return Err(anyhow!(
                 "ElevenLabs transcription request failed: {} - {}",
                 status,
@@ -167,9 +189,15 @@ impl SttProvider for ElevenLabsStt {
             ));
         }
 
-        let el_response: ElevenLabsResponse = response
-            .json()
-            .await
+        let el_response: ElevenLabsResponse = serde_json::from_str(&body)
+            .map_err(|error| {
+                warn!(
+                    error = %error,
+                    body = %body,
+                    "failed to parse ElevenLabs STT response body"
+                );
+                error
+            })
             .context("failed to parse ElevenLabs response")?;
 
         Ok(Transcript {
@@ -387,6 +415,13 @@ mod tests {
             let result = provider.transcribe(request).await.unwrap();
             assert_eq!(result.text, "Bonjour");
             assert_eq!(result.language, Some("fr".into()));
+
+            let requests = mock_server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+
+            let body = String::from_utf8_lossy(&requests[0].body);
+            assert!(body.contains("name=\"language_code\""));
+            assert!(!body.contains("name=\"language\"\r\n\r\nfr"));
         }
 
         #[tokio::test]
