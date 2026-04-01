@@ -185,8 +185,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn save_config_returns_error_when_ngrok_controller_is_unavailable() {
-        let tempdir = tempfile::tempdir().unwrap();
+    async fn save_config_returns_error_when_ngrok_controller_is_unavailable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempfile::tempdir()?;
         moltis_config::set_config_dir(tempdir.path().to_path_buf());
         moltis_config::set_data_dir(tempdir.path().to_path_buf());
 
@@ -223,12 +224,14 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        let payload: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(payload["code"], NGROK_APPLY_FAILED);
         assert_eq!(
             payload["error"],
             "ngrok controller is not available in this build context"
         );
+
+        Ok(())
     }
 }

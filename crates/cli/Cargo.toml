@@ -101,8 +101,10 @@ tikv-jemallocator = { optional = true, workspace = true }
 tempfile = { workspace = true }
 
 [features]
-agent = ["moltis-gateway/agent", "moltis-web?/agent"]
+agent  = ["moltis-gateway/agent", "moltis-web?/agent"]
 caldav = ["moltis-gateway/caldav"]
+# User-facing integrations stay default-on in the CLI crate per workspace policy,
+# even when the underlying implementation remains feature-gated in lower crates.
 default = [
   "agent",
   "caldav",

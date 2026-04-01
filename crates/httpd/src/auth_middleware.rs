@@ -410,14 +410,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_disabled_still_requires_setup_for_remote_requests() {
-        let pool = SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("in-memory sqlite pool");
+    async fn auth_disabled_still_requires_setup_for_remote_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
         let auth_config = moltis_config::AuthConfig { disabled: true };
-        let store = CredentialStore::with_config(pool, &auth_config)
-            .await
-            .expect("credential store");
+        let store = CredentialStore::with_config(pool, &auth_config).await?;
         let headers = HeaderMap::new();
 
         assert!(matches!(
@@ -430,5 +427,7 @@ mod tests {
             check_auth(&store, &headers, false).await,
             AuthResult::SetupRequired
         ));
+
+        Ok(())
     }
 }

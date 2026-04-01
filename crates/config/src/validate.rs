@@ -1191,7 +1191,7 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
             severity: Severity::Warning,
             category: "security",
             path: "ngrok.enabled".into(),
-            message: "ngrok is enabled while auth.disabled is true; this exposes an unauthenticated public endpoint".into(),
+            message: "ngrok is enabled while auth.disabled is true; remote visitors will be blocked with setup required until authentication is configured".into(),
         });
     }
 
@@ -1848,6 +1848,10 @@ disabled = true
         assert!(
             warning.is_some(),
             "expected security warning for ngrok.enabled with auth.disabled"
+        );
+        assert_eq!(
+            warning.unwrap().message,
+            "ngrok is enabled while auth.disabled is true; remote visitors will be blocked with setup required until authentication is configured"
         );
     }
 
