@@ -1121,6 +1121,23 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
                 message: "mcp server request_timeout_secs must be at least 1".into(),
             });
         }
+
+        if !server.transport.is_empty()
+            && !matches!(
+                server.transport.as_str(),
+                "stdio" | "sse" | "streamable-http" | "streamable_http" | "http"
+            )
+        {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Warning,
+                category: "invalid-value",
+                path: format!("mcp.servers.{name}.transport"),
+                message: format!(
+                    "unknown transport type \"{}\"; expected \"stdio\", \"sse\", or \"streamable-http\"",
+                    server.transport
+                ),
+            });
+        }
     }
 
     // Firecrawl as search provider requires an API key.  We cannot check

@@ -483,9 +483,9 @@ request_timeout_secs = 30        # Default timeout for MCP requests
 # env = {{ KEY = "value" }}         # Environment variables for the process
 # enabled = true                  # Whether this server is enabled
 # request_timeout_secs = 90       # Optional timeout override for this server
-# transport = "stdio"             # Transport: "stdio" (default) or "sse"
-# url = "http://..."              # URL for SSE transport
-# headers = {{ Authorization = "Bearer ${{TOKEN}}" }}  # Optional HTTP headers for SSE transport
+# transport = "stdio"             # Transport: "stdio" (default), "sse", or "streamable-http"
+# url = "http://..."              # URL for SSE/Streamable HTTP transport
+# headers = {{ Authorization = "Bearer ${{TOKEN}}" }}  # Optional HTTP headers for remote transport
 
 # Example: Filesystem access
 # [mcp.servers.filesystem]
@@ -505,6 +505,13 @@ request_timeout_secs = 30        # Default timeout for MCP requests
 # transport = "sse"
 # url = "http://localhost:8080/mcp?api_key=$REMOTE_MCP_KEY"
 # headers = {{ "x-api-key" = "${{REMOTE_MCP_KEY}}" }}
+# enabled = true
+
+# Example: Streamable HTTP server
+# [mcp.servers.remote-http]
+# transport = "streamable-http"
+# url = "https://mcp.example.com/mcp"
+# headers = {{ Authorization = "Bearer ${{API_KEY}}" }}
 # enabled = true
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -82,7 +82,7 @@ impl McpClient {
         Ok(client)
     }
 
-    /// Connect to a remote MCP server over HTTP/SSE.
+    /// Connect to a remote MCP server over HTTP/SSE or Streamable HTTP.
     pub async fn connect_sse(
         server_name: &str,
         remote: &ResolvedRemoteConfig,
@@ -91,7 +91,7 @@ impl McpClient {
         info!(
             server = %server_name,
             url = %remote.display_url(),
-            "connecting to MCP server via SSE"
+            "connecting to remote MCP server"
         );
         let transport = SseTransport::new_with_remote(remote.clone(), request_timeout)?;
 
@@ -104,13 +104,13 @@ impl McpClient {
         };
 
         if let Err(e) = client.initialize().await {
-            warn!(server = %server_name, error = %e, "MCP SSE initialize handshake failed");
+            warn!(server = %server_name, error = %e, "remote MCP initialize handshake failed");
             return Err(e);
         }
         Ok(client)
     }
 
-    /// Connect to a remote MCP server over HTTP/SSE with an OAuth auth provider.
+    /// Connect to a remote MCP server over HTTP/SSE or Streamable HTTP with an OAuth auth provider.
     pub async fn connect_sse_with_auth(
         server_name: &str,
         remote: &ResolvedRemoteConfig,
@@ -120,7 +120,7 @@ impl McpClient {
         info!(
             server = %server_name,
             url = %remote.display_url(),
-            "connecting to MCP server via SSE (with auth)"
+            "connecting to remote MCP server (with auth)"
         );
         let transport = SseTransport::with_auth_remote(remote.clone(), auth, request_timeout)?;
 

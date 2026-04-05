@@ -1452,6 +1452,9 @@ pub async fn prepare_gateway_core(
             if !merged.servers.contains_key(name) {
                 let transport = match entry.transport.as_str() {
                     "sse" => moltis_mcp::registry::TransportType::Sse,
+                    "streamable_http" | "streamable-http" | "http" => {
+                        moltis_mcp::registry::TransportType::StreamableHttp
+                    },
                     _ => moltis_mcp::registry::TransportType::Stdio,
                 };
                 let oauth = entry
