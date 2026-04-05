@@ -31,6 +31,7 @@ pub mod local_llm;
 
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     pin::Pin,
     sync::Arc,
 };
@@ -368,6 +369,158 @@ fn start_ollama_discovery(
         let _ = tx.send(result);
     });
     rx
+}
+
+/// Asynchronously fetch models from all discoverable provider APIs.
+///
+/// Runs `/v1/models` (or Ollama `/api/tags`) for each eligible provider
+/// concurrently and returns the results keyed by provider config name.
+/// Failures for individual providers are logged and skipped.
+///
+/// `provider_filter` narrows the scope to a single provider name (case-
+/// insensitive comparison against config name or alias).
+pub async fn fetch_discoverable_models(
+    config: &ProvidersConfig,
+    env_overrides: &HashMap<String, String>,
+    provider_filter: Option<&str>,
+) -> HashMap<String, Vec<DiscoveredModel>> {
+    use futures::future::join_all;
+
+    let filter_matches =
+        |name: &str| -> bool { provider_filter.is_none_or(|f| f.eq_ignore_ascii_case(name)) };
+
+    let mut tasks: Vec<(
+        String,
+        Pin<Box<dyn Future<Output = anyhow::Result<Vec<DiscoveredModel>>> + Send>>,
+    )> = Vec::new();
+
+    // ── OpenAI builtin ────────────────────────────────────────────────
+    if filter_matches("openai")
+        && config.is_enabled("openai")
+        && !cfg!(test)
+        && let Some(key) = resolve_api_key(config, "openai", "OPENAI_API_KEY", env_overrides)
+        && should_fetch_models(config, "openai")
+    {
+        let base_url = config
+            .get("openai")
+            .and_then(|e| e.base_url.clone())
+            .or_else(|| env_value(env_overrides, "OPENAI_BASE_URL"))
+            .unwrap_or_else(|| "https://api.openai.com/v1".into());
+        tasks.push((
+            "openai".into(),
+            Box::pin(openai::fetch_models_from_api(key, base_url)),
+        ));
+    }
+
+    // ── OpenAI-compatible providers ───────────────────────────────────
+    for def in OPENAI_COMPAT_PROVIDERS {
+        if !filter_matches(def.config_name) || !config.is_enabled(def.config_name) {
+            continue;
+        }
+
+        let key = resolve_api_key(config, def.config_name, def.env_key, env_overrides);
+        let key = if !def.requires_api_key {
+            key.or_else(|| Some(secrecy::Secret::new(def.config_name.into())))
+        } else if def.config_name == "gemini" {
+            key.or_else(|| env_value(env_overrides, "GOOGLE_API_KEY").map(secrecy::Secret::new))
+        } else {
+            key
+        };
+        let Some(key) = key else {
+            continue;
+        };
+
+        let base_url = config
+            .get(def.config_name)
+            .and_then(|e| e.base_url.clone())
+            .or_else(|| env_value(env_overrides, def.env_base_url_key))
+            .unwrap_or_else(|| def.default_base_url.into());
+
+        if def.local_only {
+            let has_explicit_entry = config.get(def.config_name).is_some();
+            let has_env_base_url = env_value(env_overrides, def.env_base_url_key).is_some();
+            let preferred = configured_models_for_provider(config, def.config_name);
+            if !has_explicit_entry && !has_env_base_url && preferred.is_empty() {
+                continue;
+            }
+        }
+
+        let user_opted_in = config
+            .get(def.config_name)
+            .is_some_and(|entry| entry.fetch_models);
+        let try_fetch = def.supports_model_discovery || user_opted_in;
+        if !try_fetch || !should_fetch_models(config, def.config_name) {
+            continue;
+        }
+
+        if def.config_name == "ollama" {
+            tasks.push((
+                def.config_name.into(),
+                Box::pin(discover_ollama_models_from_api(base_url)),
+            ));
+        } else {
+            tasks.push((
+                def.config_name.into(),
+                Box::pin(openai::fetch_models_from_api(key, base_url)),
+            ));
+        }
+    }
+
+    // ── Custom providers ──────────────────────────────────────────────
+    for (name, entry) in &config.providers {
+        if !name.starts_with("custom-") || !entry.enabled {
+            continue;
+        }
+        if !filter_matches(name) {
+            continue;
+        }
+        let Some(api_key) = entry
+            .api_key
+            .as_ref()
+            .filter(|k| !k.expose_secret().is_empty())
+        else {
+            continue;
+        };
+        let Some(base_url) = entry.base_url.as_ref().filter(|u| !u.trim().is_empty()) else {
+            continue;
+        };
+        if should_fetch_models(config, name) {
+            tasks.push((
+                name.clone(),
+                Box::pin(openai::fetch_models_from_api(
+                    api_key.clone(),
+                    base_url.clone(),
+                )),
+            ));
+        }
+    }
+
+    // Run all fetches concurrently.
+    let names: Vec<String> = tasks.iter().map(|(n, _)| n.clone()).collect();
+    let futures: Vec<_> = tasks.into_iter().map(|(_, fut)| fut).collect();
+    let results = join_all(futures).await;
+
+    let mut map = HashMap::new();
+    for (name, result) in names.into_iter().zip(results) {
+        match result {
+            Ok(models) => {
+                tracing::debug!(
+                    provider = %name,
+                    model_count = models.len(),
+                    "runtime model rediscovery succeeded"
+                );
+                map.insert(name, models);
+            },
+            Err(err) => {
+                tracing::debug!(
+                    provider = %name,
+                    error = %err,
+                    "runtime model rediscovery failed"
+                );
+            },
+        }
+    }
+    map
 }
 
 // ── Ollama model info probing ────────────────────────────────────────────────
@@ -1686,6 +1839,224 @@ impl ProviderRegistry {
             }
         }
         results
+    }
+
+    /// Asynchronously re-discover models from provider APIs (`/v1/models`)
+    /// and register any newly found models that are not already present.
+    ///
+    /// This is the runtime counterpart of the startup discovery pipeline
+    /// (`fire_discoveries` → `collect_discoveries` → registration). Unlike
+    /// startup, HTTP fetches run fully async and only new models are added.
+    ///
+    /// Returns the number of newly registered models.
+    pub async fn rediscover_models(
+        &mut self,
+        config: &ProvidersConfig,
+        env_overrides: &HashMap<String, String>,
+        provider_filter: Option<&str>,
+    ) -> usize {
+        let fetched = fetch_discoverable_models(config, env_overrides, provider_filter).await;
+        self.register_rediscovered_models(config, env_overrides, &fetched)
+    }
+
+    /// Register models from a rediscovery fetch, skipping those already present.
+    /// Returns the number of newly registered models.
+    pub fn register_rediscovered_models(
+        &mut self,
+        config: &ProvidersConfig,
+        env_overrides: &HashMap<String, String>,
+        fetched: &HashMap<String, Vec<DiscoveredModel>>,
+    ) -> usize {
+        let mut added = 0usize;
+
+        // ── OpenAI builtin ────────────────────────────────────────────
+        if let Some(models) = fetched.get("openai")
+            && config.is_enabled("openai")
+            && let Some(key) = resolve_api_key(config, "openai", "OPENAI_API_KEY", env_overrides)
+        {
+            let base_url = config
+                .get("openai")
+                .and_then(|e| e.base_url.clone())
+                .or_else(|| env_value(env_overrides, "OPENAI_BASE_URL"))
+                .unwrap_or_else(|| "https://api.openai.com/v1".into());
+            let alias = config.get("openai").and_then(|e| e.alias.clone());
+            let provider_label = alias.unwrap_or_else(|| "openai".into());
+            let stream_transport = config
+                .get("openai")
+                .map(|entry| entry.stream_transport)
+                .unwrap_or(ProviderStreamTransport::Sse);
+
+            for model in models {
+                if self.has_provider_model(&provider_label, &model.id) {
+                    continue;
+                }
+                let provider = Arc::new(
+                    openai::OpenAiProvider::new_with_name(
+                        key.clone(),
+                        model.id.clone(),
+                        base_url.clone(),
+                        provider_label.clone(),
+                    )
+                    .with_stream_transport(stream_transport),
+                );
+                self.register(
+                    ModelInfo {
+                        id: model.id.clone(),
+                        provider: provider_label.clone(),
+                        display_name: model.display_name.clone(),
+                        created_at: model.created_at,
+                        recommended: model.recommended,
+                    },
+                    provider,
+                );
+                added += 1;
+            }
+        }
+
+        // ── OpenAI-compatible providers ───────────────────────────────
+        for def in OPENAI_COMPAT_PROVIDERS {
+            let Some(models) = fetched.get(def.config_name) else {
+                continue;
+            };
+            if !config.is_enabled(def.config_name) {
+                continue;
+            }
+
+            let key = resolve_api_key(config, def.config_name, def.env_key, env_overrides);
+            let key = if !def.requires_api_key {
+                key.or_else(|| Some(secrecy::Secret::new(def.config_name.into())))
+            } else if def.config_name == "gemini" {
+                key.or_else(|| env_value(env_overrides, "GOOGLE_API_KEY").map(secrecy::Secret::new))
+            } else {
+                key
+            };
+            let Some(key) = key else {
+                continue;
+            };
+
+            let base_url = config
+                .get(def.config_name)
+                .and_then(|e| e.base_url.clone())
+                .or_else(|| env_value(env_overrides, def.env_base_url_key))
+                .unwrap_or_else(|| def.default_base_url.into());
+            let alias = config.get(def.config_name).and_then(|e| e.alias.clone());
+            let provider_label = alias.unwrap_or_else(|| def.config_name.into());
+            let stream_transport = config
+                .get(def.config_name)
+                .map(|entry| entry.stream_transport)
+                .unwrap_or(ProviderStreamTransport::Sse);
+            let cache_retention = config
+                .get(def.config_name)
+                .map(|e| e.cache_retention)
+                .unwrap_or(moltis_config::CacheRetention::Short);
+            let config_tool_mode = config
+                .get(def.config_name)
+                .map(|e| e.tool_mode)
+                .unwrap_or_default();
+            let is_ollama = def.config_name == "ollama";
+
+            // Batch-probe Ollama models for tool mode metadata.
+            let ollama_probes: HashMap<String, OllamaShowResponse> = if is_ollama {
+                probe_ollama_models_batch(&base_url, models)
+            } else {
+                HashMap::new()
+            };
+
+            for model in models {
+                if self.has_provider_model(&provider_label, &model.id) {
+                    continue;
+                }
+                let effective_tool_mode = if is_ollama {
+                    resolve_ollama_tool_mode(
+                        config_tool_mode,
+                        &model.id,
+                        ollama_probes.get(&model.id),
+                    )
+                } else if !matches!(config_tool_mode, moltis_config::ToolMode::Auto) {
+                    config_tool_mode
+                } else {
+                    moltis_config::ToolMode::Auto
+                };
+
+                let mut oai = openai::OpenAiProvider::new_with_name(
+                    key.clone(),
+                    model.id.clone(),
+                    base_url.clone(),
+                    provider_label.clone(),
+                )
+                .with_stream_transport(stream_transport)
+                .with_cache_retention(cache_retention);
+
+                if !matches!(effective_tool_mode, moltis_config::ToolMode::Auto) {
+                    oai = oai.with_tool_mode(effective_tool_mode);
+                }
+
+                self.register(
+                    ModelInfo {
+                        id: model.id.clone(),
+                        provider: provider_label.clone(),
+                        display_name: model.display_name.clone(),
+                        created_at: model.created_at,
+                        recommended: model.recommended,
+                    },
+                    Arc::new(oai),
+                );
+                added += 1;
+            }
+        }
+
+        // ── Custom providers ──────────────────────────────────────────
+        for (name, entry) in &config.providers {
+            if !name.starts_with("custom-") || !entry.enabled {
+                continue;
+            }
+            let Some(models) = fetched.get(name.as_str()) else {
+                continue;
+            };
+            let Some(api_key) = entry
+                .api_key
+                .as_ref()
+                .filter(|k| !k.expose_secret().is_empty())
+            else {
+                continue;
+            };
+            let Some(base_url) = entry.base_url.as_ref().filter(|u| !u.trim().is_empty()) else {
+                continue;
+            };
+            let custom_tool_mode = entry.tool_mode;
+
+            for model in models {
+                if self.has_provider_model(name, &model.id) {
+                    continue;
+                }
+                let mut oai = openai::OpenAiProvider::new_with_name(
+                    api_key.clone(),
+                    model.id.clone(),
+                    base_url.clone(),
+                    name.clone(),
+                )
+                .with_stream_transport(entry.stream_transport);
+                if !matches!(entry.wire_api, moltis_config::WireApi::ChatCompletions) {
+                    oai = oai.with_wire_api(entry.wire_api);
+                }
+                if !matches!(custom_tool_mode, moltis_config::ToolMode::Auto) {
+                    oai = oai.with_tool_mode(custom_tool_mode);
+                }
+                self.register(
+                    ModelInfo {
+                        id: model.id.clone(),
+                        provider: name.clone(),
+                        display_name: model.display_name.clone(),
+                        created_at: model.created_at,
+                        recommended: model.recommended,
+                    },
+                    Arc::new(oai),
+                );
+                added += 1;
+            }
+        }
+
+        added
     }
 
     #[cfg(feature = "provider-genai")]
@@ -4296,5 +4667,76 @@ mod tests {
         assert!(!supports_reasoning_for_model("gpt-4o"));
         assert!(!supports_reasoning_for_model("gpt-5.2"));
         assert!(!supports_reasoning_for_model("claude-3-haiku-20240307"));
+    }
+
+    #[test]
+    fn register_rediscovered_models_adds_new_models() {
+        let mut config = ProvidersConfig::default();
+        config.providers.insert(
+            "custom-test".to_string(),
+            moltis_config::schema::ProviderEntry {
+                enabled: true,
+                api_key: Some(secrecy::Secret::new("test-key".into())),
+                base_url: Some("http://localhost:1234/v1".into()),
+                fetch_models: true,
+                ..Default::default()
+            },
+        );
+
+        let env_overrides = HashMap::new();
+
+        // Start with an empty registry (static catalogs only, no live fetch).
+        let mut reg = ProviderRegistry::from_config_with_static_catalogs(&config, &env_overrides);
+        let before = reg.list_models().len();
+
+        // Simulate a rediscovery that found two new models.
+        let mut fetched = HashMap::new();
+        fetched.insert("custom-test".to_string(), vec![
+            DiscoveredModel::new("new-model-a", "New Model A"),
+            DiscoveredModel::new("new-model-b", "New Model B"),
+        ]);
+
+        let added = reg.register_rediscovered_models(&config, &env_overrides, &fetched);
+        assert_eq!(added, 2, "should register 2 new models");
+        assert_eq!(
+            reg.list_models().len(),
+            before + 2,
+            "model list should grow by 2"
+        );
+
+        // Running again with the same models should not add duplicates.
+        let added_again = reg.register_rediscovered_models(&config, &env_overrides, &fetched);
+        assert_eq!(added_again, 0, "should not re-register existing models");
+    }
+
+    #[test]
+    fn register_rediscovered_models_skips_existing() {
+        let mut config = ProvidersConfig::default();
+        config.providers.insert(
+            "custom-test".to_string(),
+            moltis_config::schema::ProviderEntry {
+                enabled: true,
+                api_key: Some(secrecy::Secret::new("test-key".into())),
+                base_url: Some("http://localhost:1234/v1".into()),
+                fetch_models: true,
+                models: vec!["existing-model".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let env_overrides = HashMap::new();
+        let mut reg = ProviderRegistry::from_config_with_static_catalogs(&config, &env_overrides);
+        let before = reg.list_models().len();
+
+        // Rediscovery returns both the existing model and a new one.
+        let mut fetched = HashMap::new();
+        fetched.insert("custom-test".to_string(), vec![
+            DiscoveredModel::new("existing-model", "Existing Model"),
+            DiscoveredModel::new("brand-new-model", "Brand New Model"),
+        ]);
+
+        let added = reg.register_rediscovered_models(&config, &env_overrides, &fetched);
+        assert_eq!(added, 1, "should only add the brand-new model");
+        assert_eq!(reg.list_models().len(), before + 1);
     }
 }

@@ -1420,7 +1420,8 @@ pub async fn prepare_gateway_core(
             Arc::clone(&model_store),
             config.chat.priority_models.clone(),
         )
-        .with_show_legacy_models(config.providers.show_legacy_models),
+        .with_show_legacy_models(config.providers.show_legacy_models)
+        .with_discovery_config(effective_providers.clone(), config_env_overrides.clone()),
     );
     services = services
         .with_model(Arc::clone(&live_model_service) as Arc<dyn crate::services::ModelService>);

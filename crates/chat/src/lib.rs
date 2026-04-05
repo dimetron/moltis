@@ -1496,6 +1496,10 @@ pub struct LiveModelService {
     detect_gate: Arc<Semaphore>,
     priority_models: Arc<RwLock<Vec<String>>>,
     show_legacy_models: bool,
+    /// Provider config for runtime model rediscovery.
+    providers_config: moltis_config::schema::ProvidersConfig,
+    /// Environment variable overrides for runtime model rediscovery.
+    env_overrides: HashMap<String, String>,
 }
 
 impl LiveModelService {
@@ -1511,11 +1515,25 @@ impl LiveModelService {
             detect_gate: Arc::new(Semaphore::new(1)),
             priority_models: Arc::new(RwLock::new(priority_models)),
             show_legacy_models: false,
+            providers_config: moltis_config::schema::ProvidersConfig::default(),
+            env_overrides: HashMap::new(),
         }
     }
 
     pub fn with_show_legacy_models(mut self, show: bool) -> Self {
         self.show_legacy_models = show;
+        self
+    }
+
+    /// Set the provider config and env overrides used for runtime model
+    /// rediscovery when "Detect All Models" is triggered.
+    pub fn with_discovery_config(
+        mut self,
+        providers_config: moltis_config::schema::ProvidersConfig,
+        env_overrides: HashMap<String, String>,
+    ) -> Self {
+        self.providers_config = providers_config;
+        self.env_overrides = env_overrides;
         self
     }
 
@@ -1919,6 +1937,35 @@ impl ModelService for LiveModelService {
         };
 
         let state = self.state.get().cloned();
+
+        // Phase 0: re-discover models from provider APIs so that newly
+        // added models (e.g. a model loaded into llama.cpp after startup)
+        // are found before probing.
+        //
+        // HTTP fetches run outside the registry lock; only the fast
+        // in-memory registration takes the write lock.
+        {
+            let fetched = moltis_providers::fetch_discoverable_models(
+                &self.providers_config,
+                &self.env_overrides,
+                provider_filter.as_deref(),
+            )
+            .await;
+            if !fetched.is_empty() {
+                let mut reg = self.providers.write().await;
+                let new_count = reg.register_rediscovered_models(
+                    &self.providers_config,
+                    &self.env_overrides,
+                    &fetched,
+                );
+                if new_count > 0 {
+                    tracing::info!(
+                        new_models = new_count,
+                        "rediscovery registered new models before probe"
+                    );
+                }
+            }
+        }
 
         // Phase 1: notify clients to refresh and show the full current model list first.
         if let Some(state) = state.as_ref() {
