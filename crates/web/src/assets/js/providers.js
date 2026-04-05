@@ -676,16 +676,27 @@ function showModelSelector(provider, models, keyVal, endpointVal, modelVal, skip
 	var selectAllBtn = document.createElement("button");
 	selectAllBtn.className = "provider-btn provider-btn-secondary text-xs mb-2 shrink-0";
 
+	function getVisibleModels() {
+		var currentFilter = searchInp?.value.trim() || null;
+		if (!currentFilter) return models;
+		var q = currentFilter.toLowerCase();
+		return models.filter((mdl) => mdl.displayName.toLowerCase().includes(q) || mdl.id.toLowerCase().includes(q));
+	}
+
 	function updateSelectAllLabel() {
-		selectAllBtn.textContent = selectedIds.size === models.length ? "Deselect All" : "Select All";
+		var visible = getVisibleModels();
+		var allVisible = visible.length > 0 && visible.every((mdl) => selectedIds.has(mdl.id));
+		selectAllBtn.textContent = allVisible ? "Deselect All" : "Select All";
 	}
 	updateSelectAllLabel();
 
 	selectAllBtn.addEventListener("click", () => {
-		if (selectedIds.size === models.length) {
-			selectedIds.clear();
+		var visible = getVisibleModels();
+		var allVisible = visible.every((mdl) => selectedIds.has(mdl.id));
+		if (allVisible) {
+			for (var mdl of visible) selectedIds.delete(mdl.id);
 		} else {
-			for (var mdl of models) selectedIds.add(mdl.id);
+			for (var mdl of visible) selectedIds.add(mdl.id);
 		}
 		updateSelectAllLabel();
 		updateStatus();
@@ -890,7 +901,14 @@ function saveAndFinishProvider(provider, keyVal, endpointVal, modelVal, selected
 				}
 
 				// Save all selected models at once
-				await sendRpc("providers.save_models", { provider: savedProviderName, models: modelsForSave });
+				var saveModelsRes = await sendRpc("providers.save_models", {
+					provider: savedProviderName,
+					models: modelsForSave,
+				});
+				if (!saveModelsRes?.ok) {
+					showError(saveModelsRes?.error?.message || "Failed to save models.");
+					return;
+				}
 				if (modelServiceUnavailable) {
 					console.warn("models.test unavailable in provider settings, saved selected models without probe");
 				}
