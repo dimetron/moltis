@@ -1104,8 +1104,8 @@ test.describe("Settings navigation", () => {
 
 		await page.getByRole("button", { name: "Senders", exact: true }).click();
 		await expect(page.getByText("Alice", { exact: true })).toBeVisible();
-		await expect(page.getByText("@penso:matrix.org", { exact: true })).toBeVisible();
-		await expect(page.getByText("@@penso:matrix.org", { exact: true })).toHaveCount(0);
+		await expect(page.getByText("@alice:matrix.org", { exact: true })).toBeVisible();
+		await expect(page.getByText("@@alice:matrix.org", { exact: true })).toHaveCount(0);
 		await expect(page.getByText("954502", { exact: true })).toBeVisible();
 		await expect(page.getByText("Approve", { exact: true })).toBeVisible();
 		expect(pageErrors).toEqual([]);
