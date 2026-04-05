@@ -347,6 +347,32 @@ pub async fn handle_room_message(
             _ => {},
         }
 
+        if matches!(kind, ChannelMessageKind::Text)
+            && let Some((latitude, longitude)) = extract_location_coordinates(&body)
+        {
+            let resolved = sink
+                .resolve_pending_location(&reply_to, latitude, longitude)
+                .await;
+            if resolved {
+                info!(
+                    account_id,
+                    room = %room_id,
+                    sender = %sender_id,
+                    latitude,
+                    longitude,
+                    "matrix location text resolved pending request"
+                );
+                if let Err(error) = send_text(&room, "Location updated.").await {
+                    warn!(
+                        account_id,
+                        room = %room_id,
+                        "failed to send Matrix location confirmation: {error}"
+                    );
+                }
+                return;
+            }
+        }
+
         sink.dispatch_to_chat(&body, reply_to, meta).await;
     }
 }
@@ -934,6 +960,118 @@ fn parse_geo_uri(geo_uri: &str) -> Option<(f64, f64)> {
     Some((latitude, longitude))
 }
 
+fn is_valid_lat_lon(latitude: f64, longitude: f64) -> bool {
+    (-90.0..=90.0).contains(&latitude) && (-180.0..=180.0).contains(&longitude)
+}
+
+fn parse_coordinate_component(input: &str) -> Option<f64> {
+    let trimmed = input
+        .trim()
+        .trim_matches(|c| matches!(c, '(' | ')' | '[' | ']' | '{' | '}'));
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut end = 0usize;
+    for (idx, ch) in trimmed.char_indices() {
+        if ch.is_ascii_digit() || matches!(ch, '+' | '-' | '.') {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+
+    let token = &trimmed[..end];
+    if !token.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    token.parse::<f64>().ok()
+}
+
+fn parse_coordinate_pair(input: &str) -> Option<(f64, f64)> {
+    let mut parts = input.split(',');
+    let latitude = parse_coordinate_component(parts.next()?)?;
+    let longitude = parse_coordinate_component(parts.next()?)?;
+    if is_valid_lat_lon(latitude, longitude) {
+        Some((latitude, longitude))
+    } else {
+        None
+    }
+}
+
+fn parse_coordinates_from_url(url_str: &str) -> Option<(f64, f64)> {
+    let parsed = reqwest::Url::parse(url_str).ok()?;
+
+    for key in ["ll", "q", "query"] {
+        if let Some((_, value)) = parsed
+            .query_pairs()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            && let Some(coords) = parse_coordinate_pair(value.as_ref())
+        {
+            return Some(coords);
+        }
+    }
+
+    for segment in [
+        parsed.path(),
+        parsed.fragment().unwrap_or_default(),
+        url_str,
+    ] {
+        if let Some(at_pos) = segment.find('@')
+            && let Some(coords) = parse_coordinate_pair(&segment[at_pos + 1..])
+        {
+            return Some(coords);
+        }
+    }
+
+    None
+}
+
+fn parse_map_link_coordinates(text: &str) -> Option<(f64, f64)> {
+    for raw in text.split_whitespace() {
+        let token = raw.trim_matches(|c: char| {
+            matches!(
+                c,
+                '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | '!' | '?'
+            )
+        });
+        if let Some(coords) = parse_geo_uri(token) {
+            return Some(coords);
+        }
+        if !(token.starts_with("http://") || token.starts_with("https://")) {
+            continue;
+        }
+        if let Some(coords) = parse_coordinates_from_url(token) {
+            return Some(coords);
+        }
+    }
+
+    None
+}
+
+fn parse_plain_text_coordinates(text: &str) -> Option<(f64, f64)> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || !trimmed.contains(',') {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | ',' | ' ' | '\t' | '(' | ')'))
+    {
+        return None;
+    }
+
+    parse_coordinate_pair(trimmed)
+}
+
+fn extract_location_coordinates(text: &str) -> Option<(f64, f64)> {
+    parse_map_link_coordinates(text).or_else(|| parse_plain_text_coordinates(text))
+}
+
 fn location_dispatch_body(
     location: &LocationMessageEventContent,
     latitude: f64,
@@ -1186,10 +1324,11 @@ async fn emit_inbound_message_event(
 mod tests {
     use {
         super::{
-            audio_format_from_metadata, checked_chat_type, first_selection, infer_audio_kind,
-            infer_chat_type, is_bot_mentioned, location_dispatch_body, otp_request_message,
-            parse_geo_uri, saved_audio_filename, should_auto_join_invite,
-            should_ignore_initial_sync_history, update_utd_notice_window, utd_notice_message,
+            audio_format_from_metadata, checked_chat_type, extract_location_coordinates,
+            first_selection, infer_audio_kind, infer_chat_type, is_bot_mentioned,
+            location_dispatch_body, otp_request_message, parse_geo_uri, saved_audio_filename,
+            should_auto_join_invite, should_ignore_initial_sync_history, update_utd_notice_window,
+            utd_notice_message,
         },
         crate::{
             access,
@@ -1611,6 +1750,30 @@ mod tests {
         assert_eq!(
             parse_geo_uri("geo:51.5008,-0.1247;u=35"),
             Some((51.5008, -0.1247))
+        );
+    }
+
+    #[test]
+    fn extract_location_coordinates_accepts_geo_text() {
+        assert_eq!(
+            extract_location_coordinates("geo:38.7223,-9.1393"),
+            Some((38.7223, -9.1393))
+        );
+    }
+
+    #[test]
+    fn extract_location_coordinates_accepts_map_link() {
+        assert_eq!(
+            extract_location_coordinates("https://maps.apple.com/?ll=34.0522,-118.2437&z=12"),
+            Some((34.0522, -118.2437))
+        );
+    }
+
+    #[test]
+    fn extract_location_coordinates_accepts_plain_pair() {
+        assert_eq!(
+            extract_location_coordinates("48.8566, 2.3522"),
+            Some((48.8566, 2.3522))
         );
     }
 

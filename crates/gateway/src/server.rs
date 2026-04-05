@@ -211,7 +211,7 @@ impl moltis_tools::location::LocationRequester for GatewayLocationRequester {
             .send_text(
                 &reply_target.account_id,
                 &reply_target.outbound_to(),
-                "Please share your location in this chat.",
+                "Please share your location in this chat, or paste a geo: link / map pin.",
                 None,
             )
             .await
