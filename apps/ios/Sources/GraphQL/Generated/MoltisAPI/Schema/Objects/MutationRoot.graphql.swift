@@ -4,7 +4,7 @@
 import ApolloAPI
 
 extension MoltisAPI.Objects {
-  nonisolated static let MutationRoot = ApolloAPI.Object(
+  static let MutationRoot = ApolloAPI.Object(
     typename: "MutationRoot",
     implementedInterfaces: [],
     keyFields: nil

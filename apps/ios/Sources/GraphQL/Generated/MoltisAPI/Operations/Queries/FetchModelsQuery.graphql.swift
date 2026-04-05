@@ -5,7 +5,7 @@
 @_spi(Execution) @_spi(Unsafe) import ApolloAPI
 
 extension MoltisAPI {
-  nonisolated struct FetchModelsQuery: GraphQLQuery {
+  struct FetchModelsQuery: GraphQLQuery {
     static let operationName: String = "FetchModels"
     static let operationDocument: ApolloAPI.OperationDocument = .init(
       definition: .init(
@@ -14,7 +14,7 @@ extension MoltisAPI {
 
     public init() {}
 
-    nonisolated struct Data: MoltisAPI.SelectionSet {
+    struct Data: MoltisAPI.SelectionSet {
       let __data: DataDict
       init(_dataDict: DataDict) { __data = _dataDict }
 
@@ -32,7 +32,7 @@ extension MoltisAPI {
       /// Models
       ///
       /// Parent Type: `ModelQuery`
-      nonisolated struct Models: MoltisAPI.SelectionSet {
+      struct Models: MoltisAPI.SelectionSet {
         let __data: DataDict
         init(_dataDict: DataDict) { __data = _dataDict }
 
@@ -51,7 +51,7 @@ extension MoltisAPI {
         /// Models.List
         ///
         /// Parent Type: `ModelInfo`
-        nonisolated struct List: MoltisAPI.SelectionSet {
+        struct List: MoltisAPI.SelectionSet {
           let __data: DataDict
           init(_dataDict: DataDict) { __data = _dataDict }
 

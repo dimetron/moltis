@@ -5,7 +5,7 @@
 @_spi(Execution) @_spi(Unsafe) import ApolloAPI
 
 extension MoltisAPI {
-  nonisolated struct SearchSessionsQuery: GraphQLQuery {
+  struct SearchSessionsQuery: GraphQLQuery {
     static let operationName: String = "SearchSessions"
     static let operationDocument: ApolloAPI.OperationDocument = .init(
       definition: .init(
@@ -21,7 +21,7 @@ extension MoltisAPI {
 
     @_spi(Unsafe) public var __variables: Variables? { ["query": query] }
 
-    nonisolated struct Data: MoltisAPI.SelectionSet {
+    struct Data: MoltisAPI.SelectionSet {
       let __data: DataDict
       init(_dataDict: DataDict) { __data = _dataDict }
 
@@ -39,7 +39,7 @@ extension MoltisAPI {
       /// Sessions
       ///
       /// Parent Type: `SessionQuery`
-      nonisolated struct Sessions: MoltisAPI.SelectionSet {
+      struct Sessions: MoltisAPI.SelectionSet {
         let __data: DataDict
         init(_dataDict: DataDict) { __data = _dataDict }
 
@@ -58,7 +58,7 @@ extension MoltisAPI {
         /// Sessions.Search
         ///
         /// Parent Type: `SessionEntry`
-        nonisolated struct Search: MoltisAPI.SelectionSet {
+        struct Search: MoltisAPI.SelectionSet {
           let __data: DataDict
           init(_dataDict: DataDict) { __data = _dataDict }
 

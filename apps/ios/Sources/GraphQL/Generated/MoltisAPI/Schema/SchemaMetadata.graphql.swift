@@ -3,16 +3,16 @@
 
 import ApolloAPI
 
-nonisolated protocol MoltisAPI_SelectionSet: ApolloAPI.SelectionSet & ApolloAPI.RootSelectionSet
+protocol MoltisAPI_SelectionSet: ApolloAPI.SelectionSet & ApolloAPI.RootSelectionSet
 where Schema == MoltisAPI.SchemaMetadata {}
 
-nonisolated protocol MoltisAPI_InlineFragment: ApolloAPI.SelectionSet & ApolloAPI.InlineFragment
+protocol MoltisAPI_InlineFragment: ApolloAPI.SelectionSet & ApolloAPI.InlineFragment
 where Schema == MoltisAPI.SchemaMetadata {}
 
-nonisolated protocol MoltisAPI_MutableSelectionSet: ApolloAPI.MutableRootSelectionSet
+protocol MoltisAPI_MutableSelectionSet: ApolloAPI.MutableRootSelectionSet
 where Schema == MoltisAPI.SchemaMetadata {}
 
-nonisolated protocol MoltisAPI_MutableInlineFragment: ApolloAPI.MutableSelectionSet & ApolloAPI.InlineFragment
+protocol MoltisAPI_MutableInlineFragment: ApolloAPI.MutableSelectionSet & ApolloAPI.InlineFragment
 where Schema == MoltisAPI.SchemaMetadata {}
 
 extension MoltisAPI {
@@ -24,28 +24,27 @@ extension MoltisAPI {
 
   typealias MutableInlineFragment = MoltisAPI_MutableInlineFragment
 
-  nonisolated enum SchemaMetadata: ApolloAPI.SchemaMetadata {
+  enum SchemaMetadata: ApolloAPI.SchemaMetadata {
     static let configuration: any ApolloAPI.SchemaConfiguration.Type = SchemaConfiguration.self
 
-    private static let objectTypeMap: [String: ApolloAPI.Object] = [
-      "AgentMutation": MoltisAPI.Objects.AgentMutation,
-      "BoolResult": MoltisAPI.Objects.BoolResult,
-      "ModelInfo": MoltisAPI.Objects.ModelInfo,
-      "ModelQuery": MoltisAPI.Objects.ModelQuery,
-      "MutationRoot": MoltisAPI.Objects.MutationRoot,
-      "QueryRoot": MoltisAPI.Objects.QueryRoot,
-      "SessionEntry": MoltisAPI.Objects.SessionEntry,
-      "SessionQuery": MoltisAPI.Objects.SessionQuery,
-      "StatusInfo": MoltisAPI.Objects.StatusInfo
-    ]
-
     static func objectType(forTypename typename: String) -> ApolloAPI.Object? {
-      objectTypeMap[typename]
+      switch typename {
+      case "AgentMutation": return MoltisAPI.Objects.AgentMutation
+      case "BoolResult": return MoltisAPI.Objects.BoolResult
+      case "ModelInfo": return MoltisAPI.Objects.ModelInfo
+      case "ModelQuery": return MoltisAPI.Objects.ModelQuery
+      case "MutationRoot": return MoltisAPI.Objects.MutationRoot
+      case "QueryRoot": return MoltisAPI.Objects.QueryRoot
+      case "SessionEntry": return MoltisAPI.Objects.SessionEntry
+      case "SessionQuery": return MoltisAPI.Objects.SessionQuery
+      case "StatusInfo": return MoltisAPI.Objects.StatusInfo
+      default: return nil
+      }
     }
   }
 
-  nonisolated enum Objects {}
-  nonisolated enum Interfaces {}
-  nonisolated enum Unions {}
+  enum Objects {}
+  enum Interfaces {}
+  enum Unions {}
 
 }

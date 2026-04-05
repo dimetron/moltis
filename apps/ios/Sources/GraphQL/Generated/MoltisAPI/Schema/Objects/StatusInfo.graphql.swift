@@ -4,7 +4,7 @@
 import ApolloAPI
 
 extension MoltisAPI.Objects {
-  nonisolated static let StatusInfo = ApolloAPI.Object(
+  static let StatusInfo = ApolloAPI.Object(
     typename: "StatusInfo",
     implementedInterfaces: [],
     keyFields: nil

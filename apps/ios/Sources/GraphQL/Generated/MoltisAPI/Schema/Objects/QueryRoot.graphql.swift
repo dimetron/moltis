@@ -4,7 +4,7 @@
 import ApolloAPI
 
 extension MoltisAPI.Objects {
-  nonisolated static let QueryRoot = ApolloAPI.Object(
+  static let QueryRoot = ApolloAPI.Object(
     typename: "QueryRoot",
     implementedInterfaces: [],
     keyFields: nil
