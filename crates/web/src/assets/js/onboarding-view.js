@@ -693,6 +693,7 @@ function IdentityStep({ onNext, onBack }) {
 
 var OPENAI_COMPATIBLE = ["openai", "mistral", "openrouter", "cerebras", "minimax", "moonshot", "venice", "ollama"];
 var BYOM_PROVIDERS = ["venice"];
+var RECOMMENDED_PROVIDERS = new Set(["anthropic", "openai", "gemini", "deepseek", "minimax", "zai", "ollama"]);
 
 function ModelSelectCard({ model, selected, probe, onToggle }) {
 	var probeError = probe && probe !== "ok" && probe !== "probing" ? probe.error || "" : "";
@@ -1647,9 +1648,66 @@ function ProviderStep({ onNext, onBack }) {
 	}
 
 	var configuredProviders = providers.filter((p) => p.configured);
+	var [showAllProviders, setShowAllProviders] = useState(false);
+
+	var recommendedProviders = providers.filter((p) => RECOMMENDED_PROVIDERS.has(p.name));
+	var otherProviders = providers.filter((p) => !RECOMMENDED_PROVIDERS.has(p.name));
+	// If a non-recommended provider is being configured, expand the section.
+	var otherIsActive = otherProviders.some(
+		(p) => configuring === p.name || oauthProvider === p.name || localProvider === p.name,
+	);
+	var showOther = showAllProviders || otherIsActive;
+
+	function renderProviderRow(p) {
+		return html`<${OnboardingProviderRow}
+			key=${p.name}
+			provider=${p}
+			configuring=${configuring}
+			phase=${configuring === p.name ? phase : "form"}
+			providerModels=${configuring === p.name ? providerModels : []}
+			selectedModels=${configuring === p.name ? selectedModels : new Set()}
+			probeResults=${configuring === p.name ? probeResults : new Map()}
+			modelSearch=${configuring === p.name ? modelSearch : ""}
+			setModelSearch=${setModelSearch}
+			oauthProvider=${oauthProvider}
+			oauthInfo=${oauthInfo}
+			oauthCallbackInput=${oauthCallbackInput}
+			setOauthCallbackInput=${setOauthCallbackInput}
+			oauthSubmitting=${oauthSubmitting}
+			localProvider=${localProvider}
+			sysInfo=${sysInfo}
+			localModels=${localModels}
+			selectedBackend=${selectedBackend}
+			setSelectedBackend=${setSelectedBackend}
+			apiKey=${apiKey}
+			setApiKey=${setApiKey}
+			endpoint=${endpoint}
+			setEndpoint=${setEndpoint}
+			model=${model}
+			setModel=${setModel}
+			saving=${saving}
+			savingModels=${savingModels}
+			error=${configuring === p.name || oauthProvider === p.name || localProvider === p.name ? error : null}
+			validationResult=${validationResults[p.name] || null}
+			onStartConfigure=${onStartConfigure}
+			onCancelConfigure=${closeAll}
+			onSaveKey=${onSaveKey}
+			onToggleModel=${onToggleModel}
+			onSaveModels=${onSaveSelectedModels}
+			onSubmitOAuthCallback=${submitOAuthCallback}
+			onCancelOAuth=${cancelOAuth}
+			onConfigureLocalModel=${configureLocalModel}
+			onCancelLocal=${cancelLocal}
+		/>`;
+	}
 
 	return html`<div class="flex flex-col gap-4">
-		<h2 class="text-lg font-medium text-[var(--text-strong)]">${t("onboarding:provider.addLlms")}</h2>
+		<div class="flex items-baseline justify-between gap-2">
+			<h2 class="text-lg font-medium text-[var(--text-strong)]">${t("onboarding:provider.addLlms")}</h2>
+			<a href="https://docs.moltis.org/choosing-a-provider.html"
+				target="_blank" rel="noopener noreferrer"
+				class="text-xs text-[var(--accent)] hover:underline shrink-0">Help me choose</a>
+		</div>
 		<p class="text-xs text-[var(--muted)] leading-relaxed">Configure one or more LLM providers to power your agent. You can add more later in Settings.</p>
 		${
 			configuredProviders.length > 0
@@ -1662,49 +1720,22 @@ function ProviderStep({ onNext, onBack }) {
 				: null
 		}
 		<div class="flex flex-col gap-2">
-			${providers.map(
-				(p) => html`<${OnboardingProviderRow}
-				key=${p.name}
-				provider=${p}
-				configuring=${configuring}
-				phase=${configuring === p.name ? phase : "form"}
-				providerModels=${configuring === p.name ? providerModels : []}
-				selectedModels=${configuring === p.name ? selectedModels : new Set()}
-				probeResults=${configuring === p.name ? probeResults : new Map()}
-				modelSearch=${configuring === p.name ? modelSearch : ""}
-					setModelSearch=${setModelSearch}
-					oauthProvider=${oauthProvider}
-					oauthInfo=${oauthInfo}
-					oauthCallbackInput=${oauthCallbackInput}
-					setOauthCallbackInput=${setOauthCallbackInput}
-					oauthSubmitting=${oauthSubmitting}
-					localProvider=${localProvider}
-				sysInfo=${sysInfo}
-				localModels=${localModels}
-				selectedBackend=${selectedBackend}
-				setSelectedBackend=${setSelectedBackend}
-				apiKey=${apiKey}
-				setApiKey=${setApiKey}
-				endpoint=${endpoint}
-				setEndpoint=${setEndpoint}
-				model=${model}
-				setModel=${setModel}
-				saving=${saving}
-				savingModels=${savingModels}
-				error=${configuring === p.name || oauthProvider === p.name || localProvider === p.name ? error : null}
-				validationResult=${validationResults[p.name] || null}
-				onStartConfigure=${onStartConfigure}
-				onCancelConfigure=${closeAll}
-					onSaveKey=${onSaveKey}
-					onToggleModel=${onToggleModel}
-					onSaveModels=${onSaveSelectedModels}
-					onSubmitOAuthCallback=${submitOAuthCallback}
-					onCancelOAuth=${cancelOAuth}
-				onConfigureLocalModel=${configureLocalModel}
-				onCancelLocal=${cancelLocal}
-			/>`,
-			)}
+			<div class="text-xs font-medium text-[var(--text)] uppercase tracking-wide">Recommended</div>
+			${recommendedProviders.map(renderProviderRow)}
 		</div>
+		${
+			otherProviders.length > 0
+				? html`<div class="flex flex-col gap-2">
+				<button type="button"
+					class="text-xs text-[var(--muted)] hover:text-[var(--text)] cursor-pointer bg-transparent border-none text-left flex items-center gap-1"
+					onClick=${() => setShowAllProviders((v) => !v)}>
+					<span class="inline-block transition-transform ${showOther ? "rotate-90" : ""}">\u25B6</span>
+					All providers (${otherProviders.length} more)
+				</button>
+				${showOther ? otherProviders.map(renderProviderRow) : null}
+			</div>`
+				: null
+		}
 		${error && !configuring && !oauthProvider && !localProvider ? html`<${ErrorPanel} message=${error} />` : null}
 		<div class="flex flex-wrap items-center gap-3 mt-1">
 			<button class="provider-btn provider-btn-secondary" onClick=${onBack}>${t("common:actions.back")}</button>
