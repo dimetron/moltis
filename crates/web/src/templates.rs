@@ -471,7 +471,7 @@ pub(crate) async fn build_gon_data(gw: &GatewayState) -> GonData {
 
 fn load_channels_offered_from_config_path(
     path: &Path,
-) -> std::result::Result<Vec<String>, moltis_config::Error> {
+) -> Result<Vec<String>, moltis_config::Error> {
     moltis_config::loader::load_config(path).map(|config| config.channels.offered)
 }
 
