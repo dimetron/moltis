@@ -115,7 +115,7 @@ function WebhooksListPanel() {
           </div>`}
 
       <div class="text-xs text-[var(--muted)]">
-        Test your webhooks with
+        Test your webhooks with${" "}
         <a href="https://hoppscotch.io" target="_blank" rel="noopener"
           class="text-[var(--accent)] underline">Hoppscotch</a> — send POST requests with custom headers and JSON bodies, no signup needed.
       </div>
