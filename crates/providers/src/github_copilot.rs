@@ -593,9 +593,11 @@ async fn collect_streamed_completion(
         let chunk = chunk?;
         buf.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(pos) = buf.find('\n') {
-            let line = buf[..pos].trim().to_string();
-            buf = buf[pos + 1..].to_string();
+        let mut offset = 0usize;
+        while let Some(pos) = buf[offset..].find('\n') {
+            let pos = offset + pos;
+            let line = buf[offset..pos].trim();
+            offset = pos + 1;
 
             if line.is_empty() {
                 continue;
@@ -616,10 +618,13 @@ async fn collect_streamed_completion(
                 SseLineResult::Skip => {},
             }
         }
+        if offset > 0 {
+            buf.drain(..offset);
+        }
     }
 
     // Process any trailing data in the buffer.
-    let line = buf.trim().to_string();
+    let line = buf.trim();
     if !line.is_empty()
         && let Some(data) = line
             .strip_prefix("data: ")
