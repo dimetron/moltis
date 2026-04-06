@@ -16,14 +16,40 @@ var showCreateModal = signal(false);
 var editingWebhook = signal(null);
 var viewingDeliveries = signal(null); // webhook id or null
 var deliveries = signal([]);
+var publicBaseUrl = signal("");
 
 var _container = null;
+
+function fetchPublicBaseUrl() {
+  // Prefer ngrok public URL, then tailscale funnel, then window.location.origin.
+  fetch("/api/ngrok/status")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (data?.public_url) {
+        publicBaseUrl.value = data.public_url.replace(/\/$/, "");
+        return;
+      }
+      return fetch("/api/tailscale/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((ts) => {
+          if (ts?.mode === "funnel" && ts?.url) {
+            publicBaseUrl.value = ts.url.replace(/\/$/, "");
+          } else {
+            publicBaseUrl.value = window.location.origin;
+          }
+        });
+    })
+    .catch(() => {
+      publicBaseUrl.value = window.location.origin;
+    });
+}
 
 export function initWebhooks(container) {
   _container = container;
   container.style.cssText = "padding:0;overflow:hidden;";
   webhooks.value = gon.get("webhooks") || [];
   profiles.value = gon.get("webhook_profiles") || [];
+  fetchPublicBaseUrl();
   render(html`<${WebhooksPage} />`, container);
 }
 
@@ -182,7 +208,7 @@ function WebhookCard({ webhook }) {
       </div>
 
       <div class="text-xs text-[var(--muted)] mt-1 font-mono select-all">
-        ${window.location.origin}/api/webhooks/ingest/${wh.publicId}
+        ${publicBaseUrl.value || window.location.origin}/api/webhooks/ingest/${wh.publicId}
       </div>
     </div>
   `;
