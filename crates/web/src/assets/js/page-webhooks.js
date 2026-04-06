@@ -90,7 +90,7 @@ function WebhooksPage() {
 
 function WebhooksListPanel() {
   return html`
-    <div class="p-4 flex flex-col gap-4 max-w-form">
+    <div class="p-4 flex flex-col gap-4">
       <div class="flex items-center gap-3">
         <h2 class="text-lg font-medium text-[var(--text-strong)]">Webhooks</h2>
         <button
