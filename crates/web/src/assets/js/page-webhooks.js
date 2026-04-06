@@ -4,8 +4,9 @@ import { render } from "preact";
 import { signal, useSignal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as gon from "./gon.js";
-import { sendRpc } from "./helpers.js";
-import { Modal, requestConfirm, ConfirmDialog, ComboSelect } from "./ui.js";
+import { parseAgentsListPayload, sendRpc } from "./helpers.js";
+import { models as modelsSig } from "./stores/model-store.js";
+import { ComboSelect, ConfirmDialog, Modal, ModelSelect, requestConfirm } from "./ui.js";
 
 // ── State ──────────────────────────────────────────────────────────────
 
@@ -271,21 +272,31 @@ function WebhookModal() {
 
   var nameRef = useRef(null);
   var descRef = useRef(null);
-  var agentRef = useRef(null);
-  var modelRef = useRef(null);
   var promptSuffixRef = useRef(null);
   var authSecretRef = useRef(null);
 
+  var selectedAgent = useSignal(isEdit ? editingWebhook.value?.agentId || "" : "");
+  var selectedModel = useSignal(isEdit ? editingWebhook.value?.model || "" : "");
   var sourceProfile = useSignal(isEdit ? editingWebhook.value?.sourceProfile || "generic" : "generic");
   var authMode = useSignal(isEdit ? editingWebhook.value?.authMode || "static_header" : "static_header");
   var sessionMode = useSignal(isEdit ? editingWebhook.value?.sessionMode || "per_delivery" : "per_delivery");
 
+  var gonAgents = parseAgentsListPayload(gon.get("agents"));
+  var agentOptions = (Array.isArray(gonAgents?.agents) ? gonAgents.agents : []).map((a) => ({
+    value: a.id,
+    label: a.name || a.id,
+  }));
+
   useEffect(() => {
     if (editingWebhook.value) {
+      selectedAgent.value = editingWebhook.value.agentId || "";
+      selectedModel.value = editingWebhook.value.model || "";
       sourceProfile.value = editingWebhook.value.sourceProfile || "generic";
       authMode.value = editingWebhook.value.authMode || "static_header";
       sessionMode.value = editingWebhook.value.sessionMode || "per_delivery";
     } else {
+      selectedAgent.value = "";
+      selectedModel.value = "";
       sourceProfile.value = "generic";
       authMode.value = "static_header";
       sessionMode.value = "per_delivery";
@@ -307,8 +318,8 @@ function WebhookModal() {
     var params = {
       name,
       description: descRef.current?.value?.trim() || null,
-      agentId: agentRef.current?.value?.trim() || null,
-      model: modelRef.current?.value?.trim() || null,
+      agentId: selectedAgent.value || null,
+      model: selectedModel.value || null,
       systemPromptSuffix: promptSuffixRef.current?.value?.trim() || null,
       sourceProfile: sourceProfile.value,
       authMode: authMode.value,
@@ -439,20 +450,23 @@ function WebhookModal() {
         />
       </div>`}
 
-      <label class="text-xs text-[var(--muted)]">Agent ID (optional)</label>
-      <input
-        ref=${agentRef}
-        class="provider-key-input"
-        placeholder="e.g. code-reviewer"
-        value=${wh?.agentId || ""}
+      <label class="text-xs text-[var(--muted)]">Agent</label>
+      <${ComboSelect}
+        options=${agentOptions}
+        value=${selectedAgent.value}
+        onChange=${(v) => { selectedAgent.value = v; }}
+        placeholder="Default agent"
+        searchPlaceholder="Search agents…"
       />
 
-      <label class="text-xs text-[var(--muted)]">Model Override (optional)</label>
-      <input
-        ref=${modelRef}
-        class="provider-key-input"
-        placeholder="e.g. gpt-4o"
-        value=${wh?.model || ""}
+      <label class="text-xs text-[var(--muted)]">Model</label>
+      <${ModelSelect}
+        models=${modelsSig.value}
+        value=${selectedModel.value}
+        onChange=${(v) => { selectedModel.value = v; }}
+        placeholder=${modelsSig.value.length > 0
+          ? "(default: " + (modelsSig.value[0].displayName || modelsSig.value[0].id) + ")"
+          : "(server default)"}
       />
 
       <label class="text-xs text-[var(--muted)]">Session Mode</label>
