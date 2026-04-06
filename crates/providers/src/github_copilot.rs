@@ -77,7 +77,7 @@ struct CopilotTokenResponse {
 /// Resolved authentication: a valid Copilot API token plus the base URL to
 /// use for API requests (may differ for enterprise vs individual accounts).
 struct CopilotAuth {
-    token: String,
+    token: Secret<String>,
     base_url: String,
     /// `true` when the endpoint is an enterprise proxy that only supports
     /// streaming chat completions.
@@ -217,9 +217,23 @@ pub const COPILOT_MODELS: &[(&str, &str)] = &[
 
 /// Build a [`CopilotAuth`] from an `account_id` value that may contain a
 /// proxy-ep hostname persisted from a previous token exchange.
-fn copilot_auth_from_parts(token: String, proxy_ep: Option<&str>) -> CopilotAuth {
+fn copilot_auth_from_parts(token: Secret<String>, proxy_ep: Option<&str>) -> CopilotAuth {
     match proxy_ep.filter(|s| !s.is_empty()) {
         Some(ep) => {
+            let ep = ep.trim();
+            // Reject anything that isn't a plain hostname to prevent SSRF via
+            // crafted proxy-ep values (e.g. internal IPs, @-redirects).
+            if !ep
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+            {
+                warn!(proxy_ep = %ep, "ignoring malformed proxy-ep, falling back to individual endpoint");
+                return CopilotAuth {
+                    token,
+                    base_url: COPILOT_API_BASE.to_string(),
+                    is_enterprise: false,
+                };
+            }
             debug!(proxy_ep = %ep, "using enterprise proxy endpoint");
             CopilotAuth {
                 token,
@@ -254,7 +268,7 @@ async fn fetch_copilot_auth(
             .unwrap_or_default()
             .as_secs();
         if now + 60 < expires_at {
-            let token = copilot_tokens.access_token.expose_secret().clone();
+            let token = copilot_tokens.access_token.clone();
             let proxy_ep = copilot_tokens.account_id.as_deref();
             return Ok(copilot_auth_from_parts(token, proxy_ep));
         }
@@ -291,7 +305,7 @@ async fn fetch_copilot_auth(
     });
 
     Ok(copilot_auth_from_parts(
-        copilot_resp.token,
+        Secret::new(copilot_resp.token),
         copilot_resp.proxy_ep.as_deref(),
     ))
 }
@@ -410,7 +424,7 @@ async fn fetch_models_from_api(
 ) -> anyhow::Result<Vec<super::DiscoveredModel>> {
     let response = client
         .get(format!("{}/models", auth.base_url))
-        .header("Authorization", format!("Bearer {}", auth.token))
+        .header("Authorization", format!("Bearer {}", auth.token.expose_secret()))
         .header("Accept", "application/json")
         .header("Editor-Version", EDITOR_VERSION)
         .header("User-Agent", COPILOT_USER_AGENT)
@@ -521,7 +535,7 @@ async fn collect_streamed_completion(
 
     let http_resp = client
         .post(format!("{}/chat/completions", auth.base_url))
-        .header("Authorization", format!("Bearer {}", auth.token))
+        .header("Authorization", format!("Bearer {}", auth.token.expose_secret()))
         .header("content-type", "application/json")
         .header("Editor-Version", EDITOR_VERSION)
         .header("User-Agent", COPILOT_USER_AGENT)
@@ -691,6 +705,10 @@ impl LlmProvider for GitHubCopilotProvider {
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
     ) -> anyhow::Result<CompletionResponse> {
+        if needs_responses_api(&self.model) {
+            return self.complete_responses(messages, tools).await;
+        }
+
         let auth = self.get_copilot_auth().await?;
 
         // Enterprise proxy only supports streaming — delegate to the
@@ -698,10 +716,6 @@ impl LlmProvider for GitHubCopilotProvider {
         if auth.is_enterprise {
             return collect_streamed_completion(self.client, &auth, &self.model, messages, tools)
                 .await;
-        }
-
-        if needs_responses_api(&self.model) {
-            return self.complete_responses(messages, tools).await;
         }
 
         let openai_messages: Vec<serde_json::Value> =
@@ -726,7 +740,7 @@ impl LlmProvider for GitHubCopilotProvider {
         let http_resp = self
             .client
             .post(format!("{}/chat/completions", auth.base_url))
-            .header("Authorization", format!("Bearer {}", auth.token))
+            .header("Authorization", format!("Bearer {}", auth.token.expose_secret()))
             .header("content-type", "application/json")
             .header("Editor-Version", EDITOR_VERSION)
             .header("User-Agent", COPILOT_USER_AGENT)
@@ -832,7 +846,7 @@ impl GitHubCopilotProvider {
         let http_resp = self
             .client
             .post(format!("{}/responses", auth.base_url))
-            .header("Authorization", format!("Bearer {}", auth.token))
+            .header("Authorization", format!("Bearer {}", auth.token.expose_secret()))
             .header("content-type", "application/json")
             .header("Editor-Version", EDITOR_VERSION)
             .header("User-Agent", COPILOT_USER_AGENT)
@@ -901,7 +915,7 @@ impl GitHubCopilotProvider {
             let resp = match self
                 .client
                 .post(format!("{}/responses", auth.base_url))
-                .header("Authorization", format!("Bearer {}", auth.token))
+                .header("Authorization", format!("Bearer {}", auth.token.expose_secret()))
                 .header("content-type", "application/json")
                 .header("Editor-Version", EDITOR_VERSION)
                 .header("User-Agent", COPILOT_USER_AGENT)
@@ -1043,7 +1057,7 @@ impl GitHubCopilotProvider {
             let resp = match self
                 .client
                 .post(format!("{}/chat/completions", auth.base_url))
-                .header("Authorization", format!("Bearer {}", auth.token))
+                .header("Authorization", format!("Bearer {}", auth.token.expose_secret()))
                 .header("content-type", "application/json")
                 .header("Editor-Version", EDITOR_VERSION)
                 .header("User-Agent", COPILOT_USER_AGENT)
@@ -1675,7 +1689,7 @@ mod tests {
 
     #[test]
     fn copilot_auth_from_parts_individual() {
-        let auth = copilot_auth_from_parts("tok".into(), None);
+        let auth = copilot_auth_from_parts(Secret::new("tok".into()), None);
         assert_eq!(auth.base_url, COPILOT_API_BASE);
         assert!(!auth.is_enterprise);
     }
@@ -1683,16 +1697,33 @@ mod tests {
     #[test]
     fn copilot_auth_from_parts_enterprise() {
         let auth =
-            copilot_auth_from_parts("tok".into(), Some("proxy.enterprise.githubcopilot.com"));
+            copilot_auth_from_parts(Secret::new("tok".into()), Some("proxy.enterprise.githubcopilot.com"));
         assert_eq!(auth.base_url, "https://proxy.enterprise.githubcopilot.com");
         assert!(auth.is_enterprise);
     }
 
     #[test]
     fn copilot_auth_from_parts_empty_proxy_ep() {
-        let auth = copilot_auth_from_parts("tok".into(), Some(""));
+        let auth = copilot_auth_from_parts(Secret::new("tok".into()), Some(""));
         assert_eq!(auth.base_url, COPILOT_API_BASE);
         assert!(!auth.is_enterprise);
+    }
+
+    #[test]
+    fn copilot_auth_from_parts_rejects_malformed_proxy_ep() {
+        // Slashes, @-redirects, colons, and IP-like values with special chars
+        // must be rejected to prevent SSRF.
+        for bad in &[
+            "evil.com/path",
+            "evil.com@internal",
+            "host:8080",
+            "169.254.169.254/latest",
+            "foo bar",
+        ] {
+            let auth = copilot_auth_from_parts(Secret::new("tok".into()), Some(bad));
+            assert_eq!(auth.base_url, COPILOT_API_BASE, "should reject: {bad}");
+            assert!(!auth.is_enterprise, "should reject: {bad}");
+        }
     }
 
     /// Helper: start a mock server that returns SSE streaming responses.
@@ -1760,7 +1791,7 @@ mod tests {
         let (base_url, captured) = start_streaming_mock_with_capture(sse).await;
 
         let auth = CopilotAuth {
-            token: "ent-token".into(),
+            token: Secret::new("ent-token".into()),
             base_url,
             is_enterprise: true,
         };
@@ -1797,7 +1828,7 @@ mod tests {
         let (base_url, _) = start_streaming_mock_with_capture(sse).await;
 
         let auth = CopilotAuth {
-            token: "ent-token".into(),
+            token: Secret::new("ent-token".into()),
             base_url,
             is_enterprise: true,
         };
