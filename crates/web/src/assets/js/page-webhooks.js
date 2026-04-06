@@ -115,12 +115,32 @@ function WebhooksListPanel() {
           </div>`}
 
       <div class="text-xs text-[var(--muted)]">
-        Test with: <code class="font-mono text-[var(--text)]">curl -sk -X POST -H "Content-Type: application/json" -d '${"'{}'"}'</code> <em>your-endpoint-url</em>.${" "}
-        For a GUI, use the${" "}<a href="https://hoppscotch.io/download" target="_blank" rel="noopener"
-          class="text-[var(--accent)] underline">Hoppscotch desktop app</a>.
+        Use the "Copy test command" button on each webhook, or the${" "}
+        <a href="https://hoppscotch.io/download" target="_blank" rel="noopener"
+          class="text-[var(--accent)] underline">Hoppscotch desktop app</a>${" "}to test.
       </div>
     </div>
   `;
+}
+
+function CopyTestCommandButton({ webhook }) {
+  var [copied, setCopied] = useState(false);
+  var url = (publicBaseUrl.value || window.location.origin) + "/api/webhooks/ingest/" + webhook.publicId;
+  var cmd = "curl -sk -X POST " + url + " \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"event\": \"test\", \"timestamp\": \"" + new Date().toISOString() + "\"}'";
+
+  return html`<button
+    class="provider-btn provider-btn-sm provider-btn-secondary"
+    style="white-space:nowrap;"
+    title=${copied ? "Copied!" : "Copy a curl command to test this webhook"}
+    onClick=${() => {
+      navigator.clipboard.writeText(cmd).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      });
+    }}
+  >
+    ${copied ? "Copied!" : "Copy test command"}
+  </button>`;
 }
 
 function WebhookCard({ webhook }) {
@@ -213,18 +233,7 @@ function WebhookCard({ webhook }) {
         <div class="text-xs text-[var(--muted)] font-mono select-all flex-1 min-w-0 truncate">
           ${publicBaseUrl.value || window.location.origin}/api/webhooks/ingest/${wh.publicId}
         </div>
-        <button
-          class="provider-btn provider-btn-sm provider-btn-secondary"
-          style="white-space:nowrap;"
-          title="Copy curl test command"
-          onClick=${() => {
-            var url = (publicBaseUrl.value || window.location.origin) + "/api/webhooks/ingest/" + wh.publicId;
-            var cmd = "curl -sk -X POST " + url + " -H 'Content-Type: application/json' -d '{\"test\": true}'";
-            navigator.clipboard.writeText(cmd);
-          }}
-        >
-          Copy curl
-        </button>
+        <${CopyTestCommandButton} webhook=${wh} />
       </div>
     </div>
   `;
