@@ -16,6 +16,7 @@ import { initAgents, teardownAgents } from "./page-agents.js";
 import { initChannels, teardownChannels } from "./page-channels.js";
 import { initCrons, teardownCrons } from "./page-crons.js";
 import { initHooks, teardownHooks } from "./page-hooks.js";
+import { initWebhooks, teardownWebhooks } from "./page-webhooks.js";
 import { initImages, teardownImages } from "./page-images.js";
 import { initLogs, teardownLogs } from "./page-logs.js";
 import { initMcp, teardownMcp } from "./page-mcp.js";
@@ -138,6 +139,12 @@ var sections = [
 		id: "crons",
 		label: "Crons",
 		icon: html`<span class="icon icon-cron"></span>`,
+		page: true,
+	},
+	{
+		id: "webhooks",
+		label: "Webhooks",
+		icon: html`<span class="icon icon-link"></span>`,
 		page: true,
 	},
 	{
@@ -5322,6 +5329,7 @@ var pageSectionHandlers = {
 		init: (container) => initCrons(container, "heartbeat"),
 		teardown: teardownCrons,
 	},
+	webhooks: { init: initWebhooks, teardown: teardownWebhooks },
 	providers: { init: initProviders, teardown: teardownProviders },
 	channels: { init: initChannels, teardown: teardownChannels },
 	mcp: { init: initMcp, teardown: teardownMcp },

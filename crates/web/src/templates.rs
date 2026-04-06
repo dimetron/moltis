@@ -81,6 +81,8 @@ pub(crate) struct GonData {
     /// Small recent session snapshot for instant sidebar paint.
     sessions_recent: Vec<serde_json::Value>,
     agents: Vec<serde_json::Value>,
+    webhooks: Vec<serde_json::Value>,
+    webhook_profiles: Vec<serde_json::Value>,
     #[cfg(feature = "vault")]
     vault_status: String,
 }
@@ -360,7 +362,20 @@ pub(crate) async fn build_gon_data(gw: &GatewayState) -> GonData {
         .unwrap_or_default();
 
     let counts = build_nav_counts(gw).await;
-    let (crons, cron_status) = tokio::join!(gw.services.cron.list(), gw.services.cron.status());
+    let (crons, cron_status, webhooks_val, webhook_profiles_val) = tokio::join!(
+        gw.services.cron.list(),
+        gw.services.cron.status(),
+        gw.services.webhooks.list(),
+        gw.services.webhooks.profiles(),
+    );
+    let webhooks: Vec<serde_json::Value> = webhooks_val
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let webhook_profiles: Vec<serde_json::Value> = webhook_profiles_val
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
     let crons: Vec<moltis_cron::types::CronJob> = crons
         .ok()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -455,6 +470,8 @@ pub(crate) async fn build_gon_data(gw: &GatewayState) -> GonData {
         openclaw_detected: moltis_gateway::server::openclaw_detected_for_ui(),
         sessions_recent,
         agents,
+        webhooks,
+        webhook_profiles,
         #[cfg(feature = "vault")]
         vault_status: {
             if let Some(ref vault) = gw.vault {

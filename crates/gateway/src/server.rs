@@ -1598,6 +1598,9 @@ pub async fn prepare_gateway_core(
     moltis_cron::run_migrations(&db_pool)
         .await
         .expect("failed to run cron migrations");
+    moltis_webhooks::run_migrations(&db_pool)
+        .await
+        .expect("failed to run webhooks migrations");
     // Gateway's own tables (auth, message_log, channels).
     crate::run_migrations(&db_pool)
         .await
@@ -2123,6 +2126,12 @@ pub async fn prepare_gateway_core(
     // Wire cron into gateway services.
     let live_cron = Arc::new(crate::cron::LiveCronService::new(Arc::clone(&cron_service)));
     services = services.with_cron(live_cron);
+
+    // Webhooks
+    let webhook_store: Arc<dyn moltis_webhooks::store::WebhookStore> =
+        Arc::new(moltis_webhooks::store::SqliteWebhookStore::with_pool(db_pool.clone()));
+    let live_webhooks = Arc::new(crate::webhooks::LiveWebhooksService::new(Arc::clone(&webhook_store)));
+    services = services.with_webhooks(live_webhooks);
 
     // Build sandbox router from config (shared across sessions).
     let mut sandbox_config = moltis_tools::sandbox::SandboxConfig::from(&config.tools.exec.sandbox);
@@ -3230,7 +3239,7 @@ pub async fn prepare_gateway_core(
 
     let pairing_store = Arc::new(crate::pairing::PairingStore::new(db_pool.clone()));
 
-    let state = GatewayState::with_options(
+    let mut state = GatewayState::with_options(
         resolved_auth,
         services,
         Some(Arc::clone(&sandbox_router)),
@@ -3252,6 +3261,48 @@ pub async fn prepare_gateway_core(
         #[cfg(feature = "vault")]
         vault.clone(),
     );
+
+    // Wire webhook store and worker into gateway state (before Arc is shared).
+    {
+        let (webhook_tx, webhook_rx) = tokio::sync::mpsc::channel::<i64>(256);
+        if let Some(s) = Arc::get_mut(&mut state) {
+            s.webhook_store = Some(Arc::clone(&webhook_store));
+            s.webhook_worker_tx = Some(webhook_tx);
+        }
+
+        // Spawn webhook background worker.
+        let worker_store = Arc::clone(&webhook_store);
+        let worker_state_ref = Arc::clone(&state);
+        let worker = moltis_webhooks::worker::WebhookWorker::new(
+            webhook_rx,
+            worker_store,
+            Arc::new(move |req: moltis_webhooks::worker::ExecuteRequest| {
+                let chat_state = Arc::clone(&worker_state_ref);
+                Box::pin(async move {
+                    let chat = chat_state.chat().await;
+                    let mut params = serde_json::json!({
+                        "text": req.message,
+                        "_session_key": req.session_key,
+                    });
+                    if let Some(ref model) = req.model {
+                        params["model"] = serde_json::Value::String(model.clone());
+                    }
+                    let result = chat.send_sync(params).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let input_tokens = result.get("inputTokens").and_then(|v| v.as_i64());
+                    let output_tokens = result.get("outputTokens").and_then(|v| v.as_i64());
+                    let output = result.get("text").and_then(|v| v.as_str()).map(String::from);
+                    Ok(moltis_webhooks::worker::ProcessResult {
+                        output,
+                        input_tokens,
+                        output_tokens,
+                        session_key: req.session_key,
+                    })
+                })
+            }),
+        );
+        tokio::spawn(worker.run());
+    }
+
     startup_mem_probe.checkpoint("gateway_state.created");
 
     #[cfg(feature = "tailscale")]

@@ -329,6 +329,67 @@ impl CronService for NoopCronService {
     }
 }
 
+// ── Webhooks ────────────────────────────────────────────────────────────────
+
+#[async_trait]
+pub trait WebhooksService: Send + Sync {
+    async fn list(&self) -> ServiceResult;
+    async fn get(&self, params: Value) -> ServiceResult;
+    async fn create(&self, params: Value) -> ServiceResult;
+    async fn update(&self, params: Value) -> ServiceResult;
+    async fn delete(&self, params: Value) -> ServiceResult;
+    async fn deliveries(&self, params: Value) -> ServiceResult;
+    async fn delivery_get(&self, params: Value) -> ServiceResult;
+    async fn delivery_payload(&self, params: Value) -> ServiceResult;
+    async fn delivery_actions(&self, params: Value) -> ServiceResult;
+    async fn profiles(&self) -> ServiceResult;
+}
+
+pub struct NoopWebhooksService;
+
+#[async_trait]
+impl WebhooksService for NoopWebhooksService {
+    async fn list(&self) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
+
+    async fn get(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn create(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn update(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn delete(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn deliveries(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn delivery_get(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn delivery_payload(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn delivery_actions(&self, _params: Value) -> ServiceResult {
+        Err("webhooks not configured".into())
+    }
+
+    async fn profiles(&self) -> ServiceResult {
+        Ok(serde_json::json!([]))
+    }
+}
+
 // ── Chat ────────────────────────────────────────────────────────────────────
 
 #[async_trait]
