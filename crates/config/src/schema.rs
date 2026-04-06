@@ -7,6 +7,22 @@ use {
     serde::{Deserialize, Serialize},
 };
 
+// ── Reasoning effort ──────────────────────────────────────────────────────
+
+/// Reasoning/thinking effort level for models that support extended thinking.
+///
+/// Maps to provider-specific parameters:
+/// - **Anthropic**: `thinking.budget_tokens` (low=4096, medium=10240, high=32768)
+/// - **OpenAI**: `reasoning_effort` field on o-series models
+/// - **Other providers**: ignored if unsupported
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
 /// Agent identity (name, emoji, theme).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -186,6 +202,7 @@ impl Default for ResolvedIdentity {
 #[serde(default)]
 pub struct MoltisConfig {
     pub server: ServerConfig,
+    pub ngrok: NgrokConfig,
     pub providers: ProvidersConfig,
     pub chat: ChatConfig,
     pub tools: ToolsConfig,
@@ -208,6 +225,20 @@ pub struct MoltisConfig {
     pub cron: CronConfig,
     pub caldav: CalDavConfig,
     pub webhooks: WebhooksConfig,
+    /// Upstream HTTP/SOCKS proxy for all outbound requests.
+    ///
+    /// Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes.
+    /// Proxy authentication via URL: `http://user:pass@host:port`.
+    /// When set, overrides the `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` environment
+    /// variables for all traffic (providers, channels, tools, OAuth).
+    /// Localhost/loopback addresses are automatically excluded (`no_proxy`).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::schema::serialize_option_secret",
+        deserialize_with = "crate::schema::deserialize_option_secret"
+    )]
+    pub upstream_proxy: Option<Secret<String>>,
     /// Environment variables injected into the Moltis process at startup.
     /// Useful for API keys in Docker where you can't easily set env vars.
     /// Process env vars take precedence (existing vars are not overwritten).
@@ -338,6 +369,12 @@ pub struct AgentPreset {
     pub sessions: Option<SessionAccessPolicyConfig>,
     /// Persistent per-agent memory configuration.
     pub memory: Option<PresetMemoryConfig>,
+    /// Reasoning/thinking effort level for models that support extended thinking.
+    ///
+    /// Controls extended thinking for models that support it (e.g. Claude Opus,
+    /// OpenAI o-series). Higher values enable deeper reasoning but increase
+    /// latency and token usage.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Voice configuration (TTS and STT).
@@ -813,6 +850,23 @@ impl Default for ServerConfig {
     }
 }
 
+/// ngrok public HTTPS tunnel configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NgrokConfig {
+    /// Whether the ngrok tunnel is enabled.
+    pub enabled: bool,
+    /// ngrok authtoken. If unset, `NGROK_AUTHTOKEN` is used.
+    #[serde(
+        default,
+        serialize_with = "serialize_option_secret",
+        deserialize_with = "deserialize_option_secret"
+    )]
+    pub authtoken: Option<Secret<String>>,
+    /// Optional reserved/static domain to request from ngrok.
+    pub domain: Option<String>,
+}
+
 /// Failover configuration for automatic model/provider failover.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1052,17 +1106,21 @@ pub struct MemoryEmbeddingConfig {
     /// Memory backend: "builtin" (default) or "qmd" for QMD sidecar.
     pub backend: Option<String>,
     /// Embedding provider: "local", "ollama", "openai", "custom", or None for auto-detect.
+    #[serde(alias = "embedding_provider")]
     pub provider: Option<String>,
     /// Disable RAG embeddings and force keyword-only memory search.
     #[serde(default)]
     pub disable_rag: bool,
     /// Base URL for the embedding API (e.g. "http://localhost:11434/v1" for Ollama).
+    #[serde(alias = "embedding_base_url")]
     pub base_url: Option<String>,
     /// Model name (e.g. "nomic-embed-text" for Ollama, "text-embedding-3-small" for OpenAI).
+    #[serde(alias = "embedding_model")]
     pub model: Option<String>,
     /// API key (optional for local endpoints like Ollama).
     #[serde(
         default,
+        alias = "embedding_api_key",
         serialize_with = "serialize_option_secret",
         skip_serializing_if = "Option::is_none"
     )]
@@ -1211,6 +1269,9 @@ pub struct SkillsConfig {
     /// Skills to always load (by name) without explicit activation.
     #[serde(default)]
     pub auto_load: Vec<String>,
+    /// Whether agents may write supplementary files inside personal skill directories.
+    #[serde(default)]
+    pub enable_agent_sidecar_files: bool,
 }
 
 fn default_true() -> bool {
@@ -1218,12 +1279,28 @@ fn default_true() -> bool {
 }
 
 /// MCP (Model Context Protocol) server configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct McpConfig {
+    /// Default timeout for MCP requests in seconds.
+    #[serde(default = "default_mcp_request_timeout_secs")]
+    pub request_timeout_secs: u64,
     /// Configured MCP servers, keyed by server name.
     #[serde(default)]
     pub servers: HashMap<String, McpServerEntry>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout_secs: default_mcp_request_timeout_secs(),
+            servers: HashMap::new(),
+        }
+    }
+}
+
+fn default_mcp_request_timeout_secs() -> u64 {
+    30
 }
 
 /// Configuration for a single MCP server.
@@ -1241,15 +1318,24 @@ pub struct McpServerEntry {
     /// Whether this server is enabled. Defaults to true.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Transport type: "stdio" (default) or "sse".
+    /// Optional per-server MCP request timeout override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_secs: Option<u64>,
+    /// Transport type: "stdio" (default), "sse", or "streamable-http".
     #[serde(default)]
     pub transport: String,
-    /// URL for SSE transport. Required when `transport` is "sse".
+    /// URL for SSE/Streamable HTTP transport. Required when `transport` is "sse" or "streamable-http".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Custom headers for remote HTTP/SSE transport.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Manual OAuth override for servers that don't support standard discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<McpOAuthOverrideEntry>,
+    /// Custom display name for the server (shown in UI instead of technical ID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// Manual OAuth configuration override for an MCP server.
@@ -1273,14 +1359,16 @@ pub struct McpOAuthOverrideEntry {
 ///
 /// Kept in `moltis-config` (not `moltis-channels`) so the config crate stays
 /// independent of the channels crate while still validating channel names.
-pub const KNOWN_CHANNEL_TYPES: &[&str] = &["telegram", "whatsapp", "msteams", "discord", "slack"];
+pub const KNOWN_CHANNEL_TYPES: &[&str] = &[
+    "telegram", "whatsapp", "msteams", "discord", "slack", "matrix",
+];
 
 /// Channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChannelsConfig {
     /// Which channel types are offered in the web UI (onboarding + channels page).
-    /// Defaults to `["telegram", "discord", "slack"]`. Add `"msteams"` or `"whatsapp"` to opt in.
+    /// Defaults to `["telegram", "discord", "slack", "matrix"]`. Add `"msteams"` or `"whatsapp"` to opt in.
     #[serde(
         default = "default_channels_offered",
         skip_serializing_if = "Vec::is_empty"
@@ -1336,7 +1424,12 @@ impl ChannelsConfig {
 }
 
 fn default_channels_offered() -> Vec<String> {
-    vec!["telegram".into(), "discord".into(), "slack".into()]
+    vec![
+        "telegram".into(),
+        "discord".into(),
+        "slack".into(),
+        "matrix".into(),
+    ]
 }
 
 impl Default for ChannelsConfig {
@@ -1426,6 +1519,17 @@ pub enum MessageQueueMode {
     Collect,
 }
 
+/// How tool schemas are presented to the model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolRegistryMode {
+    /// All tool schemas are sent to the model on every turn (default).
+    #[default]
+    Full,
+    /// Only `tool_search` is sent; the model discovers and activates tools on demand.
+    Lazy,
+}
+
 /// Tools configuration (exec, sandbox, policy, web, browser).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1444,6 +1548,9 @@ pub struct ToolsConfig {
     /// Maximum bytes for a single tool result before truncation. Default 50KB.
     #[serde(default = "default_max_tool_result_bytes")]
     pub max_tool_result_bytes: usize,
+    /// How tool schemas are presented to the model. Default "full".
+    #[serde(default)]
+    pub registry_mode: ToolRegistryMode,
 }
 
 impl Default for ToolsConfig {
@@ -1457,6 +1564,7 @@ impl Default for ToolsConfig {
             agent_timeout_secs: default_agent_timeout_secs(),
             agent_max_iterations: default_agent_max_iterations(),
             max_tool_result_bytes: default_max_tool_result_bytes(),
+            registry_mode: ToolRegistryMode::default(),
         }
     }
 }
@@ -1493,12 +1601,13 @@ pub enum MapProvider {
     OpenStreetMap,
 }
 
-/// Web tools configuration (search, fetch).
+/// Web tools configuration (search, fetch, firecrawl).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebConfig {
     pub search: WebSearchConfig,
     pub fetch: WebFetchConfig,
+    pub firecrawl: FirecrawlConfig,
 }
 
 /// Search provider selection.
@@ -1508,6 +1617,7 @@ pub enum SearchProvider {
     #[default]
     Brave,
     Perplexity,
+    Firecrawl,
 }
 
 /// Web search tool configuration.
@@ -1600,6 +1710,51 @@ impl Default for WebFetchConfig {
             max_redirects: 3,
             readability: true,
             ssrf_allowlist: Vec::new(),
+        }
+    }
+}
+
+/// Firecrawl integration configuration.
+///
+/// Firecrawl provides high-quality markdown extraction from web pages,
+/// including JS-heavy and bot-protected sites.  Used as a standalone
+/// `firecrawl_scrape` tool, as a `web_search` provider, and as a
+/// fallback extractor inside `web_fetch`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FirecrawlConfig {
+    /// Enable Firecrawl integration.
+    pub enabled: bool,
+    /// Firecrawl API key (overrides `FIRECRAWL_API_KEY` env var).
+    #[serde(
+        default,
+        serialize_with = "serialize_option_secret",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_key: Option<Secret<String>>,
+    /// Firecrawl API base URL (for self-hosted instances).
+    pub base_url: String,
+    /// Only extract main content (skip navs, footers, etc.).
+    pub only_main_content: bool,
+    /// HTTP request timeout in seconds.
+    pub timeout_seconds: u64,
+    /// In-memory cache TTL in minutes (0 to disable).
+    pub cache_ttl_minutes: u64,
+    /// Use Firecrawl as fallback in `web_fetch` when readability
+    /// extraction produces poor results.
+    pub web_fetch_fallback: bool,
+}
+
+impl Default for FirecrawlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            base_url: "https://api.firecrawl.dev".into(),
+            only_main_content: true,
+            timeout_seconds: 30,
+            cache_ttl_minutes: 15,
+            web_fetch_fallback: true,
         }
     }
 }
@@ -1717,11 +1872,14 @@ pub struct ExecConfig {
     pub security_level: String,
     pub allowlist: Vec<String>,
     pub sandbox: SandboxConfig,
-    /// Where to run commands: `"local"` (default) or `"node"`.
+    /// Where to run commands: `"local"` (default), `"node"`, or `"ssh"`.
     pub host: String,
     /// Default node id or display name for remote execution (when `host = "node"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// Default SSH target for remote execution (when `host = "ssh"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_target: Option<String>,
 }
 
 impl Default for ExecConfig {
@@ -1735,6 +1893,7 @@ impl Default for ExecConfig {
             sandbox: SandboxConfig::default(),
             host: "local".into(),
             node: None,
+            ssh_target: None,
         }
     }
 }
@@ -1821,6 +1980,9 @@ pub struct SandboxConfig {
     pub mode: String,
     pub scope: String,
     pub workspace_mount: String,
+    /// Optional host-visible path for Moltis `data_dir()` when creating
+    /// sandbox containers from inside another container.
+    pub host_data_dir: Option<String>,
     /// Persistence strategy for `/home/sandbox`: off, session, or shared.
     pub home_persistence: HomePersistenceConfig,
     /// Optional host directory for shared `/home/sandbox` persistence.
@@ -2036,6 +2198,7 @@ impl Default for SandboxConfig {
             mode: "all".into(),
             scope: "session".into(),
             workspace_mount: "ro".into(),
+            host_data_dir: None,
             home_persistence: HomePersistenceConfig::default(),
             shared_home_dir: None,
             image: None,
@@ -2085,6 +2248,12 @@ pub struct ProvidersConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offered: Vec<String>,
 
+    /// Show models older than one year in the chat model selector.
+    /// By default only recent models are shown; legacy models remain
+    /// accessible in the settings page regardless of this flag.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub show_legacy_models: bool,
+
     /// Provider-specific settings keyed by provider name.
     /// Known keys: "anthropic", "openai", "gemini", "groq", "xai", "deepseek"
     #[serde(flatten)]
@@ -2113,6 +2282,41 @@ pub enum ToolMode {
 
 const fn is_default_tool_mode(v: &ToolMode) -> bool {
     matches!(v, ToolMode::Auto)
+}
+
+const fn is_default_cache_retention(v: &CacheRetention) -> bool {
+    matches!(v, CacheRetention::Short)
+}
+
+/// Wire format for provider HTTP API.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WireApi {
+    /// Standard OpenAI Chat Completions format (`/chat/completions`).
+    #[default]
+    ChatCompletions,
+    /// OpenAI Responses API format (`/responses`).
+    Responses,
+}
+
+/// Prompt cache retention policy for providers that support client-controlled
+/// caching (Anthropic direct, Anthropic via OpenRouter/Bedrock).
+///
+/// - `none`: disable prompt caching (no `cache_control` breakpoints sent).
+/// - `short` (default for Anthropic): 5-minute ephemeral cache.
+/// - `long`: same as `short` today (Anthropic only supports ephemeral), but
+///   signals intent for longer retention when providers add TTL tiers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheRetention {
+    /// No prompt caching — skip `cache_control` breakpoints entirely.
+    None,
+    /// Short-lived ephemeral cache (5 min TTL on Anthropic). Default for Anthropic.
+    #[default]
+    Short,
+    /// Long-lived cache. Currently equivalent to `short` (ephemeral), but
+    /// reserved for future provider support of extended TTL tiers.
+    Long,
 }
 
 /// Streaming transport for provider response streams.
@@ -2163,6 +2367,13 @@ pub struct ProviderEntry {
     #[serde(default, skip_serializing_if = "is_default_provider_stream_transport")]
     pub stream_transport: ProviderStreamTransport,
 
+    /// Wire format for this provider (`chat-completions`, `responses`).
+    ///
+    /// - `chat-completions` (default): standard `/chat/completions` endpoint.
+    /// - `responses`: OpenAI Responses API (`/responses`) format.
+    #[serde(default, skip_serializing_if = "is_default_wire_api")]
+    pub wire_api: WireApi,
+
     /// Optional alias for this provider instance.
     ///
     /// When set, this alias is used in metrics labels instead of the provider name.
@@ -2180,6 +2391,18 @@ pub struct ProviderEntry {
     /// - `off`: disable all tools for this provider.
     #[serde(default, skip_serializing_if = "is_default_tool_mode")]
     pub tool_mode: ToolMode,
+
+    /// Prompt cache retention policy.
+    ///
+    /// - `none`: disable prompt caching entirely.
+    /// - `short` (default): ephemeral 5-minute cache (Anthropic).
+    /// - `long`: same as `short` today, reserved for future extended TTL.
+    ///
+    /// Only affects providers that support client-controlled caching
+    /// (Anthropic direct, Anthropic via OpenRouter). Has no effect on
+    /// providers with automatic server-side caching (OpenAI, DeepSeek, Ollama).
+    #[serde(default, skip_serializing_if = "is_default_cache_retention")]
+    pub cache_retention: CacheRetention,
 }
 
 impl std::fmt::Debug for ProviderEntry {
@@ -2191,8 +2414,10 @@ impl std::fmt::Debug for ProviderEntry {
             .field("models", &self.models)
             .field("fetch_models", &self.fetch_models)
             .field("stream_transport", &self.stream_transport)
+            .field("wire_api", &self.wire_api)
             .field("alias", &self.alias)
             .field("tool_mode", &self.tool_mode)
+            .field("cache_retention", &self.cache_retention)
             .finish()
     }
 }
@@ -2206,8 +2431,10 @@ impl Default for ProviderEntry {
             models: Vec::new(),
             fetch_models: true,
             stream_transport: ProviderStreamTransport::Sse,
+            wire_api: WireApi::ChatCompletions,
             alias: None,
             tool_mode: ToolMode::Auto,
+            cache_retention: CacheRetention::Short,
         }
     }
 }
@@ -2236,8 +2463,16 @@ const fn is_true(value: &bool) -> bool {
     *value
 }
 
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 const fn is_default_provider_stream_transport(value: &ProviderStreamTransport) -> bool {
     matches!(value, ProviderStreamTransport::Sse)
+}
+
+const fn is_default_wire_api(value: &WireApi) -> bool {
+    matches!(value, WireApi::ChatCompletions)
 }
 
 impl ProvidersConfig {
@@ -2297,6 +2532,8 @@ impl ProvidersConfig {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
+    use secrecy::ExposeSecret;
+
     use super::*;
 
     #[test]
@@ -2351,6 +2588,16 @@ mod tests {
     }
 
     #[test]
+    fn skills_config_sidecar_files_default_disabled() {
+        let toml = r#"
+[skills]
+enabled = true
+"#;
+        let parsed: MoltisConfig = toml::from_str(toml).unwrap();
+        assert!(!parsed.skills.enable_agent_sidecar_files);
+    }
+
+    #[test]
     fn env_section_parses() {
         let toml = r#"
 [env]
@@ -2374,6 +2621,33 @@ OPENROUTER_API_KEY = "sk-or-test"
         let config: MoltisConfig = toml::from_str("").unwrap();
         assert!(config.agents.default_preset.is_none());
         assert!(config.agents.presets.is_empty());
+    }
+
+    #[test]
+    fn mcp_config_defaults_request_timeout() {
+        let config: MoltisConfig = toml::from_str("").unwrap();
+        assert_eq!(config.mcp.request_timeout_secs, 30);
+    }
+
+    #[test]
+    fn mcp_server_entry_parses_request_timeout_override() {
+        let config: MoltisConfig = toml::from_str(
+            r#"
+[mcp.servers.memory]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
+request_timeout_secs = 75
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .mcp
+                .servers
+                .get("memory")
+                .and_then(|entry| entry.request_timeout_secs),
+            Some(75)
+        );
     }
 
     #[test]
@@ -2498,12 +2772,13 @@ deny = ["exec"]
     }
 
     #[test]
-    fn channels_config_defaults_to_telegram_discord_slack_offered() {
+    fn channels_config_defaults_to_telegram_discord_slack_matrix_offered() {
         let config = ChannelsConfig::default();
         assert_eq!(config.offered, vec![
             "telegram".to_string(),
             "discord".to_string(),
             "slack".to_string(),
+            "matrix".to_string(),
         ]);
     }
 
@@ -2514,6 +2789,7 @@ deny = ["exec"]
             "telegram".to_string(),
             "discord".to_string(),
             "slack".to_string(),
+            "matrix".to_string(),
         ]);
     }
 
@@ -2564,6 +2840,7 @@ token = "xoxb-test"
         let sandbox = SandboxConfig::default();
         assert!(sandbox.packages.iter().any(|pkg| pkg == "golang-go"));
         assert_eq!(sandbox.home_persistence, HomePersistenceConfig::Shared);
+        assert!(sandbox.host_data_dir.is_none());
         assert!(sandbox.wasm_tool_limits.is_none());
     }
 
@@ -2582,6 +2859,7 @@ token = "xoxb-test"
 mode = "all"
 scope = "session"
 workspace_mount = "ro"
+host_data_dir = "/host/moltis-data"
 
 [wasm_tool_limits]
 default_memory = 2048
@@ -2594,6 +2872,7 @@ memory = 300
         )
         .unwrap();
 
+        assert_eq!(config.host_data_dir.as_deref(), Some("/host/moltis-data"));
         let limits = config.wasm_tool_limits.unwrap();
         assert_eq!(limits.default_memory, 2048);
         assert_eq!(limits.default_fuel, 5000);
@@ -2691,6 +2970,39 @@ url = "http://192.168.0.9:11434"
     }
 
     #[test]
+    fn memory_embedding_legacy_aliases_map_to_current_fields() {
+        let config: MoltisConfig = toml::from_str(
+            r#"
+[memory]
+embedding_provider = "custom"
+embedding_base_url = "http://moltis-embeddings:7997/v1"
+embedding_model = "intfloat/multilingual-e5-small"
+embedding_api_key = "secret-key"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.memory.provider.as_deref(), Some("custom"));
+        assert_eq!(
+            config.memory.base_url.as_deref(),
+            Some("http://moltis-embeddings:7997/v1")
+        );
+        assert_eq!(
+            config.memory.model.as_deref(),
+            Some("intfloat/multilingual-e5-small")
+        );
+        assert_eq!(
+            config
+                .memory
+                .api_key
+                .as_ref()
+                .map(ExposeSecret::expose_secret)
+                .map(String::as_str),
+            Some("secret-key")
+        );
+    }
+
+    #[test]
     fn full_config_with_tool_mode() {
         let toml_str = r#"
 [providers.ollama]
@@ -2709,6 +3021,79 @@ tool_mode = "native"
         assert_eq!(
             config.providers.get("anthropic").unwrap().tool_mode,
             ToolMode::Native
+        );
+    }
+
+    #[test]
+    fn wire_api_serde_roundtrip() {
+        assert_eq!(
+            serde_json::to_string(&WireApi::ChatCompletions).unwrap(),
+            "\"chat-completions\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WireApi::Responses).unwrap(),
+            "\"responses\""
+        );
+        assert_eq!(
+            serde_json::from_str::<WireApi>("\"chat-completions\"").unwrap(),
+            WireApi::ChatCompletions
+        );
+        assert_eq!(
+            serde_json::from_str::<WireApi>("\"responses\"").unwrap(),
+            WireApi::Responses
+        );
+    }
+
+    #[test]
+    fn wire_api_default_is_chat_completions() {
+        assert_eq!(WireApi::default(), WireApi::ChatCompletions);
+    }
+
+    #[test]
+    fn provider_entry_wire_api_from_toml() {
+        let toml_str = r#"
+[providers.custom-mn]
+enabled = true
+base_url = "https://gmn.example.com/v1"
+wire_api = "responses"
+models = ["gpt-5.3-codex"]
+"#;
+        let config: MoltisConfig = toml::from_str(toml_str).unwrap();
+        let entry = config.providers.get("custom-mn").unwrap();
+        assert_eq!(entry.wire_api, WireApi::Responses);
+    }
+
+    #[test]
+    fn provider_entry_wire_api_defaults_to_chat_completions() {
+        let toml_str = r#"
+[providers.openai]
+enabled = true
+"#;
+        let config: MoltisConfig = toml::from_str(toml_str).unwrap();
+        let entry = config.providers.get("openai").unwrap();
+        assert_eq!(entry.wire_api, WireApi::ChatCompletions);
+    }
+
+    #[test]
+    fn provider_entry_wire_api_skip_serializing_default() {
+        let entry = ProviderEntry::default();
+        let serialized = toml::to_string(&entry).unwrap();
+        assert!(
+            !serialized.contains("wire_api"),
+            "default wire_api should be skipped in serialization"
+        );
+    }
+
+    #[test]
+    fn provider_entry_wire_api_serializes_responses() {
+        let entry = ProviderEntry {
+            wire_api: WireApi::Responses,
+            ..Default::default()
+        };
+        let serialized = toml::to_string(&entry).unwrap();
+        assert!(
+            serialized.contains("wire_api = \"responses\""),
+            "non-default wire_api should be serialized"
         );
     }
 }

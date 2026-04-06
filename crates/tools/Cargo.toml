@@ -4,8 +4,9 @@ name              = "moltis-tools"
 version.workspace = true
 
 [features]
-default       = ["metrics", "wasm"]
+default       = ["firecrawl", "metrics", "wasm"]
 embedded-wasm = []
+firecrawl     = []
 metrics       = ["dep:moltis-metrics"]
 wasm          = ["dep:shell-words", "dep:wasmtime", "dep:wasmtime-wasi", "wasmtime/component-model"]
 
@@ -15,6 +16,7 @@ async-trait           = { workspace = true }
 base64                = { workspace = true }
 bytes                 = { workspace = true }
 futures               = { workspace = true }
+html2text             = { workspace = true }
 image                 = { workspace = true }
 ipnet                 = { workspace = true }
 moltis-agents         = { workspace = true }
@@ -22,6 +24,7 @@ moltis-browser        = { workspace = true }
 moltis-common         = { workspace = true }
 moltis-config         = { workspace = true }
 moltis-cron           = { workspace = true }
+moltis-media          = { workspace = true }
 moltis-metrics        = { optional = true, workspace = true }
 moltis-network-filter = { workspace = true }
 moltis-providers      = { workspace = true }

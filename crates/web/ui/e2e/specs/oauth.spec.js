@@ -38,6 +38,12 @@ async function configureMock(mockPort, options) {
 	return res.ok;
 }
 
+async function getLastRedirectUrl(mockPort) {
+	var res = await fetch(mockUrl(mockPort, "/last-redirect"));
+	var payload = await res.json();
+	return payload?.redirect_url || "";
+}
+
 function removeIfExists(filePath) {
 	try {
 		fs.rmSync(filePath, { force: true });
@@ -65,6 +71,26 @@ async function openProviderPicker(page) {
 	var codexCard = page.locator("#providerModalBody .provider-item").filter({ hasText: "OpenAI Codex" }).first();
 	await expect(codexCard).toBeVisible();
 	return codexCard;
+}
+
+async function waitForOAuthConnectionComplete(page) {
+	var successBanner = page.getByText(/connected successfully/i);
+	var modalTitle = page.locator("#providerModalTitle");
+	var modelPickerHint = page.getByText("Select models to add", { exact: true });
+
+	await expect
+		.poll(
+			async () => {
+				if (await successBanner.isVisible().catch(() => false)) return true;
+				if (await modalTitle.isVisible().catch(() => false)) {
+					var titleText = (await modalTitle.textContent()) || "";
+					if (/Select Models?/i.test(titleText)) return true;
+				}
+				return modelPickerHint.isVisible().catch(() => false);
+			},
+			{ timeout: 15_000 },
+		)
+		.toBe(true);
 }
 
 test.describe("OAuth provider connection", () => {
@@ -123,7 +149,7 @@ test.describe("OAuth provider connection", () => {
 
 		// Back in the main page, wait for the polling to detect the authenticated state.
 		// The UI should either show "connected" or transition to a model selector.
-		await expect(page.getByText(/connected successfully|Select Model/i)).toBeVisible({ timeout: 15_000 });
+		await waitForOAuthConnectionComplete(page);
 
 		// Verify mock server received the expected calls
 		var calls = await getMockCalls(mockPort);
@@ -139,6 +165,48 @@ test.describe("OAuth provider connection", () => {
 		expect(authCall.query.code_challenge_method).toBe("S256");
 		expect(authCall.query.state).toBeTruthy();
 		expect(authCall.query.client_id).toBe("test-client-id");
+
+		expect(pageErrors).toEqual([]);
+	});
+
+	test("OAuth can be completed by pasting callback URL in settings UI", async ({ page, context }) => {
+		var pageErrors = watchPageErrors(page);
+		await openProvidersSettingsPage(page);
+
+		// Prevent authorize endpoint from auto-redirecting back to callback so
+		// we can test manual callback submission.
+		await configureMock(mockPort, { authorize_should_not_redirect: "true" });
+
+		var codexCard = await openProviderPicker(page);
+		await codexCard.click();
+		await expect(page.getByRole("button", { name: "Connect" })).toBeVisible();
+
+		var popupPromise = context.waitForEvent("page", { timeout: 10_000 });
+		await page.getByRole("button", { name: "Connect" }).click();
+		await popupPromise;
+
+		var callbackInput = page.getByPlaceholder("http://localhost:1455/auth/callback?code=...&state=...");
+		await expect(callbackInput).toBeVisible();
+
+		var redirectUrl = "";
+		await expect
+			.poll(
+				async () => {
+					redirectUrl = await getLastRedirectUrl(mockPort);
+					return redirectUrl.length > 0;
+				},
+				{ timeout: 10_000 },
+			)
+			.toBe(true);
+
+		await callbackInput.fill(redirectUrl);
+		await page.getByRole("button", { name: "Submit Callback" }).click();
+
+		await waitForOAuthConnectionComplete(page);
+
+		var calls = await getMockCalls(mockPort);
+		var tokenCalls = calls.filter((c) => c.path === "/token");
+		expect(tokenCalls.length).toBe(1);
 
 		expect(pageErrors).toEqual([]);
 	});
@@ -176,7 +244,7 @@ test.describe("OAuth provider connection", () => {
 		}
 
 		// Wait for connection to complete.
-		await expect(page.getByText(/connected successfully|Select Model/i)).toBeVisible({ timeout: 15_000 });
+		await waitForOAuthConnectionComplete(page);
 
 		// Close the modal if a model picker is still open.
 		var modalClose = page.locator("#providerModalClose");

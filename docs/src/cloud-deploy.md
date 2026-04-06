@@ -44,6 +44,35 @@ Set this to the name of your cloud provider (e.g. `flyio`, `digitalocean`,
 on cloud VMs. The included deploy templates for Fly.io, DigitalOcean, and
 Render already set this variable.
 
+## ngrok
+
+Moltis can also expose a public HTTPS endpoint through ngrok without running
+an external `ngrok` binary. This is useful when you want a public callback
+URL or temporary team access from a local machine or private host.
+
+Configuration:
+
+```toml
+[ngrok]
+enabled = true
+authtoken = "${NGROK_AUTHTOKEN}" # or set NGROK_AUTHTOKEN in the environment
+# domain = "team-gateway.ngrok.app" # optional reserved/static domain
+```
+
+Notes:
+
+- The tunnel is feature-gated. Standard CLI builds include it by default, but
+  custom minimal builds can opt out of the `ngrok` feature.
+- In the web UI, configure Tailscale and ngrok from Settings -> Remote Access.
+- ngrok forwards into a loopback-only internal HTTP listener. Your normal
+  local TLS and bind settings remain unchanged.
+- Keep authentication enabled. Exposing ngrok with `auth.disabled = true`
+  creates a public unauthenticated endpoint, which is exactly as bad as it
+  sounds.
+- Passkeys are hostname-bound. If you use ephemeral ngrok URLs, existing
+  passkeys may not work on the new hostname. Use a reserved domain if you want
+  stable passkey behavior.
+
 ## Coolify (self-hosted, e.g. Hetzner)
 
 Coolify deployments can run Moltis with sandboxed exec tools, as long as the
@@ -170,9 +199,11 @@ docker exec -it moltis moltis auth login --provider openai-codex
 docker exec -it <container> moltis auth login --provider openai-codex
 ```
 
-The CLI opens a browser on the machine where you run the command. After you
-log in, tokens are saved to the config volume and the running gateway picks
-them up automatically — no restart needed.
+The CLI opens a browser on the machine where you run the command. If automatic
+callback capture fails, Moltis prompts you to paste the callback URL (or
+`code#state`) directly in the terminal. After you log in, tokens are saved to
+the config volume and the running gateway picks them up automatically — no
+restart needed.
 
 ```admonish tip
 GitHub Copilot uses device-flow authentication (a code you enter on

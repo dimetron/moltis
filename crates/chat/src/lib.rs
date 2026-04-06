@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -37,6 +38,7 @@ use {
     moltis_providers::{ProviderRegistry, raw_model_id},
     moltis_sessions::{
         ContentBlock, MessageContent, PersistedMessage,
+        message::{PersistedFunction, PersistedToolCall},
         metadata::{SessionEntry, SqliteSessionMetadata},
         store::SessionStore,
     },
@@ -306,6 +308,20 @@ fn session_token_usage_from_messages(messages: &[Value]) -> SessionTokenUsage {
         current_request_input_tokens,
         current_request_output_tokens,
     }
+}
+
+#[must_use]
+fn assistant_message_is_visible(message: &Value) -> bool {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return true;
+    }
+
+    ["content", "reasoning"].iter().any(|field| {
+        message
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+    })
 }
 
 #[must_use]
@@ -626,9 +642,7 @@ async fn run_single_probe(
         };
     }
 
-    let probe = [ChatMessage::user("ping")];
-    let completion =
-        tokio::time::timeout(Duration::from_secs(20), provider.complete(&probe, &[])).await;
+    let completion = tokio::time::timeout(Duration::from_secs(20), provider.probe()).await;
 
     match completion {
         Ok(Ok(_)) => {
@@ -775,37 +789,9 @@ fn infer_reply_medium(params: &Value, text: &str) -> ReplyMedium {
     ReplyMedium::Text
 }
 
-fn runtime_datetime_prompt_tail(runtime_context: Option<&PromptRuntimeContext>) -> Option<String> {
-    let runtime = runtime_context?;
-    if let Some(time) = runtime
-        .host
-        .time
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        return Some(format!("\nThe current user datetime is {time}.\n"));
-    }
-    runtime
-        .host
-        .today
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .map(|today| format!("\nThe current user date is {today}.\n"))
-}
-
-fn apply_voice_reply_suffix(
-    system_prompt: String,
-    desired_reply_medium: ReplyMedium,
-    runtime_context: Option<&PromptRuntimeContext>,
-) -> String {
+fn apply_voice_reply_suffix(system_prompt: String, desired_reply_medium: ReplyMedium) -> String {
     if desired_reply_medium != ReplyMedium::Voice {
         return system_prompt;
-    }
-
-    if let Some(tail) = runtime_datetime_prompt_tail(runtime_context)
-        && let Some(prefix) = system_prompt.strip_suffix(&tail)
-    {
-        return format!("{prefix}{VOICE_REPLY_SUFFIX}{tail}");
     }
 
     format!("{system_prompt}{VOICE_REPLY_SUFFIX}")
@@ -1159,12 +1145,21 @@ async fn build_prompt_runtime_context(
     let sandbox_fut = async {
         if let Some(router) = state.sandbox_router() {
             let is_sandboxed = router.is_sandboxed(session_key).await;
+            // Only include sandbox context when sandbox is actually enabled for
+            // this session.  When disabled, omitting it prevents the LLM from
+            // hallucinating sandbox usage (see #360).  This intentionally
+            // discards `session_override` — its only consumer is the prompt
+            // line we are omitting, and no other code reads it from
+            // `PromptSandboxRuntimeContext`.
+            if !is_sandboxed {
+                return None;
+            }
             let config = router.config();
             let backend_name = router.backend_name();
             let workspace_mount = config.workspace_mount.to_string();
             let workspace_path = (workspace_mount != "none").then(|| data_dir_display.clone());
             Some(PromptSandboxRuntimeContext {
-                exec_sandboxed: is_sandboxed,
+                exec_sandboxed: true,
                 mode: Some(config.mode.to_string()),
                 backend: Some(backend_name.to_string()),
                 scope: Some(config.scope.to_string()),
@@ -1176,18 +1171,7 @@ async fn build_prompt_runtime_context(
                 session_override: session_entry.and_then(|entry| entry.sandbox_enabled),
             })
         } else {
-            Some(PromptSandboxRuntimeContext {
-                exec_sandboxed: false,
-                mode: Some("off".to_string()),
-                backend: Some("none".to_string()),
-                scope: None,
-                image: None,
-                home: None,
-                workspace_mount: None,
-                workspace_path: None,
-                no_network: None,
-                session_override: None,
-            })
+            None
         }
     };
 
@@ -1244,12 +1228,7 @@ async fn build_prompt_runtime_context(
                     platform: n.platform,
                     capabilities: n.capabilities,
                     cpu_count: n.cpu_count,
-                    cpu_usage: n.cpu_usage,
                     mem_total: n.mem_total,
-                    mem_available: n.mem_available,
-                    telemetry_stale: n.telemetry_stale,
-                    disk_total: n.disk_total,
-                    disk_available: n.disk_available,
                     runtimes: n.runtimes,
                     providers: n.providers,
                 })
@@ -1516,6 +1495,12 @@ pub struct LiveModelService {
     state: Arc<OnceCell<Arc<dyn ChatRuntime>>>,
     detect_gate: Arc<Semaphore>,
     priority_models: Arc<RwLock<Vec<String>>>,
+    show_legacy_models: bool,
+    /// Provider config for runtime model rediscovery.
+    providers_config: moltis_config::schema::ProvidersConfig,
+    /// Environment variable overrides for runtime model rediscovery.
+    /// Shared so the gateway can update it after loading UI-stored keys.
+    env_overrides: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl LiveModelService {
@@ -1530,7 +1515,34 @@ impl LiveModelService {
             state: Arc::new(OnceCell::new()),
             detect_gate: Arc::new(Semaphore::new(1)),
             priority_models: Arc::new(RwLock::new(priority_models)),
+            show_legacy_models: false,
+            providers_config: moltis_config::schema::ProvidersConfig::default(),
+            env_overrides: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub fn with_show_legacy_models(mut self, show: bool) -> Self {
+        self.show_legacy_models = show;
+        self
+    }
+
+    /// Set the provider config and initial env overrides used for runtime
+    /// model rediscovery when "Detect All Models" is triggered.
+    pub fn with_discovery_config(
+        mut self,
+        providers_config: moltis_config::schema::ProvidersConfig,
+        env_overrides: HashMap<String, String>,
+    ) -> Self {
+        self.providers_config = providers_config;
+        self.env_overrides = Arc::new(RwLock::new(env_overrides));
+        self
+    }
+
+    /// Shared handle to the env overrides. Pass this to code that needs to
+    /// update the overrides after construction (e.g. when runtime UI-stored
+    /// API keys are loaded from the credential store).
+    pub fn env_overrides_handle(&self) -> Arc<RwLock<HashMap<String, String>>> {
+        Arc::clone(&self.env_overrides)
     }
 
     /// Shared handle to the priority models list. Pass this to services
@@ -1572,12 +1584,39 @@ impl LiveModelService {
     ) -> Vec<&'a moltis_providers::ModelInfo> {
         let mut ordered: Vec<(usize, &'a moltis_providers::ModelInfo)> =
             models.enumerate().collect();
-        ordered.sort_by_key(|(idx, model)| {
-            (
-                Self::priority_rank(order, model),
-                subscription_provider_rank(&model.provider),
-                *idx,
-            )
+        ordered.sort_by(|(idx_a, a), (idx_b, b)| {
+            let rank_a = Self::priority_rank(order, a);
+            let rank_b = Self::priority_rank(order, b);
+            // Preferred (rank != MAX) first, then non-preferred
+            let bucket_a = if rank_a == usize::MAX {
+                1u8
+            } else {
+                0
+            };
+            let bucket_b = if rank_b == usize::MAX {
+                1u8
+            } else {
+                0
+            };
+            bucket_a
+                .cmp(&bucket_b)
+                .then_with(|| {
+                    if bucket_a == 0 {
+                        rank_a.cmp(&rank_b)
+                    } else {
+                        Ordering::Equal
+                    }
+                })
+                .then_with(|| {
+                    a.display_name
+                        .to_lowercase()
+                        .cmp(&b.display_name.to_lowercase())
+                })
+                .then_with(|| {
+                    subscription_provider_rank(&a.provider)
+                        .cmp(&subscription_provider_rank(&b.provider))
+                })
+                .then_with(|| idx_a.cmp(idx_b))
         });
         ordered.into_iter().map(|(_, model)| model).collect()
     }
@@ -1723,18 +1762,44 @@ impl ModelService for LiveModelService {
         let reg = self.providers.read().await;
         let disabled = self.disabled.read().await;
         let order = self.priority_order().await;
+        let all_models = reg.list_models_with_reasoning_variants();
+
+        // Hide models older than 1 year from the chat selector unless the
+        // user opted in via `providers.show_legacy_models`.  Preferred models
+        // and models without a timestamp are never hidden.
+        let legacy_cutoff: Option<i64> = if self.show_legacy_models {
+            None
+        } else {
+            let one_year_ago = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+                - 365 * 24 * 60 * 60;
+            Some(one_year_ago)
+        };
+
         let prioritized = Self::prioritize_models(
             &order,
-            reg.list_models()
+            all_models
                 .iter()
                 .filter(|m| moltis_providers::is_chat_capable_model(&m.id))
                 .filter(|m| !disabled.is_disabled(&m.id))
                 .filter(|m| disabled.unsupported_info(&m.id).is_none()),
         );
-        info!(model_count = prioritized.len(), "models.list response");
+        debug!(model_count = prioritized.len(), "models.list response");
         let models: Vec<_> = prioritized
             .iter()
             .copied()
+            .filter(|m| {
+                let preferred = Self::priority_rank(&order, m) != usize::MAX;
+                if preferred {
+                    return true;
+                }
+                match (legacy_cutoff, m.created_at) {
+                    (Some(cutoff), Some(ts)) => ts >= cutoff,
+                    _ => true, // no cutoff or no timestamp → keep
+                }
+            })
             .map(|m| {
                 let supports_tools = reg.get(&m.id).is_some_and(|p| p.supports_tools());
                 let preferred = Self::priority_rank(&order, m) != usize::MAX;
@@ -1744,6 +1809,7 @@ impl ModelService for LiveModelService {
                     "displayName": m.display_name,
                     "supportsTools": supports_tools,
                     "preferred": preferred,
+                    "recommended": m.recommended,
                     "createdAt": m.created_at,
                     "unsupported": false,
                     "unsupportedReason": Value::Null,
@@ -1759,9 +1825,10 @@ impl ModelService for LiveModelService {
         let reg = self.providers.read().await;
         let disabled = self.disabled.read().await;
         let order = self.priority_order().await;
+        let all_models = reg.list_models_with_reasoning_variants();
         let prioritized = Self::prioritize_models(
             &order,
-            reg.list_models()
+            all_models
                 .iter()
                 .filter(|m| moltis_providers::is_chat_capable_model(&m.id)),
         );
@@ -1771,12 +1838,15 @@ impl ModelService for LiveModelService {
             .copied()
             .map(|m| {
                 let supports_tools = reg.get(&m.id).is_some_and(|p| p.supports_tools());
+                let preferred = Self::priority_rank(&order, m) != usize::MAX;
                 let unsupported = disabled.unsupported_info(&m.id);
                 serde_json::json!({
                     "id": m.id,
                     "provider": m.provider,
                     "displayName": m.display_name,
                     "supportsTools": supports_tools,
+                    "preferred": preferred,
+                    "recommended": m.recommended,
                     "createdAt": m.created_at,
                     "disabled": disabled.is_disabled(&m.id),
                     "unsupported": unsupported.is_some(),
@@ -1875,6 +1945,36 @@ impl ModelService for LiveModelService {
         };
 
         let state = self.state.get().cloned();
+
+        // Phase 0: re-discover models from provider APIs so that newly
+        // added models (e.g. a model loaded into llama.cpp after startup)
+        // are found before probing.
+        //
+        // HTTP fetches and Ollama `/api/show` probes run outside the
+        // registry lock; only the fast in-memory registration takes it.
+        {
+            let env_snapshot = self.env_overrides.read().await.clone();
+            let result = moltis_providers::fetch_discoverable_models(
+                &self.providers_config,
+                &env_snapshot,
+                provider_filter.as_deref(),
+            )
+            .await;
+            if !result.is_empty() {
+                let mut reg = self.providers.write().await;
+                let new_count = reg.register_rediscovered_models(
+                    &self.providers_config,
+                    &env_snapshot,
+                    &result,
+                );
+                if new_count > 0 {
+                    tracing::info!(
+                        new_models = new_count,
+                        "rediscovery registered new models before probe"
+                    );
+                }
+            }
+        }
 
         // Phase 1: notify clients to refresh and show the full current model list first.
         if let Some(state) = state.as_ref() {
@@ -2212,30 +2312,8 @@ impl ModelService for LiveModelService {
         let started = Instant::now();
         info!(model_id, provider = provider.name(), "model probe started");
 
-        // Use streaming and return as soon as the first token arrives.
-        // Dropping the stream closes the HTTP connection, which tells the
-        // provider to stop generating — effectively max_tokens: 1.
-        let probe = vec![ChatMessage::user("ping")];
-        let mut stream = provider.stream(probe);
-
-        let result = tokio::time::timeout(Duration::from_secs(10), async {
-            while let Some(event) = stream.next().await {
-                match event {
-                    StreamEvent::Delta(_) | StreamEvent::Done(_) => return Ok(()),
-                    StreamEvent::Error(err) => return Err(err),
-                    // Skip other events (tool calls, etc.) and keep waiting.
-                    _ => continue,
-                }
-            }
-            Err("stream ended without producing any output".to_string())
-        })
-        .await;
-
-        // Drop the stream early to cancel the request on the provider side.
-        drop(stream);
-
-        match result {
-            Ok(Ok(())) => {
+        match provider.probe().await {
+            Ok(()) => {
                 info!(
                     model_id,
                     provider = provider.name(),
@@ -2247,12 +2325,13 @@ impl ModelService for LiveModelService {
                     "modelId": model_id,
                 }))
             },
-            Ok(Err(err)) => {
-                let error_obj = parse_chat_error(&err, Some(provider.name()));
+            Err(err) => {
+                let error_text = err.to_string();
+                let error_obj = parse_chat_error(&error_text, Some(provider.name()));
                 let detail = error_obj
                     .get("detail")
                     .and_then(|v| v.as_str())
-                    .unwrap_or(&err)
+                    .unwrap_or(&error_text)
                     .to_string();
 
                 warn!(
@@ -2263,15 +2342,6 @@ impl ModelService for LiveModelService {
                     "model probe failed"
                 );
                 Err(detail.into())
-            },
-            Err(_) => {
-                warn!(
-                    model_id,
-                    provider = provider.name(),
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "model probe timed out after 10s"
-                );
-                Err("Connection timed out after 10 seconds".into())
             },
         }
     }
@@ -2295,12 +2365,148 @@ pub struct ActiveToolCall {
     pub started_at: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ActiveAssistantDraft {
+    content: String,
+    reasoning: String,
+    model: String,
+    provider: String,
+    seq: Option<u64>,
+    run_id: String,
+}
+
+impl ActiveAssistantDraft {
+    fn new(run_id: &str, model: &str, provider: &str, seq: Option<u64>) -> Self {
+        Self {
+            content: String::new(),
+            reasoning: String::new(),
+            model: model.to_string(),
+            provider: provider.to_string(),
+            seq,
+            run_id: run_id.to_string(),
+        }
+    }
+
+    fn append_text(&mut self, delta: &str) {
+        if !delta.is_empty() {
+            self.content.push_str(delta);
+        }
+    }
+
+    fn set_reasoning(&mut self, reasoning: &str) {
+        self.reasoning.clear();
+        self.reasoning.push_str(reasoning);
+    }
+
+    fn has_visible_content(&self) -> bool {
+        !self.content.trim().is_empty() || !self.reasoning.trim().is_empty()
+    }
+
+    fn to_persisted_message(&self) -> PersistedMessage {
+        let reasoning = self.reasoning.trim();
+        PersistedMessage::Assistant {
+            content: self.content.clone(),
+            created_at: Some(now_ms()),
+            model: Some(self.model.clone()),
+            provider: Some(self.provider.clone()),
+            input_tokens: None,
+            output_tokens: None,
+            duration_ms: None,
+            request_input_tokens: None,
+            request_output_tokens: None,
+            tool_calls: None,
+            reasoning: (!reasoning.is_empty()).then(|| reasoning.to_string()),
+            llm_api_response: None,
+            audio: None,
+            seq: self.seq,
+            run_id: Some(self.run_id.clone()),
+        }
+    }
+}
+
+fn build_persisted_tool_call(
+    tool_call_id: impl Into<String>,
+    tool_name: impl Into<String>,
+    arguments: Option<Value>,
+) -> PersistedToolCall {
+    PersistedToolCall {
+        id: tool_call_id.into(),
+        call_type: "function".to_string(),
+        function: PersistedFunction {
+            name: tool_name.into(),
+            arguments: arguments
+                .unwrap_or_else(|| serde_json::json!({}))
+                .to_string(),
+        },
+    }
+}
+
+fn build_tool_call_assistant_message(
+    tool_call_id: impl Into<String>,
+    tool_name: impl Into<String>,
+    arguments: Option<Value>,
+    seq: Option<u64>,
+    run_id: Option<&str>,
+) -> PersistedMessage {
+    PersistedMessage::Assistant {
+        content: String::new(),
+        created_at: Some(now_ms()),
+        model: None,
+        provider: None,
+        input_tokens: None,
+        output_tokens: None,
+        duration_ms: None,
+        request_input_tokens: None,
+        request_output_tokens: None,
+        tool_calls: Some(vec![build_persisted_tool_call(
+            tool_call_id,
+            tool_name,
+            arguments,
+        )]),
+        reasoning: None,
+        llm_api_response: None,
+        audio: None,
+        seq,
+        run_id: run_id.map(str::to_string),
+    }
+}
+
+async fn persist_tool_history_pair(
+    session_store: &Arc<SessionStore>,
+    session_key: &str,
+    assistant_tool_call_msg: PersistedMessage,
+    tool_result_msg: PersistedMessage,
+    assistant_warn_context: &str,
+    tool_result_warn_context: &str,
+) {
+    if let Err(e) = session_store
+        .append(session_key, &assistant_tool_call_msg.to_value())
+        .await
+    {
+        warn!("{assistant_warn_context}: {e}");
+        warn!(
+            session = %session_key,
+            "skipping tool result persistence to avoid orphaned tool history"
+        );
+        return;
+    }
+
+    if let Err(e) = session_store
+        .append(session_key, &tool_result_msg.to_value())
+        .await
+    {
+        warn!("{tool_result_warn_context}: {e}");
+    }
+}
+
 pub struct LiveChatService {
     providers: Arc<RwLock<ProviderRegistry>>,
     model_store: Arc<RwLock<DisabledModelsStore>>,
     state: Arc<dyn ChatRuntime>,
     active_runs: Arc<RwLock<HashMap<String, AbortHandle>>>,
     active_runs_by_session: Arc<RwLock<HashMap<String, String>>>,
+    active_event_forwarders: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<String>>>>,
+    terminal_runs: Arc<RwLock<HashSet<String>>>,
     tool_registry: Arc<RwLock<ToolRegistry>>,
     session_store: Arc<SessionStore>,
     session_metadata: Arc<SqliteSessionMetadata>,
@@ -2316,6 +2522,9 @@ pub struct LiveChatService {
     active_thinking_text: Arc<RwLock<HashMap<String, String>>>,
     /// Per-session active tool calls for `chat.peek` snapshot.
     active_tool_calls: Arc<RwLock<HashMap<String, Vec<ActiveToolCall>>>>,
+    /// Per-session streamed assistant content buffered so an abort can persist
+    /// what the user already saw instead of dropping it on the floor.
+    active_partial_assistant: Arc<RwLock<HashMap<String, ActiveAssistantDraft>>>,
     /// Per-session reply medium for active runs, so the frontend can restore
     /// `voicePending` state after a page reload.
     active_reply_medium: Arc<RwLock<HashMap<String, ReplyMedium>>>,
@@ -2337,6 +2546,8 @@ impl LiveChatService {
             state,
             active_runs: Arc::new(RwLock::new(HashMap::new())),
             active_runs_by_session: Arc::new(RwLock::new(HashMap::new())),
+            active_event_forwarders: Arc::new(RwLock::new(HashMap::new())),
+            terminal_runs: Arc::new(RwLock::new(HashSet::new())),
             tool_registry: Arc::new(RwLock::new(ToolRegistry::new())),
             session_store,
             session_metadata,
@@ -2346,6 +2557,7 @@ impl LiveChatService {
             last_client_seq: Arc::new(RwLock::new(HashMap::new())),
             active_thinking_text: Arc::new(RwLock::new(HashMap::new())),
             active_tool_calls: Arc::new(RwLock::new(HashMap::new())),
+            active_partial_assistant: Arc::new(RwLock::new(HashMap::new())),
             active_reply_medium: Arc::new(RwLock::new(HashMap::new())),
             failover_config: moltis_config::schema::FailoverConfig::default(),
         }
@@ -2410,6 +2622,7 @@ impl LiveChatService {
     async fn abort_run_handle(
         active_runs: &Arc<RwLock<HashMap<String, AbortHandle>>>,
         active_runs_by_session: &Arc<RwLock<HashMap<String, String>>>,
+        terminal_runs: &Arc<RwLock<HashSet<String>>>,
         run_id: Option<&str>,
         session_key: Option<&str>,
     ) -> (Option<String>, bool) {
@@ -2424,6 +2637,10 @@ impl LiveChatService {
         let Some(target_run_id) = resolved_run_id.clone() else {
             return (None, false);
         };
+
+        if terminal_runs.read().await.contains(&target_run_id) {
+            return (resolved_run_id, false);
+        }
 
         let aborted = if let Some(handle) = active_runs.write().await.remove(&target_run_id) {
             handle.abort();
@@ -2441,6 +2658,79 @@ impl LiveChatService {
         by_session.retain(|_, id| id != &target_run_id);
 
         (resolved_run_id, aborted)
+    }
+
+    async fn resolve_session_key_for_run(
+        active_runs_by_session: &Arc<RwLock<HashMap<String, String>>>,
+        run_id: Option<&str>,
+        session_key: Option<&str>,
+    ) -> Option<String> {
+        if let Some(key) = session_key {
+            return Some(key.to_string());
+        }
+        let target_run_id = run_id?;
+        active_runs_by_session
+            .read()
+            .await
+            .iter()
+            .find_map(|(key, active_run_id)| (active_run_id == target_run_id).then(|| key.clone()))
+    }
+
+    async fn wait_for_event_forwarder(
+        active_event_forwarders: &Arc<RwLock<HashMap<String, tokio::task::JoinHandle<String>>>>,
+        session_key: &str,
+    ) -> String {
+        let handle = active_event_forwarders.write().await.remove(session_key);
+        let Some(handle) = handle else {
+            return String::new();
+        };
+
+        match handle.await {
+            Ok(reasoning) => reasoning,
+            Err(e) => {
+                warn!(
+                    session = %session_key,
+                    error = %e,
+                    "runner event forwarder task failed"
+                );
+                String::new()
+            },
+        }
+    }
+
+    async fn persist_partial_assistant_on_abort(
+        &self,
+        session_key: &str,
+    ) -> Option<(Value, Option<u32>)> {
+        let partial = self
+            .active_partial_assistant
+            .write()
+            .await
+            .remove(session_key)?;
+        if !partial.has_visible_content() {
+            return None;
+        }
+
+        let partial_message = partial.to_persisted_message();
+        let partial_value = partial_message.to_value();
+        let mut message_index = None;
+
+        if let Err(e) = self.session_store.append(session_key, &partial_value).await {
+            warn!(session = %session_key, error = %e, "failed to persist aborted partial assistant message");
+            return Some((partial_value, None));
+        }
+
+        match self.session_store.count(session_key).await {
+            Ok(count) => {
+                self.session_metadata.touch(session_key, count).await;
+                message_index = Some(count.saturating_sub(1));
+            },
+            Err(e) => {
+                warn!(session = %session_key, error = %e, "failed to count session after persisting aborted partial assistant message");
+            },
+        }
+
+        Some((partial_value, message_index))
     }
 
     /// Resolve a provider from session metadata, history, or first registered.
@@ -2720,6 +3010,7 @@ impl ChatService for LiveChatService {
                         target.channel_type.as_str(),
                         &target.account_id,
                         &target.chat_id,
+                        target.thread_id.as_deref(),
                     )
                     .await
                     .map(|k| k == session_key)
@@ -2836,7 +3127,9 @@ impl ChatService for LiveChatService {
             let active_runs_by_session = Arc::clone(&self.active_runs_by_session);
             let active_thinking_text = Arc::clone(&self.active_thinking_text);
             let active_tool_calls = Arc::clone(&self.active_tool_calls);
+            let active_partial_assistant = Arc::clone(&self.active_partial_assistant);
             let active_reply_medium = Arc::clone(&self.active_reply_medium);
+            let terminal_runs = Arc::clone(&self.terminal_runs);
             let session_store = Arc::clone(&self.session_store);
             let session_metadata = Arc::clone(&self.session_metadata);
             let tool_registry = Arc::clone(&self.tool_registry);
@@ -2864,6 +3157,7 @@ impl ChatService for LiveChatService {
                     &run_id_clone,
                     &tool_registry,
                     &session_store,
+                    &terminal_runs,
                     &session_key_clone,
                     &shell_command,
                     user_message_index,
@@ -2911,6 +3205,11 @@ impl ChatService for LiveChatService {
                     .await
                     .remove(&session_key_clone);
                 active_tool_calls.write().await.remove(&session_key_clone);
+                terminal_runs.write().await.remove(&run_id_clone);
+                active_partial_assistant
+                    .write()
+                    .await
+                    .remove(&session_key_clone);
                 active_reply_medium.write().await.remove(&session_key_clone);
 
                 drop(permit);
@@ -3125,6 +3424,7 @@ impl ChatService for LiveChatService {
                     target.channel_type.as_str(),
                     &target.account_id,
                     &target.chat_id,
+                    target.thread_id.as_deref(),
                 )
                 .await
                 .map(|k| k == session_key)
@@ -3197,6 +3497,7 @@ impl ChatService for LiveChatService {
         let active_runs_by_session = Arc::clone(&self.active_runs_by_session);
         let active_thinking_text = Arc::clone(&self.active_thinking_text);
         let active_tool_calls = Arc::clone(&self.active_tool_calls);
+        let active_partial_assistant = Arc::clone(&self.active_partial_assistant);
         let active_reply_medium = Arc::clone(&self.active_reply_medium);
         let run_id_clone = run_id.clone();
         let tool_registry = Arc::clone(&self.tool_registry);
@@ -3280,7 +3581,7 @@ impl ChatService for LiveChatService {
             )
             .await;
 
-            let compact_params = serde_json::json!({ "_conn_id": conn_id });
+            let compact_params = serde_json::json!({ "_session_key": &session_key });
             match self.compact(compact_params).await {
                 Ok(_) => {
                     // Reload history after compaction.
@@ -3391,6 +3692,8 @@ impl ChatService for LiveChatService {
 
         let message_queue = Arc::clone(&self.message_queue);
         let state_for_drain = Arc::clone(&self.state);
+        let active_event_forwarders = Arc::clone(&self.active_event_forwarders);
+        let terminal_runs = Arc::clone(&self.terminal_runs);
         let deferred_channel_target = deferred_channel_target.clone();
 
         let handle = tokio::spawn(async move {
@@ -3405,6 +3708,10 @@ impl ChatService for LiveChatService {
                 .write()
                 .await
                 .insert(session_key_clone.clone(), desired_reply_medium);
+            active_partial_assistant.write().await.insert(
+                session_key_clone.clone(),
+                ActiveAssistantDraft::new(&run_id_clone, &model_id, &provider_name, client_seq),
+            );
             if desired_reply_medium == ReplyMedium::Voice {
                 broadcast(
                     &state,
@@ -3438,6 +3745,8 @@ impl ChatService for LiveChatService {
                         Some(&runtime_context),
                         Some(&session_store),
                         client_seq,
+                        Some(Arc::clone(&active_partial_assistant)),
+                        &terminal_runs,
                     )
                     .await
                 } else {
@@ -3466,6 +3775,9 @@ impl ChatService for LiveChatService {
                         client_seq,
                         Some(Arc::clone(&active_thinking_text)),
                         Some(Arc::clone(&active_tool_calls)),
+                        Some(Arc::clone(&active_partial_assistant)),
+                        &active_event_forwarders,
+                        &terminal_runs,
                     )
                     .await
                 }
@@ -3488,7 +3800,9 @@ impl ChatService for LiveChatService {
                             "title": "Timed out",
                             "detail": detail,
                         });
+                        state.set_run_error(&run_id_clone, detail.clone()).await;
                         deliver_channel_error(&state, &session_key_clone, &error_obj).await;
+                        terminal_runs.write().await.insert(run_id_clone.clone());
                         broadcast(
                             &state,
                             "chat",
@@ -3539,6 +3853,12 @@ impl ChatService for LiveChatService {
                 }
             }
 
+            let _ = LiveChatService::wait_for_event_forwarder(
+                &active_event_forwarders,
+                &session_key_clone,
+            )
+            .await;
+
             active_runs.write().await.remove(&run_id_clone);
             let mut runs_by_session = active_runs_by_session.write().await;
             if runs_by_session.get(&session_key_clone) == Some(&run_id_clone) {
@@ -3550,6 +3870,11 @@ impl ChatService for LiveChatService {
                 .await
                 .remove(&session_key_clone);
             active_tool_calls.write().await.remove(&session_key_clone);
+            terminal_runs.write().await.remove(&run_id_clone);
+            active_partial_assistant
+                .write()
+                .await
+                .remove(&session_key_clone);
             active_reply_medium.write().await.remove(&session_key_clone);
 
             // Release the semaphore *before* draining so replayed sends can
@@ -3739,6 +4064,8 @@ impl ChatService for LiveChatService {
 
         // send_sync is text-only (used by API calls and channels).
         let user_content = UserContent::text(&text);
+        let active_event_forwarders = Arc::new(RwLock::new(HashMap::new()));
+        let terminal_runs = Arc::new(RwLock::new(HashSet::new()));
         let result = if stream_only {
             run_streaming(
                 &state,
@@ -3758,6 +4085,8 @@ impl ChatService for LiveChatService {
                 Some(&runtime_context),
                 Some(&self.session_store),
                 None, // send_sync: no client seq
+                None, // send_sync: no partial assistant tracking
+                &terminal_runs,
             )
             .await
         } else {
@@ -3786,6 +4115,9 @@ impl ChatService for LiveChatService {
                 None,  // send_sync: no client seq
                 None,  // send_sync: no thinking text tracking
                 None,  // send_sync: no tool call tracking
+                None,  // send_sync: no partial assistant tracking
+                &active_event_forwarders,
+                &terminal_runs,
             )
             .await
         };
@@ -3861,9 +4193,14 @@ impl ChatService for LiveChatService {
             return Err("missing 'runId' or 'sessionKey'".into());
         }
 
+        let resolved_session_key =
+            Self::resolve_session_key_for_run(&self.active_runs_by_session, run_id, session_key)
+                .await;
+
         let (resolved_run_id, aborted) = Self::abort_run_handle(
             &self.active_runs,
             &self.active_runs_by_session,
+            &self.terminal_runs,
             run_id,
             session_key,
         )
@@ -3876,24 +4213,31 @@ impl ChatService for LiveChatService {
             "chat.abort"
         );
 
-        if aborted && let Some(key) = session_key {
+        if aborted && let Some(key) = resolved_session_key.as_deref() {
+            let _ = Self::wait_for_event_forwarder(&self.active_event_forwarders, key).await;
+            let partial = self.persist_partial_assistant_on_abort(key).await;
             self.active_thinking_text.write().await.remove(key);
             self.active_tool_calls.write().await.remove(key);
             self.active_reply_medium.write().await.remove(key);
-            broadcast(
-                &self.state,
-                "chat",
-                serde_json::json!({
-                    "state": "aborted",
-                    "runId": resolved_run_id,
-                    "sessionKey": key,
-                }),
-                BroadcastOpts::default(),
-            )
-            .await;
+            let mut payload = serde_json::json!({
+                "state": "aborted",
+                "runId": resolved_run_id,
+                "sessionKey": key,
+            });
+            if let Some((partial_message, message_index)) = partial {
+                payload["partialMessage"] = partial_message;
+                if let Some(index) = message_index {
+                    payload["messageIndex"] = serde_json::json!(index);
+                }
+            }
+            broadcast(&self.state, "chat", payload, BroadcastOpts::default()).await;
         }
 
-        Ok(serde_json::json!({ "aborted": aborted, "runId": resolved_run_id }))
+        Ok(serde_json::json!({
+            "aborted": aborted,
+            "runId": resolved_run_id,
+            "sessionKey": resolved_session_key,
+        }))
     }
 
     async fn cancel_queued(&self, params: Value) -> ServiceResult {
@@ -3941,14 +4285,7 @@ impl ChatService for LiveChatService {
         // history coherence but should not be shown in the UI.
         let visible: Vec<Value> = messages
             .into_iter()
-            .filter(|msg| {
-                if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-                    return true;
-                }
-                msg.get("content")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|s| !s.trim().is_empty())
-            })
+            .filter(assistant_message_is_visible)
             .collect();
         Ok(serde_json::json!(visible))
     }
@@ -4110,21 +4447,17 @@ impl ChatService for LiveChatService {
             return Err("compact produced empty summary".into());
         }
 
-        // Replace history with a single assistant message containing the summary.
-        let compacted_msg = PersistedMessage::Assistant {
-            content: format!("[Conversation Summary]\n\n{summary}"),
+        // Replace history with a single user message containing the summary.
+        // Using the user role (not assistant) avoids breaking providers like
+        // llama.cpp that require every assistant message to follow a user message,
+        // and ensures the summary stays in the conversation turn array for
+        // providers using the Responses API (which promotes system messages to
+        // instructions).
+        let compacted_msg = PersistedMessage::User {
+            content: MessageContent::Text(format!("[Conversation Summary]\n\n{summary}")),
             created_at: Some(now_ms()),
-            model: None,
-            provider: None,
-            input_tokens: None,
-            output_tokens: None,
-            duration_ms: None,
-            request_input_tokens: None,
-            request_output_tokens: None,
-            tool_calls: None,
-            reasoning: None,
-            llm_api_response: None,
             audio: None,
+            channel: None,
             seq: None,
             run_id: None,
         };
@@ -4673,38 +5006,11 @@ impl ChatService for LiveChatService {
             .cloned()
             .collect();
 
-        // Reconstruct `role: "tool"` messages from persisted `tool_result`
-        // entries so the context view shows what the LLM actually saw.
-        let history_with_tools: Vec<Value> = history
-            .into_iter()
-            .map(|val| {
-                if val.get("role").and_then(|r| r.as_str()) != Some("tool_result") {
-                    return val;
-                }
-                let tool_call_id = val
-                    .get("tool_call_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let content = if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
-                    format!("Error: {err}")
-                } else if let Some(res) = val.get("result") {
-                    res.to_string()
-                } else {
-                    String::new()
-                };
-                serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content,
-                })
-            })
-            .collect();
-
         // Build the full messages array: system prompt + conversation history.
-        let mut messages = Vec::with_capacity(1 + history_with_tools.len());
+        // `values_to_chat_messages` handles `tool_result` → `tool` conversion.
+        let mut messages = Vec::with_capacity(1 + history.len());
         messages.push(ChatMessage::system(system_prompt));
-        messages.extend(values_to_chat_messages(&history_with_tools));
+        messages.extend(values_to_chat_messages(&history));
 
         let openai_messages: Vec<Value> = messages.iter().map(|m| m.to_openai_value()).collect();
         let message_count = openai_messages.len();
@@ -4911,6 +5217,7 @@ struct ChannelReplyTargetKey {
     account_id: String,
     chat_id: String,
     message_id: Option<String>,
+    thread_id: Option<String>,
 }
 
 impl From<&moltis_channels::ChannelReplyTarget> for ChannelReplyTargetKey {
@@ -4920,6 +5227,7 @@ impl From<&moltis_channels::ChannelReplyTarget> for ChannelReplyTargetKey {
             account_id: target.account_id.clone(),
             chat_id: target.chat_id.clone(),
             message_id: target.message_id.clone(),
+            thread_id: target.thread_id.clone(),
         }
     }
 }
@@ -4988,16 +5296,17 @@ impl ChannelStreamDispatcher {
             let outbound = Arc::clone(&self.outbound);
             let completed = Arc::clone(&self.completed);
             let account_id = target.account_id.clone();
-            let chat_id = target.chat_id.clone();
+            let to = target.outbound_to().into_owned();
             let reply_to = target.message_id.clone();
             let key_for_insert = key.clone();
             let account_for_log = account_id.clone();
-            let chat_for_log = chat_id.clone();
+            let chat_for_log = target.chat_id.clone();
+            let thread_for_log = target.thread_id.clone();
 
             self.workers.push(ChannelStreamWorker { sender: tx });
             self.tasks.push(tokio::spawn(async move {
                 match outbound
-                    .send_stream(&account_id, &chat_id, reply_to.as_deref(), rx)
+                    .send_stream(&account_id, &to, reply_to.as_deref(), rx)
                     .await
                 {
                     Ok(()) => {
@@ -5007,6 +5316,7 @@ impl ChannelStreamDispatcher {
                         warn!(
                             account_id = account_for_log,
                             chat_id = chat_for_log,
+                            thread_id = thread_for_log.as_deref().unwrap_or("-"),
                             "channel stream outbound failed: {e}"
                         );
                     },
@@ -5068,6 +5378,7 @@ async fn run_explicit_shell_command(
     run_id: &str,
     tool_registry: &Arc<RwLock<ToolRegistry>>,
     session_store: &Arc<SessionStore>,
+    terminal_runs: &Arc<RwLock<HashSet<String>>>,
     session_key: &str,
     command: &str,
     user_message_index: usize,
@@ -5110,7 +5421,7 @@ async fn run_explicit_shell_command(
 
     let exec_tool = {
         let registry = tool_registry.read().await;
-        registry.get_arc("exec")
+        registry.get("exec")
     };
 
     let exec_result = match exec_tool {
@@ -5128,6 +5439,13 @@ async fn run_explicit_shell_command(
     match exec_result {
         Ok(result) => {
             let capped = capped_tool_result_payload(&result, 10_000);
+            let assistant_tool_call_msg = build_tool_call_assistant_message(
+                tool_call_id.clone(),
+                "exec",
+                Some(tool_args.clone()),
+                client_seq,
+                Some(run_id),
+            );
             let tool_result_msg = PersistedMessage::tool_result(
                 tool_call_id.clone(),
                 "exec",
@@ -5136,12 +5454,15 @@ async fn run_explicit_shell_command(
                 Some(capped.clone()),
                 None,
             );
-            if let Err(e) = session_store
-                .append(session_key, &tool_result_msg.to_value())
-                .await
-            {
-                warn!("failed to persist direct /sh tool result: {e}");
-            }
+            persist_tool_history_pair(
+                session_store,
+                session_key,
+                assistant_tool_call_msg,
+                tool_result_msg,
+                "failed to persist direct /sh assistant tool call",
+                "failed to persist direct /sh tool result",
+            )
+            .await;
 
             broadcast(
                 state,
@@ -5170,6 +5491,13 @@ async fn run_explicit_shell_command(
         Err(err) => {
             let error_text = err.to_string();
             let parsed_error = parse_chat_error(&error_text, None);
+            let assistant_tool_call_msg = build_tool_call_assistant_message(
+                tool_call_id.clone(),
+                "exec",
+                Some(tool_args.clone()),
+                client_seq,
+                Some(run_id),
+            );
             let tool_result_msg = PersistedMessage::tool_result(
                 tool_call_id.clone(),
                 "exec",
@@ -5178,12 +5506,15 @@ async fn run_explicit_shell_command(
                 None,
                 Some(error_text.clone()),
             );
-            if let Err(e) = session_store
-                .append(session_key, &tool_result_msg.to_value())
-                .await
-            {
-                warn!("failed to persist direct /sh tool error: {e}");
-            }
+            persist_tool_history_pair(
+                session_store,
+                session_key,
+                assistant_tool_call_msg,
+                tool_result_msg,
+                "failed to persist direct /sh assistant tool call",
+                "failed to persist direct /sh tool error",
+            )
+            .await;
 
             broadcast(
                 state,
@@ -5232,7 +5563,7 @@ async fn run_explicit_shell_command(
         duration_ms: started.elapsed().as_millis() as u64,
         request_input_tokens: Some(0),
         request_output_tokens: Some(0),
-        message_index: user_message_index + 2, // +1 for user msg, +1 for tool result
+        message_index: user_message_index + 3, /* +1 tool call assistant, +1 tool result, +1 final assistant */
         reply_medium: ReplyMedium::Text,
         iterations: Some(1),
         tool_calls_made: Some(1),
@@ -5243,6 +5574,7 @@ async fn run_explicit_shell_command(
     };
     #[allow(clippy::unwrap_used)] // serializing known-valid struct
     let payload = serde_json::to_value(&final_payload).unwrap();
+    terminal_runs.write().await.insert(run_id.to_string());
     broadcast(state, "chat", payload, BroadcastOpts::default()).await;
 
     AssistantTurnOutput {
@@ -5321,11 +5653,18 @@ fn is_path_in_agent_memory_scope(path: &Path, agent_id: &str) -> bool {
 struct AgentScopedMemoryWriter {
     manager: Arc<moltis_memory::manager::MemoryManager>,
     agent_id: String,
+    checkpoints: moltis_tools::checkpoints::CheckpointManager,
 }
 
 impl AgentScopedMemoryWriter {
     fn new(manager: Arc<moltis_memory::manager::MemoryManager>, agent_id: String) -> Self {
-        Self { manager, agent_id }
+        Self {
+            manager,
+            agent_id,
+            checkpoints: moltis_tools::checkpoints::CheckpointManager::new(
+                moltis_config::data_dir(),
+            ),
+        }
     }
 }
 
@@ -5350,6 +5689,10 @@ impl moltis_agents::memory_writer::MemoryWriter for AgentScopedMemoryWriter {
             tokio::fs::create_dir_all(parent).await?;
         }
 
+        let checkpoint = self
+            .checkpoints
+            .checkpoint_path(&path, "memory_write")
+            .await?;
         let final_content = if append && tokio::fs::try_exists(&path).await? {
             let existing = tokio::fs::read_to_string(&path).await?;
             format!("{existing}\n\n{content}")
@@ -5366,6 +5709,7 @@ impl moltis_agents::memory_writer::MemoryWriter for AgentScopedMemoryWriter {
         Ok(moltis_agents::memory_writer::MemoryWriteResult {
             location: path.to_string_lossy().into_owned(),
             bytes_written,
+            checkpoint_id: Some(checkpoint.id),
         })
     }
 }
@@ -5589,6 +5933,7 @@ impl AgentTool for AgentScopedMemorySaveTool {
             "saved": true,
             "path": file,
             "bytes_written": result.bytes_written,
+            "checkpointId": result.checkpoint_id,
         }))
     }
 }
@@ -5670,6 +6015,9 @@ async fn run_with_tools(
     client_seq: Option<u64>,
     active_thinking_text: Option<Arc<RwLock<HashMap<String, String>>>>,
     active_tool_calls: Option<Arc<RwLock<HashMap<String, Vec<ActiveToolCall>>>>>,
+    active_partial_assistant: Option<Arc<RwLock<HashMap<String, ActiveAssistantDraft>>>>,
+    active_event_forwarders: &Arc<RwLock<HashMap<String, tokio::task::JoinHandle<String>>>>,
+    terminal_runs: &Arc<RwLock<HashSet<String>>>,
 ) -> Option<AssistantTurnOutput> {
     let run_started = Instant::now();
     let persona = load_prompt_persona_for_agent(agent_id);
@@ -5688,6 +6036,14 @@ async fn run_with_tools(
     };
     if tools_enabled && let Some(manager) = state.memory_manager() {
         install_agent_scoped_memory_tools(&mut filtered_registry, manager, agent_id);
+    }
+    if tools_enabled
+        && matches!(
+            persona.config.tools.registry_mode,
+            moltis_config::ToolRegistryMode::Lazy
+        )
+    {
+        filtered_registry = moltis_agents::lazy_tools::wrap_registry_lazy(filtered_registry);
     }
 
     // Build system prompt:
@@ -5722,9 +6078,7 @@ async fn run_with_tools(
     };
 
     // Layer 1: instruct the LLM to write speech-friendly output when voice is active.
-    // Keep the runtime datetime/date sentence as the final prompt line for better cache locality.
-    let system_prompt =
-        apply_voice_reply_suffix(system_prompt, desired_reply_medium, runtime_context);
+    let system_prompt = apply_voice_reply_suffix(system_prompt, desired_reply_medium);
 
     // Determine sandbox mode for this session.
     let session_is_sandboxed = if let Some(router) = state.sandbox_router() {
@@ -5739,6 +6093,7 @@ async fn run_with_tools(
     let session_key_for_events = session_key.to_string();
     let session_store_for_events = session_store.map(Arc::clone);
     let provider_name_for_events = provider_name.to_string();
+    let active_partial_for_events = active_partial_assistant.as_ref().map(Arc::clone);
     let (on_event, mut event_rx) = ordered_runner_event_callback();
     let channel_stream_dispatcher = ChannelStreamDispatcher::for_session(state, session_key)
         .await
@@ -5874,6 +6229,58 @@ async fn run_with_tools(
                         .and_then(|c| c.as_str())
                         .map(String::from);
 
+                    // Check for document file to send to channel.
+                    // New path: `document_ref` (lightweight media-dir reference).
+                    // Legacy path: `document` with `data:` URI.
+                    let document_ref_to_send = result
+                        .as_ref()
+                        .and_then(|r| r.get("document_ref"))
+                        .and_then(|d| d.as_str())
+                        .map(String::from);
+
+                    let document_ref_mime = if document_ref_to_send.is_some() {
+                        result
+                            .as_ref()
+                            .and_then(|r| r.get("mime_type"))
+                            .and_then(|m| m.as_str())
+                            .map(String::from)
+                    } else {
+                        None
+                    };
+
+                    let document_to_send = if document_ref_to_send.is_none() {
+                        result
+                            .as_ref()
+                            .and_then(|r| r.get("document"))
+                            .and_then(|d| d.as_str())
+                            .filter(|d| d.starts_with("data:"))
+                            .map(String::from)
+                    } else {
+                        None
+                    };
+
+                    let has_document = document_ref_to_send.is_some() || document_to_send.is_some();
+
+                    let document_filename = if has_document {
+                        result
+                            .as_ref()
+                            .and_then(|r| r.get("filename"))
+                            .and_then(|f| f.as_str())
+                            .map(String::from)
+                    } else {
+                        None
+                    };
+
+                    let document_caption = if has_document {
+                        result
+                            .as_ref()
+                            .and_then(|r| r.get("caption"))
+                            .and_then(|c| c.as_str())
+                            .map(String::from)
+                    } else {
+                        None
+                    };
+
                     // Extract location from show_map results for native pin
                     let location_to_send = if name == "show_map" {
                         result.as_ref().and_then(|r| {
@@ -5900,6 +6307,15 @@ async fn run_with_tools(
                                 );
                                 capped[*field] = Value::String(truncated);
                             }
+                        }
+                        // Cap legacy document data URIs — the LLM never sees
+                        // these and the UI doesn't render them.
+                        if let Some(doc) = capped.get("document").and_then(|v| v.as_str())
+                            && doc.starts_with("data:")
+                            && doc.len() > 200
+                        {
+                            capped["document"] =
+                                Value::String("[document data omitted]".to_string());
                         }
                         payload["result"] = capped;
                     }
@@ -5932,6 +6348,43 @@ async fn run_with_tools(
                                 image_caption.as_deref(),
                             )
                             .await;
+                        });
+                    }
+
+                    // Send document to channel targets if present.
+                    if let Some(media_ref) = document_ref_to_send {
+                        // New path: read from media dir at upload time.
+                        let state_clone = Arc::clone(&state);
+                        let sk_clone = sk.clone();
+                        let store_clone = store.clone();
+                        let mime = document_ref_mime
+                            .unwrap_or_else(|| "application/octet-stream".to_string());
+                        tokio::spawn(async move {
+                            if let Some(payload) = document_payload_from_ref(
+                                store_clone.as_ref(),
+                                &sk_clone,
+                                &media_ref,
+                                &mime,
+                                document_filename.as_deref(),
+                                document_caption.as_deref(),
+                            )
+                            .await
+                            {
+                                dispatch_document_to_channels(&state_clone, &sk_clone, payload)
+                                    .await;
+                            }
+                        });
+                    } else if let Some(document_data) = document_to_send {
+                        // Legacy fallback: data URI.
+                        let state_clone = Arc::clone(&state);
+                        let sk_clone = sk.clone();
+                        let payload = document_payload_from_data_uri(
+                            &document_data,
+                            document_filename.as_deref(),
+                            document_caption.as_deref(),
+                        );
+                        tokio::spawn(async move {
+                            dispatch_document_to_channels(&state_clone, &sk_clone, payload).await;
                         });
                     }
 
@@ -5985,9 +6438,19 @@ async fn run_with_tools(
                                 .get("screenshot")
                                 .and_then(|v| v.as_str())
                                 .is_some_and(|s| s.starts_with("data:"));
+                            // Strip legacy document data URIs — they are only
+                            // needed by the channel dispatch (already extracted
+                            // above) and should not be persisted.
+                            let strip_document = r
+                                .get("document")
+                                .and_then(|v| v.as_str())
+                                .is_some_and(|s| s.starts_with("data:"));
                             if let Some(obj) = r.as_object_mut() {
                                 if strip_screenshot {
                                     obj.remove("screenshot");
+                                }
+                                if strip_document {
+                                    obj.remove("document");
                                 }
                                 obj.remove("screenshot_scale");
                             }
@@ -6006,25 +6469,33 @@ async fn run_with_tools(
                             r
                         });
                         let tracked_reasoning = tool_reasoning_map.remove(&id);
-                        let tool_result_msg = PersistedMessage::tool_result_with_reasoning(
-                            id,
-                            name,
-                            tracked_args,
-                            success,
-                            persisted_result,
-                            error,
-                            tracked_reasoning,
+                        let assistant_tool_call_msg = build_tool_call_assistant_message(
+                            id.clone(),
+                            name.clone(),
+                            tracked_args.clone(),
+                            seq,
+                            Some(run_id.as_str()),
                         );
-                        let store_clone = Arc::clone(store);
-                        let sk_persist = sk.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = store_clone
-                                .append(&sk_persist, &tool_result_msg.to_value())
-                                .await
-                            {
-                                warn!("failed to persist tool result: {e}");
-                            }
-                        });
+                        let tool_result_msg = PersistedMessage::ToolResult {
+                            tool_call_id: id,
+                            tool_name: name,
+                            arguments: tracked_args,
+                            success,
+                            result: persisted_result,
+                            error,
+                            reasoning: tracked_reasoning,
+                            created_at: Some(now_ms()),
+                            run_id: Some(run_id.clone()),
+                        };
+                        persist_tool_history_pair(
+                            store,
+                            &sk,
+                            assistant_tool_call_msg,
+                            tool_result_msg,
+                            "failed to persist assistant tool call",
+                            "failed to persist tool result",
+                        )
+                        .await;
                     }
 
                     payload
@@ -6033,6 +6504,11 @@ async fn run_with_tools(
                     latest_reasoning = text.clone();
                     if let Some(ref map) = active_thinking_text {
                         map.write().await.insert(sk.clone(), text.clone());
+                    }
+                    if let Some(ref map) = active_partial_for_events
+                        && let Some(draft) = map.write().await.get_mut(&sk)
+                    {
+                        draft.set_reasoning(&text);
                     }
                     serde_json::json!({
                         "runId": run_id,
@@ -6043,6 +6519,11 @@ async fn run_with_tools(
                     })
                 },
                 RunnerEvent::TextDelta(text) => {
+                    if let Some(ref map) = active_partial_for_events
+                        && let Some(draft) = map.write().await.get_mut(&sk)
+                    {
+                        draft.append_text(&text);
+                    }
                     if let Some(ref dispatcher) = channel_stream_for_events {
                         dispatcher.lock().await.send_delta(&text).await;
                     }
@@ -6119,9 +6600,21 @@ async fn run_with_tools(
         }
         latest_reasoning
     });
+    active_event_forwarders
+        .write()
+        .await
+        .insert(session_key.to_string(), event_forwarder);
 
     // Convert persisted JSON history to typed ChatMessages for the LLM provider.
-    let chat_history = values_to_chat_messages(history_raw);
+    let mut chat_history = values_to_chat_messages(history_raw);
+
+    // Inject the datetime as a trailing system message so the main system
+    // prompt stays byte-identical between turns, enabling KV cache hits for
+    // local LLMs (Ollama, LM Studio) and prompt-cache hits for cloud providers.
+    if let Some(datetime_msg) = moltis_agents::prompt::runtime_datetime_message(runtime_context) {
+        chat_history.push(ChatMessage::system(&datetime_msg));
+    }
+
     let hist = if chat_history.is_empty() {
         None
     } else {
@@ -6197,7 +6690,13 @@ async fn run_with_tools(
 
                     // Reload compacted history and retry.
                     let compacted_history_raw = store.read(session_key).await.unwrap_or_default();
-                    let compacted_chat = values_to_chat_messages(&compacted_history_raw);
+                    let mut compacted_chat = values_to_chat_messages(&compacted_history_raw);
+                    // Re-inject datetime so the retry has current time context.
+                    if let Some(datetime_msg) =
+                        moltis_agents::prompt::runtime_datetime_message(runtime_context)
+                    {
+                        compacted_chat.push(ChatMessage::system(&datetime_msg));
+                    }
                     let retry_hist = if compacted_chat.is_empty() {
                         None
                     } else {
@@ -6242,13 +6741,8 @@ async fn run_with_tools(
     // Ensure all runner events (including deltas) are broadcast in order before
     // emitting terminal final/error frames.
     drop(on_event);
-    let reasoning_text = match event_forwarder.await {
-        Ok(reasoning) => reasoning,
-        Err(e) => {
-            warn!(run_id, error = %e, "runner event forwarder task failed");
-            String::new()
-        },
-    };
+    let reasoning_text =
+        LiveChatService::wait_for_event_forwarder(active_event_forwarders, session_key).await;
     let reasoning = {
         let trimmed = reasoning_text.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -6306,13 +6800,14 @@ async fn run_with_tools(
                 };
                 #[allow(clippy::unwrap_used)] // serializing known-valid struct
                 let payload_val = serde_json::to_value(&error_payload).unwrap();
+                terminal_runs.write().await.insert(run_id.to_string());
                 broadcast(state, "chat", payload_val, BroadcastOpts::default()).await;
                 return None;
             }
 
-            // Tool results are persisted between the user message and the
-            // assistant message, so the assistant index must account for them.
-            let assistant_message_index = user_message_index + 1 + tool_calls_made;
+            // Tool-using turns now persist both the assistant tool call frame
+            // and the tool result for each tool call before the final answer.
+            let assistant_message_index = user_message_index + 1 + (tool_calls_made * 2);
 
             // Generate & persist TTS audio for voice-medium web UI replies.
             let mut audio_warning: Option<String> = None;
@@ -6373,6 +6868,7 @@ async fn run_with_tools(
             };
             #[allow(clippy::unwrap_used)] // serializing known-valid struct
             let payload_val = serde_json::to_value(&final_payload).unwrap();
+            terminal_runs.write().await.insert(run_id.to_string());
             broadcast(state, "chat", payload_val, BroadcastOpts::default()).await;
 
             if !is_silent {
@@ -6419,6 +6915,7 @@ async fn run_with_tools(
             };
             #[allow(clippy::unwrap_used)] // serializing known-valid struct
             let payload_val = serde_json::to_value(&error_payload).unwrap();
+            terminal_runs.write().await.insert(run_id.to_string());
             broadcast(state, "chat", payload_val, BroadcastOpts::default()).await;
             None
         },
@@ -6480,20 +6977,16 @@ async fn compact_session(
         return Err(error::Error::message("compact produced empty summary"));
     }
 
-    let compacted_msg = PersistedMessage::Assistant {
-        content: format!("[Conversation Summary]\n\n{summary}"),
+    // Use user role so strict providers (e.g. llama.cpp) don't reject the
+    // history for having an assistant message without a preceding user message.
+    // User role also keeps the summary in the conversation turn array for
+    // providers using the Responses API (system messages get promoted to
+    // instructions and disappear from turns).
+    let compacted_msg = PersistedMessage::User {
+        content: MessageContent::Text(format!("[Conversation Summary]\n\n{summary}")),
         created_at: Some(now_ms()),
-        model: None,
-        provider: None,
-        input_tokens: None,
-        output_tokens: None,
-        duration_ms: None,
-        request_input_tokens: None,
-        request_output_tokens: None,
-        tool_calls: None,
-        reasoning: None,
-        llm_api_response: None,
         audio: None,
+        channel: None,
         seq: None,
         run_id: None,
     };
@@ -6597,6 +7090,8 @@ async fn run_streaming(
     runtime_context: Option<&PromptRuntimeContext>,
     session_store: Option<&Arc<SessionStore>>,
     client_seq: Option<u64>,
+    active_partial_assistant: Option<Arc<RwLock<HashMap<String, ActiveAssistantDraft>>>>,
+    terminal_runs: &Arc<RwLock<HashSet<String>>>,
 ) -> Option<AssistantTurnOutput> {
     let run_started = Instant::now();
     let persona = load_prompt_persona_for_agent(agent_id);
@@ -6613,14 +7108,17 @@ async fn run_streaming(
     );
 
     // Layer 1: instruct the LLM to write speech-friendly output when voice is active.
-    // Keep the runtime datetime/date sentence as the final prompt line for better cache locality.
-    let system_prompt =
-        apply_voice_reply_suffix(system_prompt, desired_reply_medium, runtime_context);
+    let system_prompt = apply_voice_reply_suffix(system_prompt, desired_reply_medium);
 
     let mut messages: Vec<ChatMessage> = Vec::new();
     messages.push(ChatMessage::system(system_prompt));
     // Convert persisted JSON history to typed ChatMessages for the LLM provider.
     messages.extend(values_to_chat_messages(history_raw));
+    // Inject datetime as a trailing system message so the main system prompt
+    // stays byte-identical between turns (KV cache / prompt cache locality).
+    if let Some(datetime_msg) = moltis_agents::prompt::runtime_datetime_message(runtime_context) {
+        messages.push(ChatMessage::system(&datetime_msg));
+    }
     messages.push(ChatMessage::User {
         content: user_content.clone(),
     });
@@ -6644,6 +7142,11 @@ async fn run_streaming(
             match event {
                 StreamEvent::Delta(delta) => {
                     accumulated.push_str(&delta);
+                    if let Some(ref map) = active_partial_assistant
+                        && let Some(draft) = map.write().await.get_mut(session_key)
+                    {
+                        draft.append_text(&delta);
+                    }
                     if let Some(dispatcher) = channel_stream_dispatcher.as_mut() {
                         dispatcher.send_delta(&delta).await;
                     }
@@ -6662,6 +7165,11 @@ async fn run_streaming(
                 },
                 StreamEvent::ReasoningDelta(delta) => {
                     accumulated_reasoning.push_str(&delta);
+                    if let Some(ref map) = active_partial_assistant
+                        && let Some(draft) = map.write().await.get_mut(session_key)
+                    {
+                        draft.set_reasoning(&accumulated_reasoning);
+                    }
                     broadcast(
                         state,
                         "chat",
@@ -6768,6 +7276,7 @@ async fn run_streaming(
                         };
                         #[allow(clippy::unwrap_used)] // serializing known-valid struct
                         let payload_val = serde_json::to_value(&error_payload).unwrap();
+                        terminal_runs.write().await.insert(run_id.to_string());
                         broadcast(state, "chat", payload_val, BroadcastOpts::default()).await;
                         return None;
                     }
@@ -6834,6 +7343,7 @@ async fn run_streaming(
                     };
                     #[allow(clippy::unwrap_used)] // serializing known-valid struct
                     let payload_val = serde_json::to_value(&final_payload).unwrap();
+                    terminal_runs.write().await.insert(run_id.to_string());
                     broadcast(state, "chat", payload_val, BroadcastOpts::default()).await;
 
                     if !is_silent {
@@ -6934,6 +7444,7 @@ async fn run_streaming(
                     };
                     #[allow(clippy::unwrap_used)] // serializing known-valid struct
                     let payload_val = serde_json::to_value(&error_payload).unwrap();
+                    terminal_runs.write().await.insert(run_id.to_string());
                     broadcast(state, "chat", payload_val, BroadcastOpts::default()).await;
                     return None;
                 },
@@ -7120,14 +7631,16 @@ async fn send_channel_logbook_follow_up_to_targets(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let html = html.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             if let Err(e) = outbound
-                .send_html(&target.account_id, &target.chat_id, &html, None)
+                .send_html(&target.account_id, &to, &html, None)
                 .await
             {
                 warn!(
                     account_id = target.account_id,
                     chat_id = target.chat_id,
+                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                     "failed to send logbook follow-up: {e}"
                 );
             }
@@ -7185,15 +7698,17 @@ async fn send_retry_status_to_channels(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let message = message.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let reply_to = target.message_id.as_deref();
             if let Err(e) = outbound
-                .send_text_silent(&target.account_id, &target.chat_id, &message, reply_to)
+                .send_text_silent(&target.account_id, &to, &message, reply_to)
                 .await
             {
                 warn!(
                     account_id = target.account_id,
                     chat_id = target.chat_id,
+                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                     "failed to send retry status to channel: {e}"
                 );
             }
@@ -7227,17 +7742,18 @@ async fn deliver_channel_error(state: &Arc<dyn ChatRuntime>, session_key: &str, 
         let outbound = Arc::clone(&outbound);
         let error_text = error_text.clone();
         let logbook_html = logbook_html.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let reply_to = target.message_id.as_deref();
             let send_result = if logbook_html.is_empty() {
                 outbound
-                    .send_text(&target.account_id, &target.chat_id, &error_text, reply_to)
+                    .send_text(&target.account_id, &to, &error_text, reply_to)
                     .await
             } else {
                 outbound
                     .send_text_with_suffix(
                         &target.account_id,
-                        &target.chat_id,
+                        &to,
                         &error_text,
                         &logbook_html,
                         reply_to,
@@ -7248,6 +7764,7 @@ async fn deliver_channel_error(state: &Arc<dyn ChatRuntime>, session_key: &str, 
                 warn!(
                     account_id = target.account_id,
                     chat_id = target.chat_id,
+                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                     "failed to send channel error reply: {e}"
                 );
             }
@@ -7285,6 +7802,7 @@ async fn deliver_channel_replies_to_targets(
         // caption/follow-up and only send the TTS voice audio.
         let text_already_streamed =
             streamed_target_keys.contains(&ChannelReplyTargetKey::from(&target));
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let tts_payload = match desired_reply_medium {
                 ReplyMedium::Voice => build_tts_payload(&state, &session_key, &target, &text).await,
@@ -7299,29 +7817,26 @@ async fn deliver_channel_replies_to_targets(
                         if text_already_streamed {
                             // Text was already streamed — send voice audio only.
                             if let Err(e) = outbound
-                                .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                                .send_media(&target.account_id, &to, &payload, reply_to)
                                 .await
                             {
                                 warn!(
                                     account_id = target.account_id,
                                     chat_id = target.chat_id,
+                                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                     "failed to send channel voice reply: {e}"
                                 );
                             }
                             // Send logbook as a follow-up if present.
                             if !logbook_html.is_empty()
                                 && let Err(e) = outbound
-                                    .send_html(
-                                        &target.account_id,
-                                        &target.chat_id,
-                                        &logbook_html,
-                                        None,
-                                    )
+                                    .send_html(&target.account_id, &to, &logbook_html, None)
                                     .await
                             {
                                 warn!(
                                     account_id = target.account_id,
                                     chat_id = target.chat_id,
+                                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                     "failed to send logbook follow-up: {e}"
                                 );
                             }
@@ -7331,29 +7846,26 @@ async fn deliver_channel_replies_to_targets(
                             // Short transcript fits as a caption on the voice message.
                             payload.text = transcript;
                             if let Err(e) = outbound
-                                .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                                .send_media(&target.account_id, &to, &payload, reply_to)
                                 .await
                             {
                                 warn!(
                                     account_id = target.account_id,
                                     chat_id = target.chat_id,
+                                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                     "failed to send channel voice reply: {e}"
                                 );
                             }
                             // Send logbook as a follow-up if present.
                             if !logbook_html.is_empty()
                                 && let Err(e) = outbound
-                                    .send_html(
-                                        &target.account_id,
-                                        &target.chat_id,
-                                        &logbook_html,
-                                        None,
-                                    )
+                                    .send_html(&target.account_id, &to, &logbook_html, None)
                                     .await
                             {
                                 warn!(
                                     account_id = target.account_id,
                                     chat_id = target.chat_id,
+                                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                     "failed to send logbook follow-up: {e}"
                                 );
                             }
@@ -7361,29 +7873,25 @@ async fn deliver_channel_replies_to_targets(
                             // Transcript too long for a caption — send voice
                             // without caption, then the full text as a follow-up.
                             if let Err(e) = outbound
-                                .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                                .send_media(&target.account_id, &to, &payload, reply_to)
                                 .await
                             {
                                 warn!(
                                     account_id = target.account_id,
                                     chat_id = target.chat_id,
+                                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                     "failed to send channel voice reply: {e}"
                                 );
                             }
                             let text_result = if logbook_html.is_empty() {
                                 outbound
-                                    .send_text(
-                                        &target.account_id,
-                                        &target.chat_id,
-                                        &transcript,
-                                        None,
-                                    )
+                                    .send_text(&target.account_id, &to, &transcript, None)
                                     .await
                             } else {
                                 outbound
                                     .send_text_with_suffix(
                                         &target.account_id,
-                                        &target.chat_id,
+                                        &to,
                                         &transcript,
                                         &logbook_html,
                                         None,
@@ -7394,21 +7902,38 @@ async fn deliver_channel_replies_to_targets(
                                 warn!(
                                     account_id = target.account_id,
                                     chat_id = target.chat_id,
+                                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                     "failed to send transcript follow-up: {e}"
                                 );
                             }
                         }
                     },
+                    None if text_already_streamed => {
+                        // TTS disabled/failed but text was already streamed —
+                        // only send logbook follow-up if present.
+                        if !logbook_html.is_empty()
+                            && let Err(e) = outbound
+                                .send_html(&target.account_id, &to, &logbook_html, None)
+                                .await
+                        {
+                            warn!(
+                                account_id = target.account_id,
+                                chat_id = target.chat_id,
+                                thread_id = target.thread_id.as_deref().unwrap_or("-"),
+                                "failed to send logbook follow-up: {e}"
+                            );
+                        }
+                    },
                     None => {
                         let result = if logbook_html.is_empty() {
                             outbound
-                                .send_text(&target.account_id, &target.chat_id, &text, reply_to)
+                                .send_text(&target.account_id, &to, &text, reply_to)
                                 .await
                         } else {
                             outbound
                                 .send_text_with_suffix(
                                     &target.account_id,
-                                    &target.chat_id,
+                                    &to,
                                     &text,
                                     &logbook_html,
                                     reply_to,
@@ -7419,6 +7944,7 @@ async fn deliver_channel_replies_to_targets(
                             warn!(
                                 account_id = target.account_id,
                                 chat_id = target.chat_id,
+                                thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                 "failed to send channel reply: {e}"
                             );
                         }
@@ -7427,26 +7953,43 @@ async fn deliver_channel_replies_to_targets(
                 _ => match tts_payload {
                     Some(payload) => {
                         if let Err(e) = outbound
-                            .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                            .send_media(&target.account_id, &to, &payload, reply_to)
                             .await
                         {
                             warn!(
                                 account_id = target.account_id,
                                 chat_id = target.chat_id,
+                                thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                 "failed to send channel voice reply: {e}"
+                            );
+                        }
+                    },
+                    None if text_already_streamed => {
+                        // TTS disabled/failed but text was already streamed —
+                        // only send logbook follow-up if present.
+                        if !logbook_html.is_empty()
+                            && let Err(e) = outbound
+                                .send_html(&target.account_id, &to, &logbook_html, None)
+                                .await
+                        {
+                            warn!(
+                                account_id = target.account_id,
+                                chat_id = target.chat_id,
+                                thread_id = target.thread_id.as_deref().unwrap_or("-"),
+                                "failed to send logbook follow-up: {e}"
                             );
                         }
                     },
                     None => {
                         let result = if logbook_html.is_empty() {
                             outbound
-                                .send_text(&target.account_id, &target.chat_id, &text, reply_to)
+                                .send_text(&target.account_id, &to, &text, reply_to)
                                 .await
                         } else {
                             outbound
                                 .send_text_with_suffix(
                                     &target.account_id,
-                                    &target.chat_id,
+                                    &to,
                                     &text,
                                     &logbook_html,
                                     reply_to,
@@ -7457,6 +8000,7 @@ async fn deliver_channel_replies_to_targets(
                             warn!(
                                 account_id = target.account_id,
                                 chat_id = target.chat_id,
+                                thread_id = target.thread_id.as_deref().unwrap_or("-"),
                                 "failed to send channel reply: {e}"
                             );
                         }
@@ -7600,6 +8144,7 @@ async fn build_tts_payload(
         media: Some(MediaAttachment {
             url: format!("data:{mime_type};base64,{}", response.audio),
             mime_type,
+            filename: None,
         }),
         reply_to_id: None,
         silent: false,
@@ -7843,6 +8388,7 @@ async fn send_screenshot_to_channels(
         media: Some(MediaAttachment {
             url: screenshot_data.to_string(),
             mime_type,
+            filename: None,
         }),
         reply_to_id: None,
         silent: false,
@@ -7852,27 +8398,30 @@ async fn send_screenshot_to_channels(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let payload = payload.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             {
                 let reply_to = target.message_id.as_deref();
                 if let Err(e) = outbound
-                    .send_media(&target.account_id, &target.chat_id, &payload, reply_to)
+                    .send_media(&target.account_id, &to, &payload, reply_to)
                     .await
                 {
                     warn!(
                         account_id = target.account_id,
                         chat_id = target.chat_id,
+                        thread_id = target.thread_id.as_deref().unwrap_or("-"),
                         "failed to send screenshot to channel: {e}"
                     );
                     // Notify the user of the error
                     let error_msg = format!("⚠️ Failed to send screenshot: {e}");
                     let _ = outbound
-                        .send_text(&target.account_id, &target.chat_id, &error_msg, reply_to)
+                        .send_text(&target.account_id, &to, &error_msg, reply_to)
                         .await;
                 } else {
                     debug!(
                         account_id = target.account_id,
                         chat_id = target.chat_id,
+                        thread_id = target.thread_id.as_deref().unwrap_or("-"),
                         "sent screenshot to channel"
                     );
                 }
@@ -7885,6 +8434,142 @@ async fn send_screenshot_to_channels(
             warn!(error = %e, "channel reply task join failed");
         }
     }
+}
+
+/// Send a document payload to all pending channel targets for a session.
+/// Uses `peek_channel_replies` so targets remain for the final text response.
+async fn dispatch_document_to_channels(
+    state: &Arc<dyn ChatRuntime>,
+    session_key: &str,
+    payload: moltis_common::types::ReplyPayload,
+) {
+    let targets = state.peek_channel_replies(session_key).await;
+    if targets.is_empty() {
+        return;
+    }
+
+    let outbound = match state.channel_outbound() {
+        Some(o) => o,
+        None => return,
+    };
+
+    let mut tasks = Vec::with_capacity(targets.len());
+    for target in targets {
+        let outbound = Arc::clone(&outbound);
+        let payload = payload.clone();
+        let to = target.outbound_to().into_owned();
+        tasks.push(tokio::spawn(async move {
+            let reply_to = target.message_id.as_deref();
+            if let Err(e) = outbound
+                .send_media(&target.account_id, &to, &payload, reply_to)
+                .await
+            {
+                warn!(
+                    account_id = target.account_id,
+                    chat_id = target.chat_id,
+                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
+                    "failed to send document to channel: {e}"
+                );
+                let error_msg = format!("\u{26a0}\u{fe0f} Failed to send document: {e}");
+                let _ = outbound
+                    .send_text(&target.account_id, &to, &error_msg, reply_to)
+                    .await;
+            } else {
+                debug!(
+                    account_id = target.account_id,
+                    chat_id = target.chat_id,
+                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
+                    "sent document to channel"
+                );
+            }
+        }));
+    }
+
+    for task in tasks {
+        if let Err(e) = task.await {
+            warn!(error = %e, "channel document task join failed");
+        }
+    }
+}
+
+/// Build a `ReplyPayload` from a data URI (legacy path).
+fn document_payload_from_data_uri(
+    data_uri: &str,
+    filename: Option<&str>,
+    caption: Option<&str>,
+) -> moltis_common::types::ReplyPayload {
+    use moltis_common::types::{MediaAttachment, ReplyPayload};
+
+    let mime_type = data_uri
+        .strip_prefix("data:")
+        .and_then(|s| s.split(';').next())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    ReplyPayload {
+        text: caption.unwrap_or_default().to_string(),
+        media: Some(MediaAttachment {
+            url: data_uri.to_string(),
+            mime_type,
+            filename: filename.map(String::from),
+        }),
+        reply_to_id: None,
+        silent: false,
+    }
+}
+
+/// Build a `ReplyPayload` by reading from the session media directory.
+/// Returns `None` if the store is unavailable or the read fails.
+async fn document_payload_from_ref(
+    session_store: Option<&Arc<SessionStore>>,
+    session_key: &str,
+    media_ref: &str,
+    mime_type: &str,
+    filename: Option<&str>,
+    caption: Option<&str>,
+) -> Option<moltis_common::types::ReplyPayload> {
+    use moltis_common::types::{MediaAttachment, ReplyPayload};
+
+    let store = match session_store {
+        Some(s) => s,
+        None => {
+            warn!("document_payload_from_ref: no session store available");
+            return None;
+        },
+    };
+
+    let ref_filename = match media_ref.rsplit('/').next() {
+        Some(f) => f,
+        None => {
+            warn!(media_ref, "invalid document_ref path");
+            return None;
+        },
+    };
+
+    let bytes = match store.read_media(session_key, ref_filename).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(media_ref, error = %e, "failed to read document from media dir");
+            return None;
+        },
+    };
+
+    let b64 = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    };
+    let data_uri = format!("data:{mime_type};base64,{b64}");
+
+    Some(ReplyPayload {
+        text: caption.unwrap_or_default().to_string(),
+        media: Some(MediaAttachment {
+            url: data_uri,
+            mime_type: mime_type.to_string(),
+            filename: filename.map(String::from),
+        }),
+        reply_to_id: None,
+        silent: false,
+    })
 }
 
 /// Send a native location pin to all pending channel targets for a session.
@@ -7912,12 +8597,13 @@ async fn send_location_to_channels(
     for target in targets {
         let outbound = Arc::clone(&outbound);
         let title_ref = title_owned.clone();
+        let to = target.outbound_to().into_owned();
         tasks.push(tokio::spawn(async move {
             let reply_to = target.message_id.as_deref();
             if let Err(e) = outbound
                 .send_location(
                     &target.account_id,
-                    &target.chat_id,
+                    &to,
                     latitude,
                     longitude,
                     title_ref.as_deref(),
@@ -7928,12 +8614,14 @@ async fn send_location_to_channels(
                 warn!(
                     account_id = target.account_id,
                     chat_id = target.chat_id,
+                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                     "failed to send location to channel: {e}"
                 );
             } else {
                 debug!(
                     account_id = target.account_id,
                     chat_id = target.chat_id,
+                    thread_id = target.thread_id.as_deref().unwrap_or("-"),
                     "sent location pin to channel"
                 );
             }
@@ -7963,6 +8651,7 @@ mod tests {
             },
             time::{Duration, Instant},
         },
+        tokio::sync::Notify,
         tokio_stream::Stream,
     };
 
@@ -7975,6 +8664,121 @@ mod tests {
         id: String,
     }
 
+    struct AbortThenContinueProvider {
+        call_count: AtomicUsize,
+        first_delta_processed: Arc<Notify>,
+        seen_messages: Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+    }
+
+    impl AbortThenContinueProvider {
+        fn new() -> Self {
+            Self {
+                call_count: AtomicUsize::new(0),
+                first_delta_processed: Arc::new(Notify::new()),
+                seen_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for AbortThenContinueProvider {
+        fn name(&self) -> &str {
+            "abort-then-continue"
+        }
+
+        fn id(&self) -> &str {
+            "abort-then-continue-model"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[Value],
+        ) -> Result<moltis_agents::model::CompletionResponse> {
+            anyhow::bail!("not implemented for test")
+        }
+
+        fn stream(
+            &self,
+            messages: Vec<ChatMessage>,
+        ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+            let call_index = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let first_delta_processed = Arc::clone(&self.first_delta_processed);
+            let seen_messages = Arc::clone(&self.seen_messages);
+            Box::pin(async_stream::stream! {
+                seen_messages
+                    .lock()
+                    .expect("abort-then-continue seen_messages mutex poisoned")
+                    .push(messages.clone());
+                if call_index == 0 {
+                    yield StreamEvent::Delta("Partial answer".to_string());
+                    first_delta_processed.notify_waiters();
+                    std::future::pending::<()>().await;
+                } else {
+                    yield StreamEvent::Delta("Continued answer".to_string());
+                    yield StreamEvent::Done(moltis_agents::model::Usage {
+                        input_tokens: 8,
+                        output_tokens: 4,
+                        ..Default::default()
+                    });
+                }
+            })
+        }
+    }
+
+    struct StreamingTextToolProvider;
+
+    #[async_trait]
+    impl LlmProvider for StreamingTextToolProvider {
+        fn name(&self) -> &str {
+            "streaming-text-tool"
+        }
+
+        fn id(&self) -> &str {
+            "streaming-text-tool-model"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[Value],
+        ) -> Result<moltis_agents::model::CompletionResponse> {
+            anyhow::bail!("not implemented for test")
+        }
+
+        fn stream(
+            &self,
+            messages: Vec<ChatMessage>,
+        ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+            let has_tool_result = messages
+                .iter()
+                .any(|msg| matches!(msg, ChatMessage::Tool { .. }));
+            Box::pin(async_stream::stream! {
+                if has_tool_result {
+                    yield StreamEvent::Delta("Tool run complete".to_string());
+                    yield StreamEvent::Done(moltis_agents::model::Usage {
+                        input_tokens: 12,
+                        output_tokens: 6,
+                        ..Default::default()
+                    });
+                } else {
+                    yield StreamEvent::Delta(
+                        "```tool_call\n{\"tool\":\"echo_tool\",\"arguments\":{\"text\":\"hi\"}}\n```"
+                            .to_string(),
+                    );
+                    yield StreamEvent::Done(moltis_agents::model::Usage {
+                        input_tokens: 10,
+                        output_tokens: 4,
+                        ..Default::default()
+                    });
+                }
+            })
+        }
+    }
+
+    struct AutoCompactRegressionProvider {
+        context_window: u32,
+    }
     #[async_trait]
     impl LlmProvider for StaticProvider {
         fn name(&self) -> &str {
@@ -7998,6 +8802,48 @@ mod tests {
             _messages: Vec<ChatMessage>,
         ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
             Box::pin(tokio_stream::empty())
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for AutoCompactRegressionProvider {
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn id(&self) -> &str {
+            "test::auto-compact"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[Value],
+        ) -> Result<moltis_agents::model::CompletionResponse> {
+            anyhow::bail!("not implemented for test")
+        }
+
+        fn context_window(&self) -> u32 {
+            self.context_window
+        }
+
+        fn stream(
+            &self,
+            messages: Vec<ChatMessage>,
+        ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+            let response = match messages.first() {
+                Some(ChatMessage::System { content })
+                    if content.contains("conversation summarizer") =>
+                {
+                    "summary"
+                },
+                _ => "final reply",
+            };
+
+            Box::pin(tokio_stream::iter(vec![
+                StreamEvent::Delta(response.to_string()),
+                StreamEvent::Done(moltis_agents::model::Usage::default()),
+            ]))
         }
     }
 
@@ -8310,6 +9156,28 @@ mod tests {
     }
 
     #[test]
+    fn assistant_message_is_visible_for_reasoning_only_messages() {
+        let message = serde_json::json!({
+            "role": "assistant",
+            "content": "   ",
+            "reasoning": "Need to think first",
+        });
+
+        assert!(assistant_message_is_visible(&message));
+    }
+
+    #[test]
+    fn assistant_message_is_not_visible_when_content_and_reasoning_are_blank() {
+        let message = serde_json::json!({
+            "role": "assistant",
+            "content": "   ",
+            "reasoning": "\n\t",
+        });
+
+        assert!(!assistant_message_is_visible(&message));
+    }
+
+    #[test]
     fn estimate_text_tokens_uses_non_empty_floor_and_byte_ratio() {
         assert_eq!(estimate_text_tokens(""), 0);
         assert_eq!(estimate_text_tokens("a"), 1);
@@ -8400,6 +9268,7 @@ mod tests {
             account_id: "bot-main".to_string(),
             chat_id: "123456".to_string(),
             message_id: Some("99".to_string()),
+            thread_id: None,
         };
         let binding_json = serde_json::to_string(&binding).expect("serialize binding");
         let entry = make_session_entry_with_binding(Some(binding_json));
@@ -8456,37 +9325,18 @@ mod tests {
     }
 
     #[test]
-    fn apply_voice_reply_suffix_keeps_datetime_tail_at_end() {
-        let runtime_context = PromptRuntimeContext {
-            host: PromptHostRuntimeContext {
-                time: Some("2026-02-17 16:18:00 CET".to_string()),
-                ..Default::default()
-            },
-            sandbox: None,
-            nodes: None,
-        };
-        let base_prompt =
-            "You are a helpful assistant.\nThe current user datetime is 2026-02-17 16:18:00 CET.\n"
-                .to_string();
+    fn apply_voice_reply_suffix_appends_voice_section() {
+        let base_prompt = "You are a helpful assistant.".to_string();
 
-        let prompt =
-            apply_voice_reply_suffix(base_prompt, ReplyMedium::Voice, Some(&runtime_context));
+        let prompt = apply_voice_reply_suffix(base_prompt, ReplyMedium::Voice);
 
         assert!(prompt.contains("## Voice Reply Mode"));
-        assert!(
-            prompt
-                .trim_end()
-                .ends_with("The current user datetime is 2026-02-17 16:18:00 CET.")
-        );
-        let voice_ix = prompt.find("## Voice Reply Mode");
-        let datetime_ix = prompt.rfind("The current user datetime is 2026-02-17 16:18:00 CET.");
-        assert!(voice_ix.is_some_and(|idx| datetime_ix.is_some_and(|tail| idx < tail)));
     }
 
     #[test]
     fn apply_voice_reply_suffix_noop_for_text_reply_mode() {
         let base_prompt = "You are a helpful assistant.".to_string();
-        let prompt = apply_voice_reply_suffix(base_prompt.clone(), ReplyMedium::Text, None);
+        let prompt = apply_voice_reply_suffix(base_prompt.clone(), ReplyMedium::Text);
         assert_eq!(prompt, base_prompt);
     }
 
@@ -8681,6 +9531,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "123".to_string(),
             message_id: None,
+            thread_id: None,
         }];
         let state = mock_runtime();
 
@@ -8719,6 +9570,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "123".to_string(),
             message_id: Some("42".to_string()),
+            thread_id: None,
         };
 
         state
@@ -8746,6 +9598,150 @@ mod tests {
         );
     }
 
+    /// Regression test for #371: when `desired_reply_medium` is Voice but TTS
+    /// is disabled, the text fallback must be skipped for targets that were
+    /// already streamed — otherwise two identical text messages are delivered.
+    #[tokio::test]
+    async fn deliver_channel_replies_voice_no_tts_skips_streamed_text_fallback() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let outbound: Arc<dyn moltis_channels::plugin::ChannelOutbound> =
+            Arc::new(MockChannelOutbound {
+                calls: Arc::clone(&calls),
+                delay: Duration::from_millis(0),
+            });
+        let state: Arc<dyn ChatRuntime> =
+            Arc::new(MockChatRuntime::new().with_channel_outbound(outbound));
+        let target = moltis_channels::ChannelReplyTarget {
+            channel_type: moltis_channels::ChannelType::Telegram,
+            account_id: "acct".to_string(),
+            chat_id: "123".to_string(),
+            message_id: Some("42".to_string()),
+            thread_id: None,
+        };
+
+        state
+            .push_channel_reply("telegram:acct:123", target.clone())
+            .await;
+
+        let mut streamed = HashSet::new();
+        streamed.insert(ChannelReplyTargetKey::from(&target));
+        // Voice medium + streamed target + NoopTtsService (disabled) = no text fallback
+        deliver_channel_replies(
+            &state,
+            "telegram:acct:123",
+            "hello",
+            ReplyMedium::Voice,
+            &streamed,
+        )
+        .await;
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no outbound calls expected: TTS is disabled and text was already streamed"
+        );
+    }
+
+    /// Regression test for #371: Telegram + Voice + NoTTS + streamed + logbook
+    /// present — the logbook follow-up must still be sent via `send_html` even
+    /// though the text fallback is skipped.
+    #[tokio::test]
+    async fn deliver_channel_replies_voice_no_tts_streamed_sends_logbook() {
+        let text_calls = Arc::new(AtomicUsize::new(0));
+        let suffix_calls = Arc::new(AtomicUsize::new(0));
+        let html_payloads = Arc::new(Mutex::new(Vec::new()));
+        let outbound_impl = Arc::new(RecordingChannelOutbound {
+            text_calls: Arc::clone(&text_calls),
+            suffix_calls: Arc::clone(&suffix_calls),
+            html_payloads: Arc::clone(&html_payloads),
+        });
+        let outbound: Arc<dyn moltis_channels::plugin::ChannelOutbound> = outbound_impl;
+        let state: Arc<dyn ChatRuntime> =
+            Arc::new(MockChatRuntime::new().with_channel_outbound(outbound));
+
+        let target = moltis_channels::ChannelReplyTarget {
+            channel_type: moltis_channels::ChannelType::Telegram,
+            account_id: "acct".to_string(),
+            chat_id: "123".to_string(),
+            message_id: Some("42".to_string()),
+            thread_id: None,
+        };
+        let session_key = "telegram:acct:123";
+        state.push_channel_reply(session_key, target.clone()).await;
+        state
+            .push_channel_status_log(session_key, "🔍 Searching web".to_string())
+            .await;
+
+        let mut streamed = HashSet::new();
+        streamed.insert(ChannelReplyTargetKey::from(&target));
+        deliver_channel_replies(&state, session_key, "hello", ReplyMedium::Voice, &streamed).await;
+
+        assert_eq!(
+            text_calls.load(Ordering::SeqCst),
+            0,
+            "no text sends: text was already streamed"
+        );
+        assert_eq!(
+            suffix_calls.load(Ordering::SeqCst),
+            0,
+            "no text+suffix sends: text was already streamed"
+        );
+        let payloads = html_payloads.lock().await.clone();
+        assert_eq!(payloads.len(), 1, "expected one logbook follow-up");
+        assert!(payloads[0].contains("Activity log"));
+        assert!(payloads[0].contains("Searching web"));
+    }
+
+    /// Regression test for #371: non-Telegram (Discord) + Voice + NoTTS +
+    /// streamed — the logbook follow-up must still be sent, and duplicate
+    /// text must not be delivered.
+    #[tokio::test]
+    async fn deliver_channel_replies_voice_no_tts_streamed_non_telegram_sends_logbook() {
+        let text_calls = Arc::new(AtomicUsize::new(0));
+        let suffix_calls = Arc::new(AtomicUsize::new(0));
+        let html_payloads = Arc::new(Mutex::new(Vec::new()));
+        let outbound_impl = Arc::new(RecordingChannelOutbound {
+            text_calls: Arc::clone(&text_calls),
+            suffix_calls: Arc::clone(&suffix_calls),
+            html_payloads: Arc::clone(&html_payloads),
+        });
+        let outbound: Arc<dyn moltis_channels::plugin::ChannelOutbound> = outbound_impl;
+        let state: Arc<dyn ChatRuntime> =
+            Arc::new(MockChatRuntime::new().with_channel_outbound(outbound));
+
+        let target = moltis_channels::ChannelReplyTarget {
+            channel_type: moltis_channels::ChannelType::Discord,
+            account_id: "acct".to_string(),
+            chat_id: "456".to_string(),
+            message_id: Some("99".to_string()),
+            thread_id: None,
+        };
+        let session_key = "discord:acct:456";
+        state.push_channel_reply(session_key, target.clone()).await;
+        state
+            .push_channel_status_log(session_key, "🌐 Browsing: https://example.com".to_string())
+            .await;
+
+        let mut streamed = HashSet::new();
+        streamed.insert(ChannelReplyTargetKey::from(&target));
+        deliver_channel_replies(&state, session_key, "hello", ReplyMedium::Voice, &streamed).await;
+
+        assert_eq!(
+            text_calls.load(Ordering::SeqCst),
+            0,
+            "no text sends: text was already streamed"
+        );
+        assert_eq!(
+            suffix_calls.load(Ordering::SeqCst),
+            0,
+            "no text+suffix sends: text was already streamed"
+        );
+        let payloads = html_payloads.lock().await.clone();
+        assert_eq!(payloads.len(), 1, "expected one logbook follow-up");
+        assert!(payloads[0].contains("Activity log"));
+        assert!(payloads[0].contains("Browsing: https://example.com"));
+    }
+
     #[tokio::test]
     async fn deliver_channel_replies_streamed_targets_get_logbook_follow_up() {
         let text_calls = Arc::new(AtomicUsize::new(0));
@@ -8765,6 +9761,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "123".to_string(),
             message_id: Some("42".to_string()),
+            thread_id: None,
         };
         let session_key = "discord:acct:123";
         state.push_channel_reply(session_key, target.clone()).await;
@@ -8813,6 +9810,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "123".to_string(),
             message_id: Some("55".to_string()),
+            thread_id: None,
         };
         let session_key = "telegram:acct:123";
         state.push_channel_reply(session_key, target.clone()).await;
@@ -8848,6 +9846,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "123".to_string(),
             message_id: Some("55".to_string()),
+            thread_id: None,
         };
         let session_key = "telegram:acct:123";
         state.push_channel_reply(session_key, target.clone()).await;
@@ -8884,6 +9883,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "123".to_string(),
             message_id: Some("55".to_string()),
+            thread_id: None,
         };
         let session_key = "telegram:acct:123";
         state.push_channel_reply(session_key, target.clone()).await;
@@ -8916,6 +9916,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "123".to_string(),
             message_id: Some("55".to_string()),
+            thread_id: None,
         };
         let session_key = "telegram:acct:123";
         state.push_channel_reply(session_key, target.clone()).await;
@@ -8956,6 +9957,7 @@ mod tests {
             account_id: "acct".to_string(),
             chat_id: "456".to_string(),
             message_id: Some("77".to_string()),
+            thread_id: None,
         };
         let session_key = "telegram:acct:456";
         state.push_channel_reply(session_key, target.clone()).await;
@@ -9041,6 +10043,173 @@ mod tests {
                 .iter()
                 .any(|msg| msg.get("role").and_then(Value::as_str) == Some("assistant")),
             "explicit /sh should persist an assistant turn for history coherence"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_compact_uses_explicit_session_key_for_channel_sessions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let pool = sqlite_pool().await;
+        let metadata = Arc::new(SqliteSessionMetadata::new(pool));
+
+        let state: Arc<dyn ChatRuntime> = Arc::new(MockChatRuntime::new());
+        let mut providers = ProviderRegistry::empty();
+        providers.register(
+            moltis_providers::ModelInfo {
+                id: "test::auto-compact".to_string(),
+                provider: "test".to_string(),
+                display_name: "Auto Compact Test".to_string(),
+                created_at: None,
+                recommended: false,
+            },
+            Arc::new(AutoCompactRegressionProvider {
+                context_window: 100,
+            }),
+        );
+
+        let chat = LiveChatService::new(
+            Arc::new(RwLock::new(providers)),
+            Arc::new(RwLock::new(DisabledModelsStore::default())),
+            state,
+            Arc::clone(&store),
+            metadata,
+        );
+
+        let session_key = "discord:acct:123";
+        store
+            .append(
+                session_key,
+                &serde_json::json!({
+                    "role": "assistant",
+                    "content": "existing response",
+                    "requestInputTokens": 94_u64,
+                    "requestOutputTokens": 1_u64
+                }),
+            )
+            .await
+            .expect("seed channel session history");
+
+        let send_result = chat
+            .send(serde_json::json!({
+                "text": "ping",
+                "_session_key": session_key
+            }))
+            .await
+            .expect("chat.send should succeed");
+        assert!(
+            send_result
+                .get("runId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        );
+
+        let history = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let messages = store.read(session_key).await.unwrap_or_default();
+                let has_final_reply = messages.last().is_some_and(|message| {
+                    message.get("role").and_then(Value::as_str) == Some("assistant")
+                        && message.get("content").and_then(Value::as_str) == Some("final reply")
+                });
+                if has_final_reply {
+                    return messages;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("assistant reply should be persisted");
+
+        assert_eq!(history.len(), 3);
+        // Compacted summary must be a user message so that strict providers
+        // (e.g. llama.cpp) don't reject the history for having an assistant
+        // message without a preceding user message, and so the summary stays
+        // in the conversation turn array for the Responses API.  See #501.
+        assert_eq!(history[0].get("role").and_then(Value::as_str), Some("user"));
+        assert!(
+            history[0]
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.starts_with("[Conversation Summary]\n\nsummary"))
+        );
+        assert_eq!(history[1].get("role").and_then(Value::as_str), Some("user"));
+        assert_eq!(
+            history[2].get("content").and_then(Value::as_str),
+            Some("final reply")
+        );
+
+        let main_history = store.read("main").await.unwrap_or_default();
+        assert!(
+            main_history.is_empty(),
+            "auto-compact should not touch the default web session"
+        );
+    }
+
+    /// Regression test for GitHub issue #501: compaction must produce a user
+    /// message, not an assistant message, so that strict providers (llama.cpp)
+    /// don't reject the history for having an orphan assistant turn, and the
+    /// summary stays in the conversation turn array for the Responses API.
+    #[tokio::test]
+    async fn compact_session_produces_user_role() {
+        use moltis_agents::model::values_to_chat_messages;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+
+        let session_key = "test::compact-role";
+
+        // Seed a minimal conversation.
+        store
+            .append(
+                session_key,
+                &serde_json::json!({ "role": "user", "content": "Hello" }),
+            )
+            .await
+            .expect("seed user msg");
+        store
+            .append(
+                session_key,
+                &serde_json::json!({ "role": "assistant", "content": "Hi there!" }),
+            )
+            .await
+            .expect("seed assistant msg");
+
+        let provider: Arc<dyn LlmProvider> = Arc::new(AutoCompactRegressionProvider {
+            context_window: 100,
+        });
+        compact_session(&store, session_key, &provider)
+            .await
+            .expect("compact_session should succeed");
+
+        let history = store.read(session_key).await.expect("read compacted");
+        assert_eq!(
+            history.len(),
+            1,
+            "compaction should leave exactly one message"
+        );
+
+        // The compacted message must be a user message.
+        assert_eq!(
+            history[0].get("role").and_then(Value::as_str),
+            Some("user"),
+            "compacted summary must use user role, not assistant (issue #501)"
+        );
+        assert!(
+            history[0]
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|c| c.starts_with("[Conversation Summary]")),
+        );
+
+        // Verify the compacted history converts to a User ChatMessage.
+        let chat_msgs = values_to_chat_messages(&history);
+        assert!(
+            !chat_msgs.is_empty(),
+            "compacted history should convert to at least one ChatMessage"
+        );
+        assert!(
+            matches!(chat_msgs[0], ChatMessage::User { .. }),
+            "first ChatMessage after compaction must be User (issue #501)"
         );
     }
 
@@ -9174,6 +10343,10 @@ mod tests {
         )
     }
 
+    fn make_terminal_runs() -> Arc<RwLock<HashSet<String>>> {
+        Arc::new(RwLock::new(HashSet::new()))
+    }
+
     #[tokio::test]
     async fn same_session_runs_are_serialized() {
         let locks = make_session_locks();
@@ -9247,6 +10420,7 @@ mod tests {
     #[tokio::test]
     async fn abort_run_handle_resolves_run_from_session_key() {
         let (active_runs, active_runs_by_session) = make_active_run_maps();
+        let terminal_runs = make_terminal_runs();
 
         let task = tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -9264,6 +10438,7 @@ mod tests {
         let (resolved_run_id, aborted) = LiveChatService::abort_run_handle(
             &active_runs,
             &active_runs_by_session,
+            &terminal_runs,
             None,
             Some("main"),
         )
@@ -9280,6 +10455,7 @@ mod tests {
     #[tokio::test]
     async fn abort_run_handle_by_run_id_clears_session_lookup() {
         let (active_runs, active_runs_by_session) = make_active_run_maps();
+        let terminal_runs = make_terminal_runs();
 
         let task = tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -9297,6 +10473,7 @@ mod tests {
         let (resolved_run_id, aborted) = LiveChatService::abort_run_handle(
             &active_runs,
             &active_runs_by_session,
+            &terminal_runs,
             Some("run-b"),
             None,
         )
@@ -9306,6 +10483,51 @@ mod tests {
         assert!(active_runs.read().await.is_empty());
         assert!(active_runs_by_session.read().await.is_empty());
 
+        let err = task.await.expect_err("task should be cancelled");
+        assert!(err.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn abort_run_handle_ignores_terminal_run() {
+        let (active_runs, active_runs_by_session) = make_active_run_maps();
+        let terminal_runs = make_terminal_runs();
+
+        let task = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+
+        active_runs
+            .write()
+            .await
+            .insert("run-c".to_string(), task.abort_handle());
+        active_runs_by_session
+            .write()
+            .await
+            .insert("main".to_string(), "run-c".to_string());
+        terminal_runs.write().await.insert("run-c".to_string());
+
+        let (resolved_run_id, aborted) = LiveChatService::abort_run_handle(
+            &active_runs,
+            &active_runs_by_session,
+            &terminal_runs,
+            Some("run-c"),
+            None,
+        )
+        .await;
+
+        assert_eq!(resolved_run_id.as_deref(), Some("run-c"));
+        assert!(!aborted);
+        assert!(active_runs.read().await.contains_key("run-c"));
+        assert_eq!(
+            active_runs_by_session
+                .read()
+                .await
+                .get("main")
+                .map(String::as_str),
+            Some("run-c")
+        );
+
+        task.abort();
         let err = task.await.expect_err("task should be cancelled");
         assert!(err.is_cancelled());
     }
@@ -9716,14 +10938,8 @@ mod tests {
         let skills = vec![moltis_skills::types::SkillMetadata {
             name: "my-skill".into(),
             description: "test".into(),
-            license: None,
-            compatibility: None,
             allowed_tools: vec!["Bash(git:*)".into()],
-            homepage: None,
-            dockerfile: None,
-            requires: Default::default(),
-            path: PathBuf::new(),
-            source: None,
+            ..Default::default()
         }];
 
         let filtered = apply_runtime_tool_filters(&registry, &cfg, &skills, false);
@@ -9749,14 +10965,8 @@ mod tests {
         let skills = vec![moltis_skills::types::SkillMetadata {
             name: "weather".into(),
             description: "weather checker".into(),
-            license: None,
-            compatibility: None,
             allowed_tools: vec!["WebFetch".into()],
-            homepage: None,
-            dockerfile: None,
-            requires: Default::default(),
-            path: PathBuf::new(),
-            source: None,
+            ..Default::default()
         }];
 
         let filtered = apply_runtime_tool_filters(&registry, &cfg, &skills, false);
@@ -9771,18 +10981,21 @@ mod tests {
             provider: "openai-codex".into(),
             display_name: "GPT 5.2".into(),
             created_at: None,
+            recommended: false,
         };
         let m2 = moltis_providers::ModelInfo {
             id: "anthropic::claude-opus-4-5".into(),
             provider: "anthropic".into(),
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
+            recommended: false,
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
             provider: "gemini".into(),
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
+            recommended: false,
         };
 
         let order =
@@ -9800,18 +11013,21 @@ mod tests {
             provider: "openai-codex".into(),
             display_name: "GPT-5.2".into(),
             created_at: None,
+            recommended: false,
         };
         let m2 = moltis_providers::ModelInfo {
             id: "anthropic::claude-sonnet-4-5-20250929".into(),
             provider: "anthropic".into(),
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
+            recommended: false,
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
             provider: "gemini".into(),
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
+            recommended: false,
         };
 
         let order =
@@ -9829,25 +11045,30 @@ mod tests {
             provider: "openai".into(),
             display_name: "GPT-5.2".into(),
             created_at: None,
+            recommended: false,
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
             provider: "openai-codex".into(),
             display_name: "GPT-5.2".into(),
             created_at: None,
+            recommended: false,
         };
         let m3 = moltis_providers::ModelInfo {
             id: "anthropic::claude-sonnet-4-5-20250929".into(),
             provider: "anthropic".into(),
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
+            recommended: false,
         };
 
         let order = LiveModelService::build_priority_order(&[]);
         let ordered = LiveModelService::prioritize_models(&order, vec![&m1, &m2, &m3].into_iter());
-        assert_eq!(ordered[0].id, m2.id);
-        assert_eq!(ordered[1].id, m1.id);
-        assert_eq!(ordered[2].id, m3.id);
+        // Alphabetical: "Claude Sonnet 4.5" < "GPT-5.2"; among GPT-5.2
+        // ties, subscription_provider_rank breaks the tie (codex > openai).
+        assert_eq!(ordered[0].id, m3.id);
+        assert_eq!(ordered[1].id, m2.id);
+        assert_eq!(ordered[2].id, m1.id);
     }
 
     #[test]
@@ -9857,12 +11078,14 @@ mod tests {
             provider: "openai".into(),
             display_name: "GPT-5.2".into(),
             created_at: None,
+            recommended: false,
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
             provider: "openai-codex".into(),
             display_name: "GPT-5.2".into(),
             created_at: None,
+            recommended: false,
         };
 
         let order = LiveModelService::build_priority_order(&["openai::gpt-5.2".into()]);
@@ -9878,18 +11101,21 @@ mod tests {
             provider: "anthropic".into(),
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
+            recommended: false,
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
             provider: "openai-codex".into(),
             display_name: "GPT 5.2".into(),
             created_at: None,
+            recommended: false,
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
             provider: "google".into(),
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
+            recommended: false,
         };
 
         let patterns: Vec<String> = vec!["opus".into()];
@@ -9905,6 +11131,7 @@ mod tests {
             provider: "anthropic".into(),
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
+            recommended: false,
         };
         assert!(model_matches_allowlist(&m, &[]));
     }
@@ -9916,6 +11143,7 @@ mod tests {
             provider: "anthropic".into(),
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
+            recommended: false,
         };
 
         // Uppercase pattern matches lowercase model key.
@@ -9934,6 +11162,7 @@ mod tests {
             provider: "openai-codex".into(),
             display_name: "GPT-5.2".into(),
             created_at: None,
+            recommended: false,
         };
 
         let patterns = vec![normalize_model_key("gpt 5.2")];
@@ -9950,12 +11179,14 @@ mod tests {
             provider: "openai".into(),
             display_name: "GPT-5.2".into(),
             created_at: None,
+            recommended: false,
         };
         let extended = moltis_providers::ModelInfo {
             id: "openai::gpt-5.2-chat-latest".into(),
             provider: "openai".into(),
             display_name: "GPT-5.2 Chat Latest".into(),
             created_at: None,
+            recommended: false,
         };
         let patterns = vec![normalize_model_key("gpt 5.2")];
 
@@ -9970,6 +11201,7 @@ mod tests {
             provider: "anthropic".into(),
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
+            recommended: false,
         };
         let patterns = vec![normalize_model_key("sonnet 4.5")];
 
@@ -9983,12 +11215,14 @@ mod tests {
             provider: "local-llm".into(),
             display_name: "Qwen2.5 Coder 7B".into(),
             created_at: None,
+            recommended: false,
         };
         let ollama = moltis_providers::ModelInfo {
             id: "ollama::llama3.1:8b".into(),
             provider: "ollama".into(),
             display_name: "Llama 3.1 8B".into(),
             created_at: None,
+            recommended: false,
         };
         let patterns = vec![normalize_model_key("opus")];
 
@@ -10003,6 +11237,7 @@ mod tests {
             provider: "local-ai".into(),
             display_name: "Llama 3.1 8B".into(),
             created_at: None,
+            recommended: false,
         };
         let patterns = vec![normalize_model_key("opus")];
 
@@ -10022,6 +11257,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 display_name: "Claude Opus 4.5".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "anthropic".to_string(),
@@ -10034,6 +11270,7 @@ mod tests {
                 provider: "openai-codex".to_string(),
                 display_name: "GPT 5.2".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "openai-codex".to_string(),
@@ -10046,6 +11283,7 @@ mod tests {
                 provider: "google".to_string(),
                 display_name: "Gemini 3 Flash".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "google".to_string(),
@@ -10058,22 +11296,45 @@ mod tests {
 
         let result = service.list().await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 3);
+        // 3 base models + 3 reasoning variants for claude-opus-4-5 = 6
+        assert_eq!(arr.len(), 6);
 
         let result = service.list_all().await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 3);
+        assert_eq!(arr.len(), 6);
+
+        // Verify reasoning variants are present with correct display names.
+        let ids: Vec<&str> = arr.iter().filter_map(|m| m["id"].as_str()).collect();
+        assert!(ids.contains(&"anthropic::claude-opus-4-5@reasoning-high"));
+        assert!(ids.contains(&"anthropic::claude-opus-4-5@reasoning-medium"));
+        assert!(ids.contains(&"anthropic::claude-opus-4-5@reasoning-low"));
+        let high = arr
+            .iter()
+            .find(|m| m["id"].as_str() == Some("anthropic::claude-opus-4-5@reasoning-high"))
+            .unwrap();
+        assert_eq!(
+            high["displayName"].as_str().unwrap(),
+            "Claude Opus 4.5 (high reasoning)"
+        );
     }
 
     #[tokio::test]
     async fn list_includes_created_at_in_response() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let recent_gpt = now - 10 * 24 * 60 * 60; // 10 days ago
+        let recent_babbage = now - 30 * 24 * 60 * 60; // 30 days ago
+
         let mut registry = ProviderRegistry::empty();
         registry.register(
             moltis_providers::ModelInfo {
                 id: "openai::gpt-5.3".to_string(),
                 provider: "openai".to_string(),
                 display_name: "GPT-5.3".to_string(),
-                created_at: Some(1700000000),
+                created_at: Some(recent_gpt),
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -10085,7 +11346,8 @@ mod tests {
                 id: "openai::babbage-002".to_string(),
                 provider: "openai".to_string(),
                 display_name: "babbage-002".to_string(),
-                created_at: Some(1600000000),
+                created_at: Some(recent_babbage),
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -10098,6 +11360,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 display_name: "Claude Opus".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "anthropic".to_string(),
@@ -10114,13 +11377,13 @@ mod tests {
 
         // Verify createdAt is present and correct.
         let gpt = arr.iter().find(|m| m["id"] == "openai::gpt-5.3").unwrap();
-        assert_eq!(gpt["createdAt"], 1700000000);
+        assert_eq!(gpt["createdAt"], recent_gpt);
 
         let babbage = arr
             .iter()
             .find(|m| m["id"] == "openai::babbage-002")
             .unwrap();
-        assert_eq!(babbage["createdAt"], 1600000000);
+        assert_eq!(babbage["createdAt"], recent_babbage);
 
         let claude = arr
             .iter()
@@ -10135,7 +11398,7 @@ mod tests {
             .iter()
             .find(|m| m["id"] == "openai::gpt-5.3")
             .unwrap();
-        assert_eq!(gpt_all["createdAt"], 1700000000);
+        assert_eq!(gpt_all["createdAt"], recent_gpt);
     }
 
     #[tokio::test]
@@ -10147,6 +11410,7 @@ mod tests {
                 provider: "openai-codex".to_string(),
                 display_name: "GPT 5.2".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "openai-codex".to_string(),
@@ -10159,6 +11423,7 @@ mod tests {
                 provider: "local-ai".to_string(),
                 display_name: "Llama 3.1 8B".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "ollama".to_string(),
@@ -10257,6 +11522,7 @@ mod tests {
                 provider: "unit-test-provider".to_string(),
                 display_name: "Unit Test Model".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "unit-test-provider".to_string(),
@@ -10289,6 +11555,11 @@ mod tests {
             all_entry.get("disabled").and_then(|v| v.as_bool()),
             Some(true)
         );
+        assert_eq!(
+            all_entry.get("preferred").and_then(|v| v.as_bool()),
+            Some(false),
+            "list_all should include preferred field",
+        );
 
         let visible = service.list().await.expect("models.list should succeed");
         let visible_models = visible
@@ -10300,6 +11571,119 @@ mod tests {
                 .all(|m| m.get("id").and_then(|v| v.as_str())
                     != Some("unit-test-provider::unit-test-model")),
             "disabled model should be hidden from models.list",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_hides_legacy_models_by_default() {
+        let mut registry = ProviderRegistry::empty();
+        let two_years_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - 2 * 365 * 24 * 60 * 60;
+        let recent = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - 30 * 24 * 60 * 60;
+
+        registry.register(
+            moltis_providers::ModelInfo {
+                id: "old-model".to_string(),
+                provider: "test".to_string(),
+                display_name: "Old Model".to_string(),
+                created_at: Some(two_years_ago),
+                recommended: false,
+            },
+            Arc::new(StaticProvider {
+                name: "test".to_string(),
+                id: "old-model".to_string(),
+            }),
+        );
+        registry.register(
+            moltis_providers::ModelInfo {
+                id: "new-model".to_string(),
+                provider: "test".to_string(),
+                display_name: "New Model".to_string(),
+                created_at: Some(recent),
+                recommended: false,
+            },
+            Arc::new(StaticProvider {
+                name: "test".to_string(),
+                id: "new-model".to_string(),
+            }),
+        );
+
+        let disabled = Arc::new(RwLock::new(DisabledModelsStore::default()));
+        let service = LiveModelService::new(Arc::new(RwLock::new(registry)), disabled, vec![]);
+
+        let result = service.list().await.expect("models.list should succeed");
+        let models = result.as_array().expect("should be array");
+        let ids: Vec<_> = models
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            ids.contains(&"test::new-model"),
+            "recent model should be visible",
+        );
+        assert!(
+            !ids.contains(&"test::old-model"),
+            "legacy model should be hidden from chat selector",
+        );
+
+        // list_all still shows everything
+        let all = service.list_all().await.expect("list_all should succeed");
+        let all_ids: Vec<_> = all
+            .as_array()
+            .expect("should be array")
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            all_ids.contains(&"test::old-model"),
+            "legacy model should still appear in list_all",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_shows_legacy_models_when_configured() {
+        let mut registry = ProviderRegistry::empty();
+        let two_years_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - 2 * 365 * 24 * 60 * 60;
+
+        registry.register(
+            moltis_providers::ModelInfo {
+                id: "old-model".to_string(),
+                provider: "test".to_string(),
+                display_name: "Old Model".to_string(),
+                created_at: Some(two_years_ago),
+                recommended: false,
+            },
+            Arc::new(StaticProvider {
+                name: "test".to_string(),
+                id: "old-model".to_string(),
+            }),
+        );
+
+        let disabled = Arc::new(RwLock::new(DisabledModelsStore::default()));
+        let service = LiveModelService::new(Arc::new(RwLock::new(registry)), disabled, vec![])
+            .with_show_legacy_models(true);
+
+        let result = service.list().await.expect("models.list should succeed");
+        let ids: Vec<_> = result
+            .as_array()
+            .expect("should be array")
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            ids.contains(&"test::old-model"),
+            "legacy model should be visible when show_legacy_models is true",
         );
     }
 
@@ -10363,6 +11747,7 @@ mod tests {
                 provider: "openai".to_string(),
                 display_name: "GPT 5.2 Codex".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -10375,6 +11760,7 @@ mod tests {
                 provider: "openai".to_string(),
                 display_name: "GPT 5".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -10434,6 +11820,7 @@ mod tests {
                 provider: "test-provider".to_string(),
                 display_name: "Test Model".to_string(),
                 created_at: None,
+                recommended: false,
             },
             Arc::new(StaticProvider {
                 name: "test-provider".to_string(),
@@ -10861,6 +12248,267 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn abort_waits_for_pending_tool_history_before_persisting_partial() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let pool = sqlite_pool().await;
+        let metadata = Arc::new(SqliteSessionMetadata::new(pool));
+
+        let service = LiveChatService::new(
+            Arc::new(RwLock::new(ProviderRegistry::empty())),
+            Arc::new(RwLock::new(DisabledModelsStore::default())),
+            Arc::new(MockChatRuntime::new()),
+            Arc::clone(&store),
+            metadata,
+        );
+
+        let session_key = "main";
+        let run_id = "run-with-pending-tool-history";
+
+        service
+            .active_partial_assistant
+            .write()
+            .await
+            .insert(session_key.to_string(), {
+                let mut draft =
+                    ActiveAssistantDraft::new(run_id, "test-model", "test-provider", None);
+                draft.append_text("Partial answer");
+                draft
+            });
+        service
+            .active_runs_by_session
+            .write()
+            .await
+            .insert(session_key.to_string(), run_id.to_string());
+        let handle = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(60)).await });
+        service
+            .active_runs
+            .write()
+            .await
+            .insert(run_id.to_string(), handle.abort_handle());
+
+        let store_for_forwarder = Arc::clone(&store);
+        let session_key_for_forwarder = session_key.to_string();
+        let run_id_for_forwarder = run_id.to_string();
+        let event_forwarder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let assistant_tool_call_msg = build_tool_call_assistant_message(
+                "tool-call-1",
+                "echo_tool",
+                Some(serde_json::json!({"text": "hi"})),
+                None,
+                Some(&run_id_for_forwarder),
+            );
+            let tool_result_msg = PersistedMessage::ToolResult {
+                tool_call_id: "tool-call-1".to_string(),
+                tool_name: "echo_tool".to_string(),
+                arguments: Some(serde_json::json!({"text": "hi"})),
+                success: true,
+                result: Some(serde_json::json!({"text": "hi"})),
+                error: None,
+                reasoning: Some("Need to use the tool first".to_string()),
+                created_at: Some(now_ms()),
+                run_id: Some(run_id_for_forwarder),
+            };
+            persist_tool_history_pair(
+                &store_for_forwarder,
+                &session_key_for_forwarder,
+                assistant_tool_call_msg,
+                tool_result_msg,
+                "failed to persist assistant tool call",
+                "failed to persist tool result",
+            )
+            .await;
+            "Need to use the tool first".to_string()
+        });
+        service
+            .active_event_forwarders
+            .write()
+            .await
+            .insert(session_key.to_string(), event_forwarder);
+
+        let abort_result = service
+            .abort(serde_json::json!({ "sessionKey": session_key }))
+            .await
+            .expect("chat.abort should succeed");
+        assert_eq!(abort_result["aborted"], true);
+        assert_eq!(abort_result["runId"], run_id);
+
+        let history = store
+            .read(session_key)
+            .await
+            .expect("read history after abort");
+        assert_eq!(
+            history.len(),
+            3,
+            "tool history should be flushed before abort partial"
+        );
+        assert_eq!(history[0]["role"].as_str(), Some("assistant"));
+        assert!(history[0]["tool_calls"].is_array());
+        assert_eq!(history[1]["role"].as_str(), Some("tool_result"));
+        assert_eq!(history[2]["role"].as_str(), Some("assistant"));
+        assert_eq!(history[2]["content"].as_str(), Some("Partial answer"));
+    }
+
+    #[tokio::test]
+    async fn abort_persists_partial_stream_and_followup_reuses_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let pool = sqlite_pool().await;
+        let metadata = Arc::new(SqliteSessionMetadata::new(pool));
+        let provider = Arc::new(AbortThenContinueProvider::new());
+
+        let mut registry = ProviderRegistry::empty();
+        registry.register(
+            moltis_providers::ModelInfo {
+                id: "abort-then-continue-model".to_string(),
+                provider: "abort-then-continue".to_string(),
+                display_name: "Abort Then Continue".to_string(),
+                created_at: None,
+                recommended: false,
+            },
+            provider.clone(),
+        );
+
+        let service = LiveChatService::new(
+            Arc::new(RwLock::new(registry)),
+            Arc::new(RwLock::new(DisabledModelsStore::default())),
+            Arc::new(MockChatRuntime::new()),
+            Arc::clone(&store),
+            metadata,
+        );
+
+        let send_result = service
+            .send(serde_json::json!({ "text": "start streaming" }))
+            .await
+            .expect("chat.send should succeed");
+        let run_id = send_result["runId"]
+            .as_str()
+            .expect("runId should be returned")
+            .to_string();
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            provider.first_delta_processed.notified(),
+        )
+        .await
+        .expect("first streamed delta should be observed");
+
+        let abort_result = service
+            .abort(serde_json::json!({ "sessionKey": "main" }))
+            .await
+            .expect("chat.abort should succeed");
+        assert_eq!(abort_result["aborted"], true);
+        assert_eq!(abort_result["runId"], run_id);
+
+        let history = store.read("main").await.expect("read history after abort");
+        assert!(
+            history.iter().any(|msg| {
+                msg.get("role").and_then(Value::as_str) == Some("assistant")
+                    && msg.get("content").and_then(Value::as_str) == Some("Partial answer")
+            }),
+            "aborted run should persist the partial assistant output"
+        );
+
+        let continue_result = service
+            .send_sync(serde_json::json!({ "text": "continue" }))
+            .await
+            .expect("follow-up send_sync should succeed");
+        assert_eq!(continue_result["text"], "Continued answer");
+
+        let seen_messages = provider
+            .seen_messages
+            .lock()
+            .expect("abort-then-continue seen_messages mutex poisoned")
+            .clone();
+        assert!(seen_messages.len() >= 2, "provider should see both turns");
+
+        let follow_up_messages = &seen_messages[1];
+        assert!(
+            follow_up_messages.iter().any(|msg| matches!(
+                msg,
+                ChatMessage::Assistant {
+                    content: Some(text),
+                    tool_calls,
+                } if text == "Partial answer" && tool_calls.is_empty()
+            )),
+            "follow-up turn should include the aborted partial assistant output in prompt history"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_sync_persists_tool_call_assistant_frames_for_history_replay() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let pool = sqlite_pool().await;
+        let metadata = Arc::new(SqliteSessionMetadata::new(pool));
+
+        let mut provider_registry = ProviderRegistry::empty();
+        provider_registry.register(
+            moltis_providers::ModelInfo {
+                id: "streaming-text-tool-model".to_string(),
+                provider: "streaming-text-tool".to_string(),
+                display_name: "Streaming Text Tool".to_string(),
+                created_at: None,
+                recommended: false,
+            },
+            Arc::new(StreamingTextToolProvider),
+        );
+
+        let mut tool_registry = ToolRegistry::new();
+        tool_registry.register(Box::new(DummyTool {
+            name: "echo_tool".to_string(),
+        }));
+
+        let service = LiveChatService::new(
+            Arc::new(RwLock::new(provider_registry)),
+            Arc::new(RwLock::new(DisabledModelsStore::default())),
+            Arc::new(MockChatRuntime::new()),
+            Arc::clone(&store),
+            metadata,
+        )
+        .with_tools(Arc::new(RwLock::new(tool_registry)));
+
+        let send_result = service
+            .send_sync(serde_json::json!({ "text": "use the tool" }))
+            .await
+            .expect("send_sync should succeed");
+        assert_eq!(send_result["text"], "Tool run complete");
+
+        let history = store.read("main").await.expect("read history");
+        let assistant_tool_call = history
+            .iter()
+            .find(|msg| {
+                msg.get("role").and_then(Value::as_str) == Some("assistant")
+                    && msg.get("tool_calls").is_some()
+            })
+            .expect("assistant tool-call frame should be persisted");
+        let tool_result = history
+            .iter()
+            .find(|msg| msg.get("role").and_then(Value::as_str) == Some("tool_result"))
+            .expect("tool_result should be persisted");
+
+        assert_eq!(
+            assistant_tool_call["tool_calls"][0]["function"]["name"].as_str(),
+            Some("echo_tool")
+        );
+        assert_eq!(
+            assistant_tool_call["tool_calls"][0]["id"].as_str(),
+            tool_result["tool_call_id"].as_str()
+        );
+
+        let replay_messages = values_to_chat_messages(&history);
+        assert!(
+            replay_messages.iter().any(|msg| matches!(
+                msg,
+                ChatMessage::Tool { tool_call_id, .. }
+                    if Some(tool_call_id.as_str()) == tool_result["tool_call_id"].as_str()
+            )),
+            "persisted tool_result should round-trip into prompt history once the assistant tool-call frame exists"
+        );
+    }
+
     // ── effective_tool_mode tests ───────────────────────────────────────
 
     /// Provider stub for testing `effective_tool_mode()` with configurable
@@ -10963,5 +12611,123 @@ mod tests {
             mode: Some(ToolMode::Auto),
         };
         assert_eq!(effective_tool_mode(&text), ToolMode::Text);
+    }
+
+    // ── Slow-start provider for model-probe timeout regression tests ────
+
+    /// Provider that delays `startup_delay` before yielding the first token.
+    /// Simulates local LLM servers that need to load a model into memory.
+    struct SlowStartProvider {
+        name: String,
+        id: String,
+        startup_delay: Duration,
+    }
+
+    #[async_trait]
+    impl LlmProvider for SlowStartProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[Value],
+        ) -> Result<moltis_agents::model::CompletionResponse> {
+            tokio::time::sleep(self.startup_delay).await;
+            Ok(moltis_agents::model::CompletionResponse {
+                text: Some("pong".to_string()),
+                tool_calls: vec![],
+                usage: moltis_agents::model::Usage::default(),
+            })
+        }
+
+        fn stream(
+            &self,
+            _messages: Vec<ChatMessage>,
+        ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+            let delay = self.startup_delay;
+            Box::pin(async_stream::stream! {
+                tokio::time::sleep(delay).await;
+                yield StreamEvent::Delta("pong".to_string());
+                yield StreamEvent::Done(moltis_agents::model::Usage::default());
+            })
+        }
+    }
+
+    /// Regression test for GitHub issue #514: local LLM servers that need
+    /// time to load a model should not be rejected by the probe timeout.
+    /// The probe timeout is 30 s; a 2 s delay must succeed.
+    #[tokio::test]
+    async fn model_probe_succeeds_with_slow_start_provider() {
+        let mut registry = ProviderRegistry::empty();
+        registry.register(
+            moltis_providers::ModelInfo {
+                id: "local::slow-model".to_string(),
+                provider: "local".to_string(),
+                display_name: "Slow Model".to_string(),
+                created_at: None,
+                recommended: false,
+            },
+            Arc::new(SlowStartProvider {
+                name: "local".to_string(),
+                id: "local::slow-model".to_string(),
+                startup_delay: Duration::from_secs(2),
+            }),
+        );
+
+        let disabled = Arc::new(RwLock::new(DisabledModelsStore::default()));
+        let service = LiveModelService::new(Arc::new(RwLock::new(registry)), disabled, vec![]);
+
+        let result = service
+            .test(serde_json::json!({ "modelId": "local::slow-model" }))
+            .await;
+        assert!(
+            result.is_ok(),
+            "probe should succeed for slow-start provider: {result:?}"
+        );
+        let payload = result.unwrap();
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["modelId"], "local::slow-model");
+    }
+
+    /// Verify that a truly unreachable provider still produces a timeout error
+    /// (not an infinite hang) after the 30 s limit.
+    /// Uses `start_paused = true` so the 30 s timeout elapses instantly.
+    #[tokio::test(start_paused = true)]
+    async fn model_probe_times_out_for_unresponsive_provider() {
+        let mut registry = ProviderRegistry::empty();
+        registry.register(
+            moltis_providers::ModelInfo {
+                id: "local::stuck-model".to_string(),
+                provider: "local".to_string(),
+                display_name: "Stuck Model".to_string(),
+                created_at: None,
+                recommended: false,
+            },
+            Arc::new(SlowStartProvider {
+                name: "local".to_string(),
+                id: "local::stuck-model".to_string(),
+                // Well beyond the 30 s timeout — will trigger the timeout branch.
+                startup_delay: Duration::from_secs(120),
+            }),
+        );
+
+        let disabled = Arc::new(RwLock::new(DisabledModelsStore::default()));
+        let service = LiveModelService::new(Arc::new(RwLock::new(registry)), disabled, vec![]);
+
+        let result = service
+            .test(serde_json::json!({ "modelId": "local::stuck-model" }))
+            .await;
+        assert!(result.is_err(), "probe should fail for stuck provider");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("timed out"),
+            "error should mention timeout: {err}"
+        );
     }
 }

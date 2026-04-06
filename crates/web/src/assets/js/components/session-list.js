@@ -10,7 +10,9 @@ import {
 	makeChatIcon,
 	makeCronIcon,
 	makeDiscordIcon,
+	makeMatrixIcon,
 	makeProjectIcon,
+	makeSlackIcon,
 	makeTeamsIcon,
 	makeTelegramIcon,
 } from "../icons.js";
@@ -40,6 +42,8 @@ function channelSessionType(s) {
 	if (key.startsWith("telegram:")) return "telegram";
 	if (key.startsWith("msteams:")) return "msteams";
 	if (key.startsWith("discord:")) return "discord";
+	if (key.startsWith("slack:")) return "slack";
+	if (key.startsWith("matrix:")) return "matrix";
 	var binding = s.channelBinding || null;
 	if (!binding) return null;
 	try {
@@ -67,6 +71,8 @@ function SessionIcon({ session, isBranch }) {
 		else if (channelType === "telegram") icon = makeTelegramIcon();
 		else if (channelType === "msteams") icon = makeTeamsIcon();
 		else if (channelType === "discord") icon = makeDiscordIcon();
+		else if (channelType === "slack") icon = makeSlackIcon();
+		else if (channelType === "matrix") icon = makeMatrixIcon();
 		else icon = makeChatIcon();
 		iconRef.current.appendChild(icon);
 	}, [session.key, isBranch]);
@@ -80,7 +86,16 @@ function SessionIcon({ session, isBranch }) {
 	} else {
 		iconStyle.color = "var(--muted)";
 	}
-	var channelLabel = channelType === "msteams" ? "Microsoft Teams" : channelType === "discord" ? "Discord" : "Telegram";
+	var channelLabel =
+		channelType === "msteams"
+			? "Microsoft Teams"
+			: channelType === "discord"
+				? "Discord"
+				: channelType === "slack"
+					? "Slack"
+					: channelType === "matrix"
+						? "Matrix"
+						: "Telegram";
 	var title = channelBound
 		? session.activeChannel
 			? `Active ${channelLabel} session`
@@ -220,6 +235,21 @@ export function SessionList() {
 	var filterId = projectStore.projectFilterId.value;
 	var tab = sessionStore.sessionListTab.value;
 
+	// Spinner animation via setInterval
+	var spinnersRef = useRef(null);
+	useEffect(() => {
+		var idx = 0;
+		var timer = setInterval(() => {
+			idx = (idx + 1) % spinnerFrames.length;
+			if (!spinnersRef.current) return;
+			var els = spinnersRef.current.querySelectorAll(
+				".session-item.replying .session-spinner, .session-item.loading .session-spinner",
+			);
+			for (var el of els) el.textContent = spinnerFrames[idx];
+		}, 80);
+		return () => clearInterval(timer);
+	}, []);
+
 	var filtered = filterId ? allSessions.filter((s) => s.projectId === filterId) : allSessions;
 	if (tab === "sessions") {
 		filtered = filtered.filter((s) => !(s.key || "").startsWith("cron:"));
@@ -238,21 +268,6 @@ export function SessionList() {
 		}
 	});
 	var roots = filtered.filter((s) => !(s.parentSessionKey && keyMap[s.parentSessionKey]));
-
-	// Spinner animation via setInterval
-	var spinnersRef = useRef(null);
-	useEffect(() => {
-		var idx = 0;
-		var timer = setInterval(() => {
-			idx = (idx + 1) % spinnerFrames.length;
-			if (!spinnersRef.current) return;
-			var els = spinnersRef.current.querySelectorAll(
-				".session-item.replying .session-spinner, .session-item.loading .session-spinner",
-			);
-			for (var el of els) el.textContent = spinnerFrames[idx];
-		}, 80);
-		return () => clearInterval(timer);
-	}, []);
 
 	function renderTree(session, depth) {
 		var children = childrenMap[session.key] || [];

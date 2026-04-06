@@ -118,6 +118,10 @@ fn normalize_schedule_kind(raw: &str) -> Option<&'static str> {
 }
 
 fn normalize_schedule_value(schedule: &mut Value) -> Result<()> {
+    // Rescue double-serialised objects before interpreting plain strings as
+    // cron expressions.  A bare cron expr like "0 9 * * 1" will fail JSON
+    // parsing and fall through to the String arm below.
+    rescue_stringified_object(schedule);
     match schedule {
         Value::String(expr) => {
             let expr = expr.trim();
@@ -142,6 +146,24 @@ fn normalize_schedule_value(schedule: &mut Value) -> Result<()> {
                 "timeMs",
                 "time_ms",
             ]);
+            // Resolve delay_ms (relative offset from now) into an absolute at_ms.
+            // This lets the LLM specify "in 10 minutes" without computing epoch timestamps.
+            take_alias(obj, "delay_ms", &[
+                "delayMs",
+                "delay",
+                "in",
+                "in_ms",
+                "offset_ms",
+            ]);
+            if let Some(delay_raw) = obj.remove("delay_ms") {
+                let delay = parse_interval_millis(&delay_raw, "schedule.delay_ms")?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                obj.entry("at_ms".to_string()).or_insert(json!(now + delay));
+                obj.entry("kind".to_string()).or_insert(json!("at"));
+            }
             take_alias(obj, "every_ms", &[
                 "everyMs",
                 "every",
@@ -257,6 +279,9 @@ fn prefers_system_event(session_target_hint: Option<&str>) -> bool {
 }
 
 fn normalize_payload_value(payload: &mut Value, session_target_hint: Option<&str>) -> Result<()> {
+    // Rescue double-serialised objects before interpreting plain strings as
+    // shorthand message text.
+    rescue_stringified_object(payload);
     match payload {
         Value::String(message) => {
             let message = message.trim();
@@ -415,6 +440,7 @@ fn parse_sandbox_enabled(value: &Value, field: &str) -> Result<bool> {
 }
 
 fn normalize_sandbox_value(sandbox: &mut Value, field: &str) -> Result<()> {
+    rescue_stringified_object(sandbox);
     match sandbox {
         Value::Bool(enabled) => {
             *sandbox = json!({ "enabled": enabled });
@@ -540,8 +566,21 @@ fn normalize_sandbox_field(obj: &mut Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
+/// If `v` is a JSON string that parses to an object, replace it in-place.
+/// This rescues the common LLM mistake of double-serialising an object
+/// parameter.
+fn rescue_stringified_object(v: &mut Value) {
+    if let Value::String(s) = &*v
+        && let Ok(parsed @ Value::Object(_)) = serde_json::from_str(s.trim())
+    {
+        tracing::debug!(original = %s, "rescued double-serialised object parameter");
+        *v = parsed;
+    }
+}
+
 fn normalize_job_value(job: &Value) -> Result<Value> {
     let mut normalized = job.clone();
+    rescue_stringified_object(&mut normalized);
     let obj = normalized
         .as_object_mut()
         .ok_or_else(|| Error::message("job must be an object"))?;
@@ -569,6 +608,7 @@ fn normalize_job_value(job: &Value) -> Result<Value> {
 
 fn normalize_patch_value(patch: &Value) -> Result<Value> {
     let mut normalized = patch.clone();
+    rescue_stringified_object(&mut normalized);
     let obj = normalized
         .as_object_mut()
         .ok_or_else(|| Error::message("patch must be an object"))?;
@@ -649,10 +689,11 @@ impl AgentTool for CronTool {
                         "name": { "type": "string", "description": "Human-readable job name" },
                         "schedule": {
                             "type": "object",
-                            "description": "Schedule object. Use {kind:'at', at_ms}, {kind:'every', every_ms, anchor_ms?}, or {kind:'cron', expr, tz?}. This tool also accepts shorthand schedule strings/numbers at runtime.",
+                            "description": "Schedule object. For one-off jobs use {kind:'at', delay_ms} where delay_ms is milliseconds from now (e.g. 600000 for 10 min) — never compute at_ms yourself. For recurring use {kind:'every', every_ms} or {kind:'cron', expr, tz?}.",
                             "properties": {
                                 "kind": { "type": "string", "enum": ["at", "every", "cron"] },
-                                "at_ms": { "type": "integer", "description": "Used when kind='at'" },
+                                "delay_ms": { "type": "integer", "description": "Milliseconds from now to run the job (server resolves to absolute time). Preferred over at_ms." },
+                                "at_ms": { "type": "integer", "description": "Absolute epoch milliseconds. Use delay_ms instead unless you have an exact timestamp." },
                                 "every_ms": { "type": "integer", "description": "Used when kind='every'" },
                                 "anchor_ms": { "type": "integer", "description": "Optional anchor when kind='every'" },
                                 "expr": { "type": "string", "description": "Cron expression used when kind='cron'" },
@@ -735,10 +776,30 @@ impl AgentTool for CronTool {
                 Ok(serde_json::to_value(jobs)?)
             },
             "add" => {
-                let job_val = params
-                    .get("job")
-                    .ok_or_else(|| Error::message("missing 'job' parameter for add"))?;
-                let normalized = normalize_job_value(job_val)?;
+                let job_val = match params.get("job") {
+                    Some(v) => v.clone(),
+                    None => {
+                        // Rescue flat params: some models splay job fields at
+                        // the top level instead of nesting them under "job".
+                        let obj = params
+                            .as_object()
+                            .ok_or_else(|| Error::message("missing 'job' parameter for add"))?;
+                        if obj.contains_key("schedule") || obj.contains_key("payload") {
+                            let mut job_obj = Map::new();
+                            const ACTION_KEYS: &[&str] =
+                                &["action", "force", "id", "limit", "patch", "job"];
+                            for (k, v) in obj {
+                                if !ACTION_KEYS.contains(&k.as_str()) {
+                                    job_obj.insert(k.clone(), v.clone());
+                                }
+                            }
+                            Value::Object(job_obj)
+                        } else {
+                            return Err(Error::message("missing 'job' parameter for add").into());
+                        }
+                    },
+                };
+                let normalized = normalize_job_value(&job_val)?;
                 let create: CronJobCreate = serde_json::from_value(normalized)
                     .map_err(|e| Error::message(format!("invalid job spec: {e}")))?;
                 let job = self.service.add(create).await?;
@@ -1046,6 +1107,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_accepts_delivery_fields_for_agent_turn() {
+        let tool = make_tool();
+        let add_result = tool
+            .execute(json!({
+                "action": "add",
+                "job": {
+                    "name": "delivered run",
+                    "schedule": { "kind": "every", "every_ms": 60000 },
+                    "payload": {
+                        "kind": "agentTurn",
+                        "message": "post an update",
+                        "deliver": true,
+                        "channel": "bot-main",
+                        "to": "123456"
+                    },
+                    "sessionTarget": "isolated"
+                }
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(add_result["payload"]["kind"], "agentTurn");
+        assert_eq!(add_result["payload"]["deliver"], true);
+        assert_eq!(add_result["payload"]["channel"], "bot-main");
+        assert_eq!(add_result["payload"]["to"], "123456");
+    }
+
+    #[tokio::test]
     async fn test_update_accepts_host_execution_string() {
         let tool = make_tool();
         let add_result = tool
@@ -1073,6 +1162,45 @@ mod tests {
 
         assert_eq!(updated["sandbox"]["enabled"], false);
         assert!(updated["sandbox"]["image"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_update_accepts_delivery_fields_in_patch() {
+        let tool = make_tool();
+        let add_result = tool
+            .execute(json!({
+                "action": "add",
+                "job": {
+                    "name": "toggle delivery",
+                    "schedule": { "kind": "every", "every_ms": 60000 },
+                    "payload": { "kind": "agentTurn", "message": "run task" },
+                    "sessionTarget": "isolated"
+                }
+            }))
+            .await
+            .unwrap();
+        let id = add_result["id"].as_str().unwrap();
+
+        let updated = tool
+            .execute(json!({
+                "action": "update",
+                "id": id,
+                "patch": {
+                    "payload": {
+                        "kind": "agentTurn",
+                        "message": "run task",
+                        "deliver": true,
+                        "channel": "bot-main",
+                        "to": "123456"
+                    }
+                }
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(updated["payload"]["deliver"], true);
+        assert_eq!(updated["payload"]["channel"], "bot-main");
+        assert_eq!(updated["payload"]["to"], "123456");
     }
 
     #[test]
@@ -1215,5 +1343,105 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated["wakeMode"], "now");
+    }
+
+    // --- Stringified-JSON rescue tests (issue #430) ---
+
+    #[tokio::test]
+    async fn test_add_accepts_stringified_job() {
+        let tool = make_tool();
+        let job_json = serde_json::to_string(&json!({
+            "name": "stringified job",
+            "schedule": { "kind": "every", "every_ms": 60000 },
+            "payload": { "kind": "agentTurn", "message": "do stuff" },
+            "sessionTarget": "isolated"
+        }))
+        .unwrap();
+
+        let result = tool
+            .execute(json!({ "action": "add", "job": job_json }))
+            .await
+            .unwrap();
+
+        assert!(result.get("id").is_some());
+        assert_eq!(result["name"], "stringified job");
+    }
+
+    #[tokio::test]
+    async fn test_add_accepts_flat_params_without_job_wrapper() {
+        let tool = make_tool();
+        let result = tool
+            .execute(json!({
+                "action": "add",
+                "name": "flat params",
+                "schedule": { "kind": "every", "every_ms": 60000 },
+                "payload": { "kind": "agentTurn", "message": "run" },
+                "sessionTarget": "isolated"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.get("id").is_some());
+        assert_eq!(result["name"], "flat params");
+    }
+
+    #[tokio::test]
+    async fn test_add_accepts_stringified_nested_fields() {
+        let tool = make_tool();
+        let result = tool
+            .execute(json!({
+                "action": "add",
+                "job": {
+                    "name": "stringified nested",
+                    "schedule": r#"{"kind":"cron","expr":"0 9 * * 1"}"#,
+                    "payload": r#"{"kind":"agentTurn","message":"hello"}"#,
+                    "sandbox": r#"{"enabled":false}"#,
+                    "sessionTarget": "isolated"
+                }
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.get("id").is_some());
+        assert_eq!(result["schedule"]["kind"], "cron");
+        assert_eq!(result["schedule"]["expr"], "0 9 * * 1");
+        assert_eq!(result["payload"]["kind"], "agentTurn");
+        assert_eq!(result["payload"]["message"], "hello");
+        assert_eq!(result["sandbox"]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn test_update_accepts_stringified_patch() {
+        let tool = make_tool();
+        let add = tool
+            .execute(json!({
+                "action": "add",
+                "job": {
+                    "name": "to patch",
+                    "schedule": { "kind": "every", "every_ms": 60000 },
+                    "payload": { "kind": "agentTurn", "message": "x" },
+                    "sessionTarget": "isolated"
+                }
+            }))
+            .await
+            .unwrap();
+        let id = add["id"].as_str().unwrap();
+
+        let patch_json = serde_json::to_string(&json!({ "name": "patched" })).unwrap();
+        let updated = tool
+            .execute(json!({ "action": "update", "id": id, "patch": patch_json }))
+            .await
+            .unwrap();
+
+        assert_eq!(updated["name"], "patched");
+    }
+
+    #[tokio::test]
+    async fn test_stringified_job_with_invalid_json_is_rejected() {
+        let tool = make_tool();
+        let result = tool
+            .execute(json!({ "action": "add", "job": "not valid json {" }))
+            .await;
+        assert!(result.is_err());
     }
 }

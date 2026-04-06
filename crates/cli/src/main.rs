@@ -214,6 +214,19 @@ enum SkillAction {
         /// Source in owner/repo format.
         source: String,
     },
+    /// Export an installed repo as a portable bundle.
+    Export {
+        /// Source in owner/repo format.
+        source: String,
+        /// Output file or directory. Defaults to ~/.moltis/skill-exports/.
+        #[arg(long)]
+        output: Option<String>,
+    },
+    /// Import a portable skill bundle into the local registry in quarantine.
+    Import {
+        /// Path to a .tar.gz bundle created by `moltis skills export`.
+        path: String,
+    },
     /// Show details about a skill.
     Info {
         /// Skill name.
@@ -221,22 +234,26 @@ enum SkillAction {
     },
 }
 
+fn default_telemetry_filter(log_level: &str) -> EnvFilter {
+    let mut filter = EnvFilter::new(log_level);
+    for directive in [
+        "chromiumoxide=off",
+        "matrix_sdk=warn",
+        "matrix_sdk_base=warn",
+        "matrix_sdk_crypto=error",
+    ] {
+        if let Ok(directive) = directive.parse() {
+            filter = filter.add_directive(directive);
+        }
+    }
+    filter
+}
+
 /// Initialise tracing and optionally attach a [`LogBroadcastLayer`] that
 /// captures events into an in-memory ring buffer for the web UI.
 fn init_telemetry(cli: &Cli, log_buffer: Option<LogBuffer>) {
-    // Start with user-specified or default log level
-    let base_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
-
-    // Suppress noisy chromiumoxide logs:
-    // - "WS Invalid message" warnings (Chrome sends CDP events the library doesn't recognize)
-    // - "WS Connection error" errors (normal when idle connections are closed)
-    // These are expected browser sandbox behavior, not actionable errors.
-    let filter = if let Ok(directive) = "chromiumoxide=off".parse() {
-        base_filter.add_directive(directive)
-    } else {
-        base_filter
-    };
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default_telemetry_filter(&cli.log_level));
 
     if let Some(ref buffer) = log_buffer {
         let levels = EnabledLogLevels::from_max_level_hint(filter.max_level_hint());
@@ -268,7 +285,7 @@ fn init_telemetry(cli: &Cli, log_buffer: Option<LogBuffer>) {
 
 #[cfg(feature = "tls")]
 async fn trust_ca() -> anyhow::Result<()> {
-    let cert_dir = moltis_gateway::tls::cert_dir()?;
+    let cert_dir = moltis_httpd::tls::cert_dir()?;
     let ca_path = cert_dir.join("ca.pem");
 
     if !ca_path.exists() {
@@ -356,7 +373,7 @@ async fn main() -> anyhow::Result<()> {
 
     init_telemetry(&cli, log_buffer.clone());
 
-    info!(version = env!("CARGO_PKG_VERSION"), "moltis starting");
+    info!(version = moltis_config::VERSION, "moltis starting");
 
     // Apply directory overrides before any command so all subcommands
     // (config check, db, sandbox, etc.) respect --config-dir / --data-dir.
@@ -405,22 +422,19 @@ async fn main() -> anyhow::Result<()> {
             let no_tls = false;
 
             #[cfg(feature = "tailscale")]
-            let tailscale_opts = cli
-                .tailscale
-                .map(|mode| moltis_gateway::server::TailscaleOpts {
-                    mode,
-                    reset_on_exit: cli.tailscale_reset_on_exit,
-                });
+            let tailscale_opts = cli.tailscale.map(|mode| moltis_httpd::TailscaleOpts {
+                mode,
+                reset_on_exit: cli.tailscale_reset_on_exit,
+            });
             #[cfg(not(feature = "tailscale"))]
             let tailscale_opts: Option<()> = None;
             let _ = &tailscale_opts; // suppress unused warning when feature disabled
             #[cfg(feature = "web-ui")]
-            let extra_routes: Option<moltis_gateway::server::RouteEnhancer> =
-                Some(moltis_web::web_routes);
+            let extra_routes: Option<moltis_httpd::RouteEnhancer> = Some(moltis_web::web_routes);
             #[cfg(not(feature = "web-ui"))]
-            let extra_routes: Option<moltis_gateway::server::RouteEnhancer> = None;
+            let extra_routes: Option<moltis_httpd::RouteEnhancer> = None;
 
-            moltis_gateway::server::start_gateway(
+            moltis_httpd::start_gateway(
                 &bind,
                 port,
                 no_tls,
@@ -506,6 +520,34 @@ async fn handle_skills(action: SkillAction) -> anyhow::Result<()> {
             install::remove_repo(&source, &install_dir).await?;
             println!("Removed repo '{source}' and all its skills.");
         },
+        SkillAction::Export { source, output } => {
+            let install_dir = install::default_install_dir()?;
+            let exported = moltis_skills::portability::export_repo_bundle(
+                &source,
+                &install_dir,
+                output.as_deref().map(std::path::Path::new),
+            )
+            .await?;
+            println!(
+                "Exported repo '{}' to {}",
+                exported.repo.source,
+                exported.bundle_path.display()
+            );
+        },
+        SkillAction::Import { path } => {
+            let install_dir = install::default_install_dir()?;
+            let imported = moltis_skills::portability::import_repo_bundle(
+                std::path::Path::new(&path),
+                &install_dir,
+            )
+            .await?;
+            println!(
+                "Imported repo '{}' as '{}' ({} skills, quarantined)",
+                imported.source,
+                imported.repo_name,
+                imported.skills.len()
+            );
+        },
         SkillAction::Info { name } => {
             let registry = InMemoryRegistry::from_discoverer(&discoverer).await?;
             let content = registry.load_skill(&name).await?;
@@ -525,4 +567,19 @@ async fn handle_skills(action: SkillAction) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::default_telemetry_filter;
+
+    #[test]
+    fn default_telemetry_filter_quiets_noisy_targets() {
+        let filter = default_telemetry_filter("info").to_string();
+        assert!(filter.contains("info"));
+        assert!(filter.contains("chromiumoxide=off"));
+        assert!(filter.contains("matrix_sdk=warn"));
+        assert!(filter.contains("matrix_sdk_base=warn"));
+        assert!(filter.contains("matrix_sdk_crypto=error"));
+    }
 }

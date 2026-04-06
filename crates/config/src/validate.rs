@@ -5,6 +5,8 @@
 
 use std::{collections::HashMap, path::Path};
 
+use secrecy::ExposeSecret;
+
 use crate::schema::MoltisConfig;
 
 /// Severity level for a diagnostic.
@@ -29,7 +31,7 @@ impl std::fmt::Display for Severity {
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub severity: Severity,
-    /// Category: "syntax", "unknown-field", "unknown-provider", "type-error",
+    /// Category: "syntax", "unknown-field", "deprecated-field", "unknown-provider", "type-error",
     /// "security", "file-ref"
     pub category: &'static str,
     /// Dotted path, e.g. "server.bnd"
@@ -91,6 +93,7 @@ const KNOWN_PROVIDER_NAMES: &[&str] = &[
     "groq",
     "xai",
     "deepseek",
+    "fireworks",
     "mistral",
     "openrouter",
     "cerebras",
@@ -102,7 +105,7 @@ const KNOWN_PROVIDER_NAMES: &[&str] = &[
 ];
 
 /// Static metadata keys allowed directly under `[providers]`.
-const PROVIDERS_META_KEYS: &[&str] = &["offered"];
+const PROVIDERS_META_KEYS: &[&str] = &["offered", "show_legacy_models"];
 
 /// Build the full schema map mirroring every field in `schema.rs`.
 fn build_schema_map() -> KnownKeys {
@@ -117,8 +120,10 @@ fn build_schema_map() -> KnownKeys {
             ("models", Leaf),
             ("fetch_models", Leaf),
             ("stream_transport", Leaf),
+            ("wire_api", Leaf),
             ("alias", Leaf),
             ("tool_mode", Leaf),
+            ("cache_retention", Leaf),
         ]))
     };
 
@@ -145,6 +150,7 @@ fn build_schema_map() -> KnownKeys {
             ("mode", Leaf),
             ("scope", Leaf),
             ("workspace_mount", Leaf),
+            ("host_data_dir", Leaf),
             ("home_persistence", Leaf),
             ("shared_home_dir", Leaf),
             ("image", Leaf),
@@ -194,6 +200,18 @@ fn build_schema_map() -> KnownKeys {
         ]))
     };
 
+    let firecrawl = || {
+        Struct(HashMap::from([
+            ("enabled", Leaf),
+            ("api_key", Leaf),
+            ("base_url", Leaf),
+            ("only_main_content", Leaf),
+            ("timeout_seconds", Leaf),
+            ("cache_ttl_minutes", Leaf),
+            ("web_fetch_fallback", Leaf),
+        ]))
+    };
+
     let exec = || {
         Struct(HashMap::from([
             ("default_timeout_secs", Leaf),
@@ -204,6 +222,7 @@ fn build_schema_map() -> KnownKeys {
             ("sandbox", sandbox()),
             ("host", Leaf),
             ("node", Leaf),
+            ("ssh_target", Leaf),
         ]))
     };
 
@@ -248,12 +267,14 @@ fn build_schema_map() -> KnownKeys {
                 Struct(HashMap::from([
                     ("search", web_search()),
                     ("fetch", web_fetch()),
+                    ("firecrawl", firecrawl()),
                 ])),
             ),
             ("maps", Struct(HashMap::from([("provider", Leaf)]))),
             ("agent_timeout_secs", Leaf),
             ("agent_max_iterations", Leaf),
             ("max_tool_result_bytes", Leaf),
+            ("registry_mode", Leaf),
         ]))
     };
 
@@ -272,8 +293,10 @@ fn build_schema_map() -> KnownKeys {
             ("args", Leaf),
             ("env", Map(Box::new(Leaf))),
             ("enabled", Leaf),
+            ("request_timeout_secs", Leaf),
             ("transport", Leaf),
             ("url", Leaf),
+            ("headers", Map(Box::new(Leaf))),
             ("oauth", mcp_oauth_override()),
         ]))
     };
@@ -339,6 +362,7 @@ fn build_schema_map() -> KnownKeys {
                 "memory",
                 Struct(HashMap::from([("scope", Leaf), ("max_lines", Leaf)])),
             ),
+            ("reasoning_effort", Leaf),
         ]))
     };
 
@@ -358,7 +382,10 @@ fn build_schema_map() -> KnownKeys {
         ),
         ("providers", MapWithFields {
             value: Box::new(provider_entry()),
-            fields: HashMap::from([("offered", Array(Box::new(Leaf)))]),
+            fields: HashMap::from([
+                ("offered", Array(Box::new(Leaf))),
+                ("show_legacy_models", Leaf),
+            ]),
         }),
         (
             "chat",
@@ -382,14 +409,15 @@ fn build_schema_map() -> KnownKeys {
                 ("enabled", Leaf),
                 ("search_paths", Leaf),
                 ("auto_load", Leaf),
+                ("enable_agent_sidecar_files", Leaf),
             ])),
         ),
         (
             "mcp",
-            Struct(HashMap::from([(
-                "servers",
-                Map(Box::new(mcp_server_entry())),
-            )])),
+            Struct(HashMap::from([
+                ("request_timeout_secs", Leaf),
+                ("servers", Map(Box::new(mcp_server_entry()))),
+            ])),
         ),
         ("channels", MapWithFields {
             // Dynamic keys: extra channel types via #[serde(flatten)]
@@ -449,15 +477,28 @@ fn build_schema_map() -> KnownKeys {
             Struct(HashMap::from([
                 ("backend", Leaf),
                 ("provider", Leaf),
+                ("embedding_provider", Leaf),
                 ("disable_rag", Leaf),
                 ("base_url", Leaf),
+                ("embedding_base_url", Leaf),
                 ("model", Leaf),
+                ("embedding_model", Leaf),
                 ("api_key", Leaf),
+                ("embedding_api_key", Leaf),
+                ("embedding_dimensions", Leaf),
                 ("citations", Leaf),
                 ("llm_reranking", Leaf),
                 ("search_merge_strategy", Leaf),
                 ("session_export", Leaf),
                 ("qmd", qmd()),
+            ])),
+        ),
+        (
+            "ngrok",
+            Struct(HashMap::from([
+                ("enabled", Leaf),
+                ("authtoken", Leaf),
+                ("domain", Leaf),
             ])),
         ),
         (
@@ -495,6 +536,7 @@ fn build_schema_map() -> KnownKeys {
             ])),
         ),
         ("env", Map(Box::new(Leaf))),
+        ("upstream_proxy", Leaf),
         (
             "caldav",
             Struct(HashMap::from([
@@ -767,22 +809,28 @@ pub fn validate_toml_str(toml_str: &str) -> ValidationResult {
     let schema = build_schema_map();
     check_unknown_fields(&toml_value, &schema, "", &mut diagnostics);
 
-    // 3. Provider name hints
+    // 3. Deprecation warnings on raw TOML keys
+    let conflicting_replacements = check_deprecated_fields(&toml_value, &mut diagnostics);
+
+    // 4. Provider name hints
     if let Some(providers) = toml_value.get("providers").and_then(|v| v.as_table()) {
         check_provider_names(providers, &mut diagnostics);
     }
 
-    // 4. Type check — attempt full deserialization
+    // 5. Type check — attempt full deserialization
     if let Err(e) = toml::from_str::<MoltisConfig>(toml_str) {
-        diagnostics.push(Diagnostic {
-            severity: Severity::Error,
-            category: "type-error",
-            path: String::new(),
-            message: format!("type error: {e}"),
-        });
+        let message = format!("type error: {e}");
+        if !should_suppress_deprecated_conflict_type_error(&message, &conflicting_replacements) {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                category: "type-error",
+                path: String::new(),
+                message,
+            });
+        }
     }
 
-    // 5. Semantic warnings on parsed config (only if it parses)
+    // 6. Semantic warnings on parsed config (only if it parses)
     if let Ok(config) = toml::from_str::<MoltisConfig>(toml_str) {
         check_semantic_warnings(&config, &mut diagnostics);
     }
@@ -790,6 +838,92 @@ pub fn validate_toml_str(toml_str: &str) -> ValidationResult {
     ValidationResult {
         diagnostics,
         config_path: None,
+    }
+}
+
+fn check_deprecated_fields(
+    toml_value: &toml::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<&'static str> {
+    let Some(memory) = toml_value.get("memory").and_then(|value| value.as_table()) else {
+        return Vec::new();
+    };
+
+    let mut conflicting_replacements = Vec::new();
+    if check_deprecated_memory_field(memory, "embedding_provider", "provider", diagnostics) {
+        conflicting_replacements.push("provider");
+    }
+    if check_deprecated_memory_field(memory, "embedding_base_url", "base_url", diagnostics) {
+        conflicting_replacements.push("base_url");
+    }
+    if check_deprecated_memory_field(memory, "embedding_model", "model", diagnostics) {
+        conflicting_replacements.push("model");
+    }
+    if check_deprecated_memory_field(memory, "embedding_api_key", "api_key", diagnostics) {
+        conflicting_replacements.push("api_key");
+    }
+    check_deprecated_ignored_memory_field(
+        memory,
+        "embedding_dimensions",
+        "deprecated field; ignored because embedding dimensions are determined by the provider response",
+        diagnostics,
+    );
+    conflicting_replacements
+}
+
+fn should_suppress_deprecated_conflict_type_error(
+    message: &str,
+    conflicting_replacements: &[&str],
+) -> bool {
+    conflicting_replacements
+        .iter()
+        .any(|replacement| message.contains(&format!("duplicate field `{replacement}`")))
+}
+
+fn check_deprecated_memory_field(
+    memory: &toml::map::Map<String, toml::Value>,
+    legacy: &str,
+    replacement: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if !memory.contains_key(legacy) {
+        return false;
+    }
+
+    if memory.contains_key(replacement) {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            category: "deprecated-field",
+            path: format!("memory.{legacy}"),
+            message: format!(
+                "deprecated field conflicts with \"memory.{replacement}\"; remove \"memory.{legacy}\""
+            ),
+        });
+        return true;
+    }
+
+    diagnostics.push(Diagnostic {
+        severity: Severity::Warning,
+        category: "deprecated-field",
+        path: format!("memory.{legacy}"),
+        message: format!("deprecated field; use \"memory.{replacement}\" instead"),
+    });
+    false
+}
+
+fn check_deprecated_ignored_memory_field(
+    memory: &toml::map::Map<String, toml::Value>,
+    legacy: &str,
+    message: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if memory.contains_key(legacy) {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "deprecated-field",
+            path: format!("memory.{legacy}"),
+            message: message.into(),
+        });
     }
 }
 
@@ -962,6 +1096,28 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
         });
     }
 
+    // upstream_proxy: must be a valid URL with a supported scheme.
+    if let Some(ref proxy) = config.upstream_proxy {
+        let url = proxy.expose_secret();
+        let valid = url.starts_with("http://")
+            || url.starts_with("https://")
+            || url.starts_with("socks5://")
+            || url.starts_with("socks5h://");
+        if !valid {
+            // Extract only the scheme portion (before "://") to avoid leaking
+            // credentials that may be embedded in the URL.
+            let scheme = url.split("://").next().unwrap_or("<unknown>");
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                category: "invalid-value",
+                path: "upstream_proxy".into(),
+                message: format!(
+                    "upstream_proxy must use http://, https://, socks5://, or socks5h:// scheme (got \"{scheme}://\")"
+                ),
+            });
+        }
+    }
+
     // Loop limit must be positive to avoid immediate run failures.
     if config.tools.agent_max_iterations == 0 {
         diagnostics.push(Diagnostic {
@@ -969,6 +1125,61 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
             category: "invalid-value",
             path: "tools.agent_max_iterations".into(),
             message: "tools.agent_max_iterations must be at least 1".into(),
+        });
+    }
+
+    if config.mcp.request_timeout_secs == 0 {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            category: "invalid-value",
+            path: "mcp.request_timeout_secs".into(),
+            message: "mcp.request_timeout_secs must be at least 1".into(),
+        });
+    }
+
+    for (name, server) in &config.mcp.servers {
+        if server.request_timeout_secs == Some(0) {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                category: "invalid-value",
+                path: format!("mcp.servers.{name}.request_timeout_secs"),
+                message: "mcp server request_timeout_secs must be at least 1".into(),
+            });
+        }
+
+        if !server.transport.is_empty()
+            && !matches!(
+                server.transport.as_str(),
+                "stdio" | "sse" | "streamable-http" | "streamable_http" | "http"
+            )
+        {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Warning,
+                category: "invalid-value",
+                path: format!("mcp.servers.{name}.transport"),
+                message: format!(
+                    "unknown transport type \"{}\"; expected \"stdio\", \"sse\", or \"streamable-http\"",
+                    server.transport
+                ),
+            });
+        }
+    }
+
+    // Firecrawl as search provider requires an API key.  We cannot check
+    // the FIRECRAWL_API_KEY env var here (static validation), so only emit
+    // an Info-level hint when neither config path supplies a key.
+    if config.tools.web.search.provider == crate::schema::SearchProvider::Firecrawl
+        && config.tools.web.firecrawl.api_key.is_none()
+        && config.tools.web.search.api_key.is_none()
+        && !config.tools.web.search.duckduckgo_fallback
+    {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Info,
+            category: "unknown-provider",
+            path: "tools.web.search.provider".into(),
+            message: "search provider is 'firecrawl' but no API key found in config \
+                      (may be supplied at runtime via FIRECRAWL_API_KEY env var)"
+                .into(),
         });
     }
 
@@ -985,6 +1196,9 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
             ),
         });
     }
+
+    // agents.presets.*.reasoning_effort is now a typed enum (ReasoningEffort)
+    // and validated at deserialization time (step 4). No semantic check needed.
 
     // SSRF allowlist CIDR validation
     for (idx, entry) in config.tools.web.fetch.ssrf_allowlist.iter().enumerate() {
@@ -1045,6 +1259,15 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
                 config.tailscale.mode,
                 valid_ts_modes.join(", ")
             ),
+        });
+    }
+
+    if config.ngrok.enabled && config.auth.disabled {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "security",
+            path: "ngrok.enabled".into(),
+            message: "ngrok is enabled while auth.disabled is true; remote visitors will be blocked with setup required until authentication is configured".into(),
         });
     }
 
@@ -1154,7 +1377,7 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
     }
 
     // Unknown exec host
-    let valid_exec_hosts = ["local", "node"];
+    let valid_exec_hosts = ["local", "node", "ssh"];
     if !valid_exec_hosts.contains(&config.tools.exec.host.as_str()) {
         diagnostics.push(Diagnostic {
             severity: Severity::Warning,
@@ -1175,6 +1398,17 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
             category: "unknown-field",
             path: "tools.exec.node".into(),
             message: "tools.exec.host is \"node\" but no default node is specified; commands will fail unless a node connects".into(),
+        });
+    }
+
+    if config.tools.exec.host == "ssh" && config.tools.exec.ssh_target.is_none() {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "unknown-field",
+            path: "tools.exec.ssh_target".into(),
+            message:
+                "tools.exec.host is \"ssh\" but no SSH target is specified; commands will fail"
+                    .into(),
         });
     }
 
@@ -1654,6 +1888,50 @@ mode = "tunnel"
     }
 
     #[test]
+    fn ngrok_fields_are_recognized() {
+        let toml = r#"
+[ngrok]
+enabled = true
+authtoken = "secret"
+domain = "team-gateway.ngrok.app"
+"#;
+        let result = validate_toml_str(toml);
+        let unknown = result
+            .diagnostics
+            .iter()
+            .find(|d| d.category == "unknown-field" && d.path.starts_with("ngrok."));
+        assert!(
+            unknown.is_none(),
+            "ngrok fields should be recognized, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn ngrok_with_disabled_auth_warns() {
+        let toml = r#"
+[ngrok]
+enabled = true
+
+[auth]
+disabled = true
+"#;
+        let result = validate_toml_str(toml);
+        let warning = result
+            .diagnostics
+            .iter()
+            .find(|d| d.category == "security" && d.path == "ngrok.enabled");
+        assert!(
+            warning.is_some(),
+            "expected security warning for ngrok.enabled with auth.disabled"
+        );
+        assert_eq!(
+            warning.unwrap().message,
+            "ngrok is enabled while auth.disabled is true; remote visitors will be blocked with setup required until authentication is configured"
+        );
+    }
+
+    #[test]
     fn sandbox_mode_off_warned() {
         let toml = r#"
 [tools.exec.sandbox]
@@ -1733,6 +2011,123 @@ disable_rag = true
     }
 
     #[test]
+    fn legacy_memory_embedding_fields_warn_but_do_not_error() {
+        let toml = r#"
+[memory]
+embedding_provider = "custom"
+embedding_model = "intfloat/multilingual-e5-small"
+embedding_base_url = "http://moltis-embeddings:7997/v1"
+embedding_dimensions = 384
+"#;
+        let result = validate_toml_str(toml);
+
+        let unknown: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.category == "unknown-field" && d.path.starts_with("memory.embedding_"))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "legacy embedding fields should not be unknown: {:?}",
+            result.diagnostics
+        );
+
+        let deprecated: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.category == "deprecated-field")
+            .collect();
+        assert_eq!(
+            deprecated.len(),
+            4,
+            "expected deprecation warnings for all legacy fields: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            deprecated
+                .iter()
+                .any(|d| d.path == "memory.embedding_provider"
+                    && d.message.contains("memory.provider")),
+            "expected replacement warning for embedding_provider"
+        );
+        assert!(
+            deprecated
+                .iter()
+                .any(|d| d.path == "memory.embedding_base_url"
+                    && d.message.contains("memory.base_url")),
+            "expected replacement warning for embedding_base_url"
+        );
+        assert!(
+            deprecated
+                .iter()
+                .any(|d| d.path == "memory.embedding_model" && d.message.contains("memory.model")),
+            "expected replacement warning for embedding_model"
+        );
+        assert!(
+            deprecated
+                .iter()
+                .any(|d| d.path == "memory.embedding_dimensions" && d.message.contains("ignored")),
+            "expected ignored warning for embedding_dimensions"
+        );
+        assert!(
+            !result.has_errors(),
+            "legacy embedding fields should remain usable: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn conflicting_legacy_and_modern_memory_field_reports_targeted_error() {
+        let toml = r#"
+[memory]
+provider = "custom"
+embedding_provider = "custom"
+"#;
+        let result = validate_toml_str(toml);
+
+        let conflict = result
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.category == "deprecated-field"
+                    && d.severity == Severity::Error
+                    && d.path == "memory.embedding_provider"
+            })
+            .unwrap_or_else(|| {
+                panic!("expected targeted conflict error: {:?}", result.diagnostics)
+            });
+        assert!(
+            conflict
+                .message
+                .contains("remove \"memory.embedding_provider\""),
+            "expected removal guidance, got: {}",
+            conflict.message
+        );
+
+        let type_error = result
+            .diagnostics
+            .iter()
+            .find(|d| d.category == "type-error");
+        assert!(
+            type_error.is_none(),
+            "expected duplicate-field type error to be suppressed: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn duplicate_field_suppression_matches_only_conflicting_replacements() {
+        assert!(should_suppress_deprecated_conflict_type_error(
+            "type error: duplicate field `provider`",
+            &["provider"]
+        ));
+        assert!(!should_suppress_deprecated_conflict_type_error(
+            "type error: duplicate field `base_url`",
+            &["provider"]
+        ));
+    }
+
+    #[test]
     fn unknown_sandbox_backend_warned() {
         let toml = r#"
 [tools.exec.sandbox]
@@ -1781,6 +2176,38 @@ security_level = "paranoid"
             warning.is_some(),
             "expected warning for unknown security level"
         );
+    }
+
+    #[test]
+    fn ssh_exec_host_accepted() {
+        let toml = r#"
+[tools.exec]
+host = "ssh"
+ssh_target = "deploy@example"
+"#;
+        let result = validate_toml_str(toml);
+        let warning = result
+            .diagnostics
+            .iter()
+            .find(|d| d.path == "tools.exec.host");
+        assert!(
+            warning.is_none(),
+            "ssh should be accepted as a valid exec host"
+        );
+    }
+
+    #[test]
+    fn ssh_exec_host_without_target_warned() {
+        let toml = r#"
+[tools.exec]
+host = "ssh"
+"#;
+        let result = validate_toml_str(toml);
+        let warning = result
+            .diagnostics
+            .iter()
+            .find(|d| d.path == "tools.exec.ssh_target");
+        assert!(warning.is_some(), "expected warning for missing ssh target");
     }
 
     #[test]
@@ -2107,6 +2534,45 @@ agent_max_iterations = 0
     }
 
     #[test]
+    fn mcp_request_timeout_must_be_positive() {
+        let toml = r#"
+[mcp]
+request_timeout_secs = 0
+"#;
+        let result = validate_toml_str(toml);
+        let invalid = result.diagnostics.iter().find(|d| {
+            d.path == "mcp.request_timeout_secs"
+                && d.severity == Severity::Error
+                && d.category == "invalid-value"
+        });
+        assert!(
+            invalid.is_some(),
+            "expected mcp.request_timeout_secs invalid-value error, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn mcp_server_request_timeout_override_must_be_positive() {
+        let toml = r#"
+[mcp.servers.memory]
+command = "npx"
+request_timeout_secs = 0
+"#;
+        let result = validate_toml_str(toml);
+        let invalid = result.diagnostics.iter().find(|d| {
+            d.path == "mcp.servers.memory.request_timeout_secs"
+                && d.severity == Severity::Error
+                && d.category == "invalid-value"
+        });
+        assert!(
+            invalid.is_some(),
+            "expected mcp server request_timeout_secs invalid-value error, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
     fn channels_offered_accepted_without_warning() {
         let toml = r#"
 [channels]
@@ -2193,6 +2659,24 @@ offered = ["telegram", "slack"]
         assert!(
             warning.is_none(),
             "slack should be accepted, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn channels_offered_matrix_accepted() {
+        let toml = r#"
+[channels]
+offered = ["telegram", "matrix"]
+"#;
+        let result = validate_toml_str(toml);
+        let warning = result
+            .diagnostics
+            .iter()
+            .find(|d| d.path == "channels.offered[1]" && d.category == "unknown-field");
+        assert!(
+            warning.is_none(),
+            "matrix should be accepted, got: {:?}",
             result.diagnostics
         );
     }
@@ -2293,6 +2777,154 @@ tool_mode = "{mode}"
                 type_error.is_none(),
                 "tool_mode = \"{mode}\" should parse without type error, got: {:?}",
                 result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_valid_values_no_error() {
+        for effort in &["low", "medium", "high"] {
+            let toml = format!(
+                r#"
+                [agents.presets.thinker]
+                model = "claude-opus-4-5-20251101"
+                reasoning_effort = "{effort}"
+                "#
+            );
+            let result = validate_toml_str(&toml);
+            let errors: Vec<_> = result
+                .diagnostics
+                .iter()
+                .filter(|d| d.path.contains("reasoning_effort") && d.severity == Severity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "effort={effort} should be valid: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_invalid_value_reports_type_error() {
+        let toml = r#"
+        [agents.presets.thinker]
+        model = "claude-opus-4-5-20251101"
+        reasoning_effort = "extreme"
+        "#;
+        let result = validate_toml_str(toml);
+        let error = result
+            .diagnostics
+            .iter()
+            .find(|d| d.category == "type-error" && d.severity == Severity::Error);
+        assert!(
+            error.is_some(),
+            "invalid reasoning_effort should produce type error: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_recognized_in_schema() {
+        let toml = r#"
+        [agents.presets.thinker]
+        reasoning_effort = "high"
+        "#;
+        let result = validate_toml_str(toml);
+        let unknown = result
+            .diagnostics
+            .iter()
+            .find(|d| d.category == "unknown-field" && d.message.contains("reasoning_effort"));
+        assert!(
+            unknown.is_none(),
+            "reasoning_effort should be a recognized field, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn cache_retention_field_accepted_in_provider_entry() {
+        let toml = r#"
+[providers.anthropic]
+enabled = true
+cache_retention = "short"
+"#;
+        let result = validate_toml_str(toml);
+        let unknown = result
+            .diagnostics
+            .iter()
+            .find(|d| d.category == "unknown-field" && d.path.contains("cache_retention"));
+        assert!(
+            unknown.is_none(),
+            "cache_retention should be a known field, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn cache_retention_all_values_parse_correctly() {
+        for mode in ["none", "short", "long"] {
+            let toml = format!(
+                r#"
+[providers.anthropic]
+cache_retention = "{mode}"
+"#
+            );
+            let result = validate_toml_str(&toml);
+            let type_error = result
+                .diagnostics
+                .iter()
+                .find(|d| d.category == "type-error");
+            assert!(
+                type_error.is_none(),
+                "cache_retention = \"{mode}\" should parse without type error, got: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn upstream_proxy_not_flagged_as_unknown() {
+        let toml = r#"upstream_proxy = "http://127.0.0.1:8080""#;
+        let result = validate_toml_str(toml);
+        let unknown: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.category == "unknown-field" && d.path.contains("upstream_proxy"))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "upstream_proxy should be a known field: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn upstream_proxy_invalid_scheme_rejected() {
+        let toml = r#"upstream_proxy = "ftp://proxy.example.com""#;
+        let result = validate_toml_str(toml);
+        let errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.path == "upstream_proxy")
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "upstream_proxy with ftp:// scheme should produce an error"
+        );
+    }
+
+    #[test]
+    fn upstream_proxy_valid_schemes_accepted() {
+        for scheme in ["http://", "https://", "socks5://", "socks5h://"] {
+            let toml = format!(r#"upstream_proxy = "{scheme}proxy.example.com:1080""#);
+            let result = validate_toml_str(&toml);
+            let errors: Vec<_> = result
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error && d.path == "upstream_proxy")
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "upstream_proxy with {scheme} should not produce errors: {errors:?}"
             );
         }
     }

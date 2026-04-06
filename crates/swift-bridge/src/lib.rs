@@ -189,6 +189,7 @@ static BRIDGE: LazyLock<BridgeState> = LazyLock::new(BridgeState::new);
 /// Handle to a running httpd server, used to shut it down.
 struct HttpdHandle {
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    server_task: tokio::task::JoinHandle<()>,
     addr: SocketAddr,
     /// Gateway state — used for abort/peek FFI calls and kept alive while
     /// the server is running.
@@ -197,6 +198,20 @@ struct HttpdHandle {
 
 /// Global server handle — `None` when stopped, `Some` when running.
 static HTTPD: Mutex<Option<HttpdHandle>> = Mutex::new(None);
+
+fn stop_httpd_handle(handle: HttpdHandle, log_target: &str, stop_message: &str) {
+    emit_log("INFO", log_target, stop_message);
+    let _ = handle.shutdown_tx.send(());
+    BRIDGE.runtime.block_on(async {
+        if let Err(error) = handle.server_task.await {
+            emit_log(
+                "WARN",
+                log_target,
+                &format!("httpd task join failed during shutdown: {error}"),
+            );
+        }
+    });
+}
 
 #[derive(Debug, Deserialize)]
 struct StartHttpdRequest {
@@ -324,6 +339,7 @@ type NetworkAuditCallback = unsafe extern "C" fn(event_json: *const c_char);
 static NETWORK_AUDIT_CALLBACK: OnceLock<NetworkAuditCallback> = OnceLock::new();
 
 /// JSON-serializable network audit event sent to Swift.
+#[cfg(feature = "trusted-network")]
 #[derive(Debug, Serialize)]
 struct BridgeNetworkAuditEvent {
     domain: String,
@@ -338,6 +354,7 @@ struct BridgeNetworkAuditEvent {
 }
 
 #[allow(unsafe_code)]
+#[cfg(feature = "trusted-network")]
 fn emit_network_audit(entry: &moltis_network_filter::NetworkAuditEntry) {
     if let Some(callback) = NETWORK_AUDIT_CALLBACK.get() {
         let source = match &entry.approval_source {
@@ -500,6 +517,7 @@ struct BridgeModelInfo {
     provider: String,
     display_name: String,
     created_at: Option<i64>,
+    recommended: bool,
 }
 
 #[derive(Deserialize)]
@@ -1377,8 +1395,8 @@ pub extern "C" fn moltis_version() -> *mut c_char {
     with_ffi_boundary(|| {
         emit_log("DEBUG", "bridge", "moltis_version called");
         let response = VersionResponse {
-            bridge_version: env!("CARGO_PKG_VERSION"),
-            moltis_version: env!("CARGO_PKG_VERSION"),
+            bridge_version: moltis_config::VERSION,
+            moltis_version: moltis_config::VERSION,
             config_dir: config_dir_string(),
         };
         emit_log(
@@ -1536,6 +1554,7 @@ pub extern "C" fn moltis_list_models() -> *mut c_char {
                 provider: m.provider.clone(),
                 display_name: m.display_name.clone(),
                 created_at: m.created_at,
+                recommended: m.recommended,
             })
             .collect();
         emit_log("INFO", "bridge", &format!("Listed {} models", models.len()));
@@ -1700,29 +1719,28 @@ pub extern "C" fn moltis_start_httpd(request_json: *const c_char) -> *mut c_char
         // Prepare the full gateway (config, DB migrations, service wiring,
         // background tasks). This runs on the bridge runtime via block_on —
         // valid because this is an extern "C" fn, not async.
-        let prepared =
-            match BRIDGE
-                .runtime
-                .block_on(moltis_gateway::server::prepare_gateway_embedded(
-                    &request.host,
-                    request.port,
-                    true, // no_tls — the macOS app manages its own TLS if needed
-                    None, // log_buffer
-                    request.config_dir.map(std::path::PathBuf::from),
-                    request.data_dir.map(std::path::PathBuf::from),
-                    Some(moltis_web::web_routes), // full web UI
-                    BRIDGE.session_metadata.event_bus().cloned(), // share bus with gateway
-                )) {
-                Ok(p) => p,
-                Err(e) => {
-                    emit_log(
-                        "ERROR",
-                        "bridge.httpd",
-                        &format!("Gateway init failed: {e}"),
-                    );
-                    return encode_error("gateway_init_failed", &e.to_string());
-                },
-            };
+        let prepared = match BRIDGE
+            .runtime
+            .block_on(moltis_httpd::prepare_httpd_embedded(
+                &request.host,
+                request.port,
+                true, // no_tls — the macOS app manages its own TLS if needed
+                None, // log_buffer
+                request.config_dir.map(std::path::PathBuf::from),
+                request.data_dir.map(std::path::PathBuf::from),
+                Some(moltis_web::web_routes), // full web UI
+                BRIDGE.session_metadata.event_bus().cloned(), // share bus with gateway
+            )) {
+            Ok(p) => p,
+            Err(e) => {
+                emit_log(
+                    "ERROR",
+                    "bridge.httpd",
+                    &format!("Gateway init failed: {e}"),
+                );
+                return encode_error("gateway_init_failed", &e.to_string());
+            },
+        };
 
         let gateway_state = prepared.state;
 
@@ -1745,6 +1763,7 @@ pub extern "C" fn moltis_start_httpd(request_json: *const c_char) -> *mut c_char
 
         // Subscribe to the network audit broadcast (if the proxy is active)
         // and forward entries to Swift via the registered callback.
+        #[cfg(feature = "trusted-network")]
         if let Some(ref audit_buf) = prepared.audit_buffer {
             let mut audit_rx = audit_buf.subscribe();
             BRIDGE.runtime.spawn(async move {
@@ -1761,8 +1780,15 @@ pub extern "C" fn moltis_start_httpd(request_json: *const c_char) -> *mut c_char
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let app = prepared.app;
+        // Keep the proxy shutdown sender alive for the server's full lifetime;
+        // dropping it closes the watch channel and terminates the proxy.
+        #[cfg(feature = "trusted-network")]
+        let _proxy_shutdown_tx = prepared._proxy_shutdown_tx;
 
-        BRIDGE.runtime.spawn(async move {
+        let server_task = BRIDGE.runtime.spawn(async move {
+            // Hold the proxy sender inside the spawn so it lives as long as the server.
+            #[cfg(feature = "trusted-network")]
+            let _keep_proxy = _proxy_shutdown_tx;
             let server = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -1783,6 +1809,7 @@ pub extern "C" fn moltis_start_httpd(request_json: *const c_char) -> *mut c_char
         );
         *guard = Some(HttpdHandle {
             shutdown_tx,
+            server_task,
             addr,
             state: gateway_state,
         });
@@ -1803,13 +1830,11 @@ pub extern "C" fn moltis_stop_httpd() -> *mut c_char {
 
     with_ffi_boundary(|| {
         let mut guard = HTTPD.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(handle) = guard.take() {
-            emit_log(
-                "INFO",
-                "bridge.httpd",
-                &format!("Stopping httpd on {}", handle.addr),
-            );
-            let _ = handle.shutdown_tx.send(());
+        let handle = guard.take();
+        drop(guard);
+        if let Some(handle) = handle {
+            let message = format!("Stopping httpd on {}", handle.addr);
+            stop_httpd_handle(handle, "bridge.httpd", &message);
         } else {
             emit_log(
                 "DEBUG",
@@ -2557,7 +2582,7 @@ pub extern "C" fn moltis_get_soul() -> *mut c_char {
 
     with_ffi_boundary(|| {
         emit_log("DEBUG", "bridge", "moltis_get_soul called");
-        let soul = moltis_config::load_soul();
+        let soul = moltis_config::load_soul_for_agent("main");
         encode_json(&GetSoulResponse { soul })
     })
 }
@@ -2575,7 +2600,7 @@ pub extern "C" fn moltis_save_soul(request_json: *const c_char) -> *mut c_char {
         };
 
         emit_log("INFO", "bridge.config", "Saving soul from settings");
-        match moltis_config::save_soul(request.soul.as_deref()) {
+        match moltis_config::save_soul_for_agent("main", request.soul.as_deref()) {
             Ok(path) => {
                 emit_log(
                     "INFO",
@@ -2612,7 +2637,7 @@ pub extern "C" fn moltis_save_identity(request_json: *const c_char) -> *mut c_ch
         };
 
         emit_log("INFO", "bridge.config", "Saving identity from settings");
-        match moltis_config::save_identity(&identity) {
+        match moltis_config::save_identity_for_agent("main", &identity) {
             Ok(path) => {
                 emit_log(
                     "INFO",
@@ -3212,8 +3237,9 @@ pub extern "C" fn moltis_sandbox_check_packages(request_json: *const c_char) -> 
             .collect();
         let script = checks.join("\n");
 
+        let cli = moltis_tools::sandbox::container_cli();
         let output = BRIDGE.runtime.block_on(async {
-            tokio::process::Command::new("docker")
+            tokio::process::Command::new(cli)
                 .args(["run", "--rm", "--entrypoint", "sh", &base, "-c", &script])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -3689,13 +3715,11 @@ pub extern "C" fn moltis_shutdown() {
 
     // Stop the HTTP server if it is running.
     let mut guard = HTTPD.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(handle) = guard.take() {
-        emit_log(
-            "INFO",
-            "bridge",
-            &format!("Stopping httpd on {} during shutdown", handle.addr),
-        );
-        let _ = handle.shutdown_tx.send(());
+    let handle = guard.take();
+    drop(guard);
+    if let Some(handle) = handle {
+        let message = format!("Stopping httpd on {} during shutdown", handle.addr);
+        stop_httpd_handle(handle, "bridge", &message);
     }
 
     emit_log("INFO", "bridge", "Shutdown complete");
@@ -3734,7 +3758,7 @@ mod tests {
             .get("bridge_version")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(version, moltis_config::VERSION);
 
         let config_dir = payload
             .get("config_dir")

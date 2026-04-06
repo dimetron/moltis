@@ -277,6 +277,7 @@ impl MsTeamsPlugin {
             account_id: account_id.to_string(),
             chat_id: chat_id.clone(),
             message_id: activity.id,
+            thread_id: None,
         };
 
         let Some(sink) = event_sink else {
@@ -389,7 +390,7 @@ impl ChannelPlugin for MsTeamsPlugin {
             config: cfg,
             message_log: self.message_log.clone(),
             event_sink: self.event_sink.clone(),
-            http: reqwest::Client::new(),
+            http: moltis_common::http_client::build_default_http_client(),
             token_cache: Arc::new(tokio::sync::Mutex::new(None)),
             service_urls: Arc::new(RwLock::new(HashMap::new())),
         });
@@ -433,7 +434,7 @@ impl ChannelPlugin for MsTeamsPlugin {
         let accounts = self.accounts.read().unwrap_or_else(|e| e.into_inner());
         accounts
             .get(account_id)
-            .and_then(|s| serde_json::to_value(&s.config).ok())
+            .and_then(|s| serde_json::to_value(crate::config::RedactedConfig(&s.config)).ok())
     }
 
     fn update_account_config(
@@ -496,12 +497,14 @@ impl ChannelStatus for MsTeamsPlugin {
                 connected: true,
                 account_id: state.account_id.clone(),
                 details: Some(details),
+                extra: None,
             })
         } else {
             Ok(ChannelHealthSnapshot {
                 connected: false,
                 account_id: account_id.to_string(),
                 details: Some("account not started".into()),
+                extra: None,
             })
         }
     }

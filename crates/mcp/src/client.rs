@@ -1,6 +1,6 @@
 //! MCP client: manages the protocol handshake and tool interactions with a single MCP server.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tracing::{debug, info, warn};
 
@@ -13,6 +13,7 @@ use moltis_metrics::{counter, gauge, histogram, labels, mcp as mcp_metrics};
 use crate::{
     auth::SharedAuthProvider,
     error::{Context, Error, Result},
+    remote::ResolvedRemoteConfig,
     sse_transport::SseTransport,
     traits::{McpClientTrait, McpTransport},
     transport::StdioTransport,
@@ -51,9 +52,11 @@ impl McpClient {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        request_timeout: Duration,
     ) -> Result<Self> {
         info!(server = %server_name, command = %command, args = ?args, "connecting to MCP server");
-        let transport = StdioTransport::spawn(command, args, env).await?;
+        let transport =
+            StdioTransport::spawn_with_timeout(command, args, env, request_timeout).await?;
 
         let mut client = Self {
             server_name: server_name.into(),
@@ -79,10 +82,18 @@ impl McpClient {
         Ok(client)
     }
 
-    /// Connect to a remote MCP server over HTTP/SSE.
-    pub async fn connect_sse(server_name: &str, url: &str) -> Result<Self> {
-        info!(server = %server_name, url = %url, "connecting to MCP server via SSE");
-        let transport = SseTransport::new(url)?;
+    /// Connect to a remote MCP server over HTTP/SSE or Streamable HTTP.
+    pub async fn connect_sse(
+        server_name: &str,
+        remote: &ResolvedRemoteConfig,
+        request_timeout: Duration,
+    ) -> Result<Self> {
+        info!(
+            server = %server_name,
+            url = %remote.display_url(),
+            "connecting to remote MCP server"
+        );
+        let transport = SseTransport::new_with_remote(remote.clone(), request_timeout)?;
 
         let mut client = Self {
             server_name: server_name.into(),
@@ -93,20 +104,25 @@ impl McpClient {
         };
 
         if let Err(e) = client.initialize().await {
-            warn!(server = %server_name, error = %e, "MCP SSE initialize handshake failed");
+            warn!(server = %server_name, error = %e, "remote MCP initialize handshake failed");
             return Err(e);
         }
         Ok(client)
     }
 
-    /// Connect to a remote MCP server over HTTP/SSE with an OAuth auth provider.
+    /// Connect to a remote MCP server over HTTP/SSE or Streamable HTTP with an OAuth auth provider.
     pub async fn connect_sse_with_auth(
         server_name: &str,
-        url: &str,
+        remote: &ResolvedRemoteConfig,
         auth: SharedAuthProvider,
+        request_timeout: Duration,
     ) -> Result<Self> {
-        info!(server = %server_name, url = %url, "connecting to MCP server via SSE (with auth)");
-        let transport = SseTransport::with_auth(url, auth)?;
+        info!(
+            server = %server_name,
+            url = %remote.display_url(),
+            "connecting to remote MCP server (with auth)"
+        );
+        let transport = SseTransport::with_auth_remote(remote.clone(), auth, request_timeout)?;
 
         let mut client = Self {
             server_name: server_name.into(),
@@ -137,7 +153,7 @@ impl McpClient {
             capabilities: ClientCapabilities::default(),
             client_info: ClientInfo {
                 name: "moltis".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: moltis_config::VERSION.into(),
             },
         };
 
@@ -198,8 +214,11 @@ impl McpClientTrait for McpClient {
         self.ensure_ready()?;
 
         let resp = self.transport.request("tools/list", None).await?;
-        let result: ToolsListResult =
+        let mut result: ToolsListResult =
             serde_json::from_value(resp.result.context("tools/list returned no result")?)?;
+        result
+            .tools
+            .sort_by(|left, right| left.name.cmp(&right.name));
 
         debug!(
             server = %self.server_name,
@@ -286,7 +305,40 @@ impl McpClientTrait for McpClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, std::sync::Arc};
+
+    use {
+        async_trait::async_trait,
+        serde_json::{Value, json},
+    };
+
+    use crate::{error::Result, traits::McpTransport, types::JsonRpcResponse};
+
+    struct StubTransport {
+        result: Value,
+    }
+
+    #[async_trait]
+    impl McpTransport for StubTransport {
+        async fn request(&self, _method: &str, _params: Option<Value>) -> Result<JsonRpcResponse> {
+            Ok(JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: json!(1),
+                result: Some(self.result.clone()),
+                error: None,
+            })
+        }
+
+        async fn notify(&self, _method: &str, _params: Option<Value>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn is_alive(&self) -> bool {
+            true
+        }
+
+        async fn kill(&self) {}
+    }
 
     #[test]
     fn test_client_state_debug() {
@@ -297,5 +349,29 @@ mod tests {
             "Authenticating"
         );
         assert_eq!(format!("{:?}", McpClientState::Closed), "Closed");
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_sorts_by_name() {
+        let transport = Arc::new(StubTransport {
+            result: json!({
+                "tools": [
+                    {"name": "zeta", "description": "Z", "inputSchema": {"type": "object"}},
+                    {"name": "alpha", "description": "A", "inputSchema": {"type": "object"}},
+                    {"name": "mu", "description": "M", "inputSchema": {"type": "object"}}
+                ]
+            }),
+        });
+        let mut client = McpClient {
+            server_name: "test".into(),
+            transport,
+            state: McpClientState::Ready,
+            server_info: None,
+            tools: Vec::new(),
+        };
+
+        let tools = client.list_tools().await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "mu", "zeta"]);
     }
 }

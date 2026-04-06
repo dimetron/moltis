@@ -98,7 +98,7 @@ fn discover_flat(base_path: &Path, source: &SkillSource, skills: &mut Vec<SkillM
         match parse::parse_metadata(&content, &skill_dir) {
             Ok(mut meta) => {
                 meta.source = Some(source.clone());
-                tracing::info!(
+                tracing::debug!(
                     path = %skill_md.display(),
                     source = ?source,
                     name = %meta.name,
@@ -135,15 +135,9 @@ fn discover_plugins(install_dir: &Path, skills: &mut Vec<SkillMetadata>) {
             let skill_dir = install_dir.join(&skill_state.relative_path);
             skills.push(SkillMetadata {
                 name: skill_state.name.clone(),
-                description: String::new(),
-                homepage: None,
-                license: None,
-                compatibility: None,
-                allowed_tools: Vec::new(),
-                requires: Default::default(),
                 path: skill_dir,
                 source: Some(SkillSource::Plugin),
-                dockerfile: None,
+                ..Default::default()
             });
         }
     }
@@ -193,7 +187,7 @@ fn discover_registry(install_dir: &Path, skills: &mut Vec<SkillMetadata>) {
                     match parse::parse_metadata(&content, &skill_dir) {
                         Ok(mut meta) => {
                             meta.source = Some(SkillSource::Registry);
-                            tracing::info!(
+                            tracing::debug!(
                                 path = %skill_md.display(),
                                 source = "registry",
                                 name = %meta.name,
@@ -211,15 +205,9 @@ fn discover_registry(install_dir: &Path, skills: &mut Vec<SkillMetadata>) {
                     // so prompt_gen uses the path directly (no /SKILL.md append).
                     skills.push(SkillMetadata {
                         name: skill_state.name.clone(),
-                        description: String::new(),
-                        homepage: None,
-                        license: None,
-                        compatibility: None,
-                        allowed_tools: Vec::new(),
-                        requires: Default::default(),
                         path: skill_dir,
                         source: Some(SkillSource::Plugin),
-                        dockerfile: None,
+                        ..Default::default()
                     });
                 },
             }
@@ -318,6 +306,9 @@ mod tests {
                 installed_at_ms: 0,
                 commit_sha: None,
                 format: PluginFormat::Skill,
+                quarantined: false,
+                quarantine_reason: None,
+                provenance: None,
                 skills: vec![
                     SkillState {
                         name: "a".into(),
@@ -381,6 +372,9 @@ mod tests {
                     installed_at_ms: 0,
                     commit_sha: None,
                     format: PluginFormat::Skill,
+                    quarantined: false,
+                    quarantine_reason: None,
+                    provenance: None,
                     skills: vec![SkillState {
                         name: "my-skill".into(),
                         relative_path: "skill-repo".into(),
@@ -394,6 +388,9 @@ mod tests {
                     installed_at_ms: 0,
                     commit_sha: None,
                     format: PluginFormat::ClaudeCode,
+                    quarantined: false,
+                    quarantine_reason: None,
+                    provenance: None,
                     skills: vec![SkillState {
                         name: "test-plugin:helper".into(),
                         relative_path: "plugin-repo".into(),
@@ -429,15 +426,9 @@ mod tests {
                     _ => {
                         skills.push(SkillMetadata {
                             name: skill_state.name.clone(),
-                            description: String::new(),
-                            homepage: None,
-                            license: None,
-                            compatibility: None,
-                            allowed_tools: Vec::new(),
-                            requires: Default::default(),
                             path: skill_dir,
                             source: Some(SkillSource::Plugin),
-                            dockerfile: None,
+                            ..Default::default()
                         });
                     },
                 }

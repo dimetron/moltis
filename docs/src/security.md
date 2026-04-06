@@ -265,8 +265,9 @@ in Settings > Authentication), unseals automatically on login, and
 re-seals on server restart. A recovery key is provided at initialization
 for emergency access.
 
-When the vault is sealed, a middleware layer blocks API requests with
-`423 Locked` to prevent serving stale data.
+When the vault is sealed, a middleware layer blocks vault-protected API
+requests with `423 Locked`. Session history and bootstrap endpoints remain
+available because those payloads are not yet encrypted at rest.
 
 For full details on the key hierarchy, vault states, API endpoints, and
 cryptographic parameters, see [Encryption at Rest (Vault)](vault.md).
@@ -345,6 +346,7 @@ allowed.
 | Other `/api/auth/*` | 120 requests per 60 seconds |
 | Other `/api/*` | 180 requests per 60 seconds |
 | `/ws/chat` upgrade | 30 requests per 60 seconds |
+| `/ws` upgrade | 30 requests per 60 seconds |
 
 ### When Limits Are Hit
 
@@ -424,6 +426,36 @@ no loopback bypass, no exceptions.
    Moltis using HTTPS upstream (or TCP TLS passthrough), you may keep
    Moltis TLS enabled. Set `MOLTIS_ALLOW_TLS_BEHIND_PROXY=true` to
    acknowledge this non-default setup.
+
+### Nginx (direct config example)
+
+If HTTP works but WebSockets fail, make sure your location block includes
+`proxy_http_version 1.1;` and upgrade headers.
+
+```nginx
+location / {
+    proxy_pass http://172.17.0.1:13131;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+
+    # WebSocket upgrade support
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+}
+```
+
+If you use `$connection_upgrade`, define it once in the `http {}` block:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+```
 
 ### Nginx Proxy Manager (known-good headers)
 
@@ -534,6 +566,25 @@ Run Moltis on a private network or behind a reverse proxy with:
 
 Subscribe to security advisories and update promptly when vulnerabilities are
 disclosed.
+
+## Release Signing and Verification
+
+All release artifacts are signed with three independent methods:
+
+1. **[GitHub artifact attestations](https://github.com/moltis-org/moltis/attestations)**
+   (automated in CI) — cryptographic provenance records tied to the repository,
+   workflow, and commit SHA; provides SLSA v1.0 Build Level 2 guarantees;
+   verifiable with `gh attestation verify`
+2. **Sigstore keyless signing** (automated in CI) — proves the artifact was
+   built by the `moltis-org/moltis` GitHub Actions pipeline; recorded in
+   Sigstore's Rekor transparency log
+3. **GPG signing** (maintainer's YubiKey hardware key) — proves a specific
+   maintainer authorized the release
+
+Checksums (SHA-256 and SHA-512) are generated for every artifact.
+
+See [Release Verification](release-verification.md) for detailed verification
+instructions, artifact file extensions, and maintainer signing workflow.
 
 ## Reporting Security Issues
 

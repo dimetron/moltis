@@ -17,6 +17,8 @@ default-members = [
   "crates/discord",
   "crates/gateway",
   "crates/graphql",
+  "crates/httpd",
+  "crates/matrix",
   "crates/mcp",
   "crates/media",
   "crates/memory",
@@ -35,6 +37,7 @@ default-members = [
   "crates/qmd",
   "crates/routing",
   "crates/service-traits",
+  "crates/secret-store",
   "crates/sessions",
   "crates/skills",
   "crates/slack",
@@ -69,6 +72,8 @@ members = [
   "crates/cron",
   "crates/gateway",
   "crates/graphql",
+  "crates/httpd",
+  "crates/matrix",
   "crates/mcp",
   "crates/media",
   "crates/memory",
@@ -87,6 +92,7 @@ members = [
   "crates/routing",
   "crates/schema-export",
   "crates/service-traits",
+  "crates/secret-store",
   "crates/sessions",
   "crates/skills",
   "crates/slack",
@@ -106,6 +112,13 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+# Widen libsqlite3-sys pin (0.30.1 → >=0.30.1,<0.36.0) so sqlx-sqlite 0.8.6
+# can coexist with matrix-sdk-sqlite's rusqlite 0.37 (libsqlite3-sys 0.35).
+# Remove once sqlx ≥ 0.9 ships stable.
+sqlx-sqlite = { git = "https://github.com/moltis-org/sqlx", rev = "33747ad2e2d0c7962c6450faf31591c4e0782c23" }
+sqlx-core = { git = "https://github.com/moltis-org/sqlx", rev = "33747ad2e2d0c7962c6450faf31591c4e0782c23" }
+
 [workspace.lints.rust]
 unsafe_code           = "deny"
 unused_qualifications = "deny"
@@ -119,7 +132,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/moltis-org/moltis"
 rust-version = "1.91"
-version      = "0.10.17"
+version      = "0.1.0"
 
 [workspace.dependencies]
 # APNS
@@ -131,6 +144,7 @@ askama     = "0.15"
 axum       = { features = ["ws"], version = "0.8" }
 axum-extra = "0.10"
 # Serialization
+postcard   = { features = ["alloc"], version = "1.1" }
 serde      = { features = ["derive"], version = "1" }
 serde_json = "1"
 # Error handling
@@ -150,7 +164,7 @@ clap = { features = ["derive", "env"], version = "4" }
 # Database
 sqlx = { features = ["migrate", "runtime-tokio", "sqlite"], version = "0.8" }
 # HTTP client
-reqwest = { features = ["json", "multipart", "stream"], version = "0.12" }
+reqwest = { features = ["json", "multipart", "socks", "stream"], version = "0.12" }
 # UUID
 uuid = { features = ["v4"], version = "1" }
 # Async
@@ -182,6 +196,7 @@ async-graphql-axum = "7"
 gix                = "0.78"
 hmac               = "0.12"
 llama-cpp-2        = "0.1"
+matrix-sdk         = { default-features = false, features = ["e2e-encryption", "markdown", "native-tls", "sqlite"], version = "0.16" }
 mockito            = "1.7"
 open               = "5.3"
 rand               = "0.9"
@@ -224,6 +239,7 @@ hostname    = "0.4"
 http        = "1"
 hyper       = { features = ["client", "http1", "http2", "server"], version = "1" }
 hyper-util  = { features = ["client-legacy", "http1", "http2", "server-auto", "service", "tokio"], version = "0.1" }
+ngrok       = "0.18"
 tower       = "0.5"
 tower-http  = "0.6"
 url         = "2"
@@ -234,9 +250,11 @@ metrics                     = "0.24"
 metrics-exporter-prometheus = "0.16"
 metrics-tracing-context     = "0.16"
 # Content processing
+html2text      = "0.16"
 image          = { default-features = false, features = ["jpeg", "png", "webp"], version = "0.25" }
 ipnet          = "2"
 mdns-sd        = "0.18"
+mime_guess     = "2"
 pulldown-cmark = { default-features = false, version = "0.12" }
 # Code splitting (tree-sitter based)
 text-splitter          = { default-features = false, features = ["code"], version = "0.29" }
@@ -301,6 +319,8 @@ moltis-cron            = { path = "crates/cron" }
 moltis-discord         = { path = "crates/discord" }
 moltis-gateway         = { default-features = false, path = "crates/gateway" }
 moltis-graphql         = { path = "crates/graphql" }
+moltis-httpd           = { default-features = false, path = "crates/httpd" }
+moltis-matrix          = { path = "crates/matrix" }
 moltis-mcp             = { path = "crates/mcp" }
 moltis-media           = { path = "crates/media" }
 moltis-memory          = { path = "crates/memory" }
@@ -319,6 +339,7 @@ moltis-providers       = { features = ["provider-github-copilot", "provider-kimi
 moltis-qmd             = { path = "crates/qmd" }
 moltis-routing         = { path = "crates/routing" }
 moltis-schema-export   = { path = "crates/schema-export" }
+moltis-secret-store    = { default-features = false, path = "crates/secret-store" }
 moltis-service-traits  = { path = "crates/service-traits" }
 moltis-sessions        = { path = "crates/sessions" }
 moltis-skills          = { path = "crates/skills" }
@@ -338,3 +359,6 @@ codegen-units = 1
 lto           = "thin"
 panic         = "abort"
 strip         = true
+
+[profile.dev]
+debug = "line-tables-only"

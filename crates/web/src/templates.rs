@@ -71,6 +71,7 @@ pub(crate) struct GonData {
     deploy_platform: Option<String>,
     channels_offered: Vec<String>,
     channel_descriptors: Vec<moltis_channels::ChannelDescriptor>,
+    channel_storage_db_path: String,
     update: moltis_gateway::update_check::UpdateAvailability,
     sandbox: SandboxGonInfo,
     routes: SpaRoutes,
@@ -192,6 +193,7 @@ async fn build_recent_sessions_snapshot(gw: &GatewayState, limit: usize) -> Vec<
                         target.channel_type.as_str(),
                         &target.account_id,
                         &target.chat_id,
+                        target.thread_id.as_deref(),
                     )
                     .await
                     .map(|key| key == entry.key)
@@ -441,6 +443,10 @@ pub(crate) async fn build_gon_data(gw: &GatewayState) -> GonData {
         deploy_platform: gw.deploy_platform.clone(),
         channels_offered,
         channel_descriptors,
+        channel_storage_db_path: moltis_config::data_dir()
+            .join("moltis.db")
+            .display()
+            .to_string(),
         update: gw.inner.read().await.update.clone(),
         sandbox,
         routes: SPA_ROUTES.clone(),
@@ -486,6 +492,7 @@ pub(crate) enum SpaTemplate {
     Index,
     Login,
     Onboarding,
+    SetupRequired,
 }
 
 pub(crate) struct ShareMeta {
@@ -529,6 +536,12 @@ struct OnboardingHtmlTemplate<'a> {
     nonce: &'a str,
     page_title: &'a str,
     gon_json: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "setup-required.html", escape = "html")]
+struct SetupRequiredHtmlTemplate<'a> {
+    asset_prefix: &'a str,
 }
 
 #[derive(serde::Deserialize)]
@@ -681,6 +694,18 @@ pub(crate) async fn render_spa_template(
                 },
             }
         },
+        SpaTemplate::SetupRequired => {
+            let template = SetupRequiredHtmlTemplate {
+                asset_prefix: &asset_prefix,
+            };
+            match template.render() {
+                Ok(html) => html,
+                Err(e) => {
+                    warn!(error = %e, "failed to render setup-required template");
+                    String::new()
+                },
+            }
+        },
     };
 
     // Extract CDN origin from shiki_url for CSP script-src allowlisting.
@@ -723,8 +748,8 @@ pub(crate) fn should_redirect_to_onboarding(path: &str, onboarded: bool) -> bool
     !is_onboarding_path(path) && !onboarded
 }
 
-pub(crate) fn should_redirect_from_onboarding(onboarded: bool) -> bool {
-    onboarded
+pub(crate) fn should_redirect_from_onboarding(onboarded: bool, auth_setup_pending: bool) -> bool {
+    onboarded && !auth_setup_pending
 }
 
 fn is_onboarding_path(path: &str) -> bool {
@@ -767,6 +792,30 @@ mod tests {
     }
 
     #[test]
+    fn setup_required_template_renders_html() {
+        let template = SetupRequiredHtmlTemplate {
+            asset_prefix: "/assets/v/test123/",
+        };
+        let html = template.render().unwrap();
+        assert!(
+            html.contains("<!DOCTYPE html>"),
+            "should produce a full HTML document"
+        );
+        assert!(
+            html.contains("Authentication Not Configured"),
+            "should contain the setup-required heading"
+        );
+        assert!(
+            html.contains("moltis auth reset-password"),
+            "should contain the CLI reset command"
+        );
+        assert!(
+            html.contains("/assets/v/test123/"),
+            "should interpolate the asset prefix"
+        );
+    }
+
+    #[test]
     fn mem_snapshot_omits_llama_cpp_when_none() {
         let snapshot = MemSnapshot {
             process: 1,
@@ -788,5 +837,13 @@ mod tests {
         };
         let json = serde_json::to_value(snapshot).unwrap();
         assert_eq!(json.get("localLlamaCpp").and_then(|v| v.as_u64()), Some(4));
+    }
+
+    #[test]
+    fn onboarding_redirect_waits_for_auth_recovery() {
+        assert!(should_redirect_from_onboarding(true, false));
+        assert!(!should_redirect_from_onboarding(true, true));
+        assert!(!should_redirect_from_onboarding(false, false));
+        assert!(!should_redirect_from_onboarding(false, true));
     }
 }

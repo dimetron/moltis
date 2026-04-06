@@ -109,6 +109,18 @@ Never merge features into a single endpoint.
 for LLM failures, transcription failures, unhandled message types. Access control via
 allowlist/OTP flow.
 
+## Adding Channels
+
+When adding a new channel or extending one, follow `docs/channel-integration-checklist.md`.
+
+Minimum bar before shipping:
+- Settings reachable from the web UI, with onboarding coverage if the channel is offered there
+- Advanced JSON config escape hatch for settings without dedicated HTML fields yet
+- Prefer declarative channel field definitions that can drive both HTML forms and advanced JSON guidance
+- Storage behavior explained clearly, web UI channel settings live in `data_dir()/moltis.db`, not `moltis.toml`
+- Config template, validation, docs, and tests updated in the same PR
+- No silent access-control failures, OTP and allowlist behavior must be user-visible
+
 ## Authentication Architecture
 
 Password + passkey (WebAuthn) auth in `crates/gateway/src/auth.rs`, routes in `auth_routes.rs`,
@@ -219,9 +231,33 @@ Conventional commits: `feat|fix|docs|style|refactor|test|chore(scope): descripti
 
 ### Releases
 
-- Never overwrite tags — always create new version. `[workspace.package].version` must match tag.
-- Use `./scripts/prepare-release.sh <version> [date]` for release prep.
+- Date-based versioning: `YYYYMMDD.NN` (e.g., `20260311.01`). Cargo.toml stays at static `0.1.0`; real version injected via `MOLTIS_VERSION` env var at build time.
+- Never overwrite tags — always create new version.
+- Use `./scripts/prepare-release.sh [YYYYMMDD.NN]` for release prep (auto-computes next version if omitted).
 - Deploy template tags updated automatically by CI — don't manually update.
+
+**Release workflow is two phases:**
+
+1. **Prepare & publish** (can be done in a session):
+   ```bash
+   ./scripts/prepare-release.sh          # generates changelog, syncs lockfile
+   git add -A && git commit -m "chore: prepare release YYYYMMDD.NN"
+   git tag YYYYMMDD.NN && git push --follow-tags
+   ```
+   CI then builds artifacts, generates checksums, Sigstore signatures, and creates the GitHub release. This takes time.
+
+2. **GPG-sign** (must happen later, after CI completes):
+   ```bash
+   ./scripts/gpg-sign-release.sh [VERSION]
+   ```
+   This downloads artifacts from the published release, verifies SHA256 checksums, signs each artifact with the maintainer's YubiKey-resident GPG key, and uploads `.asc` files back to the release. **Requires YubiKey tap.**
+
+   Users verify signatures with:
+   ```bash
+   ./scripts/verify-release.sh --version YYYYMMDD.NN
+   ```
+
+**Important:** When asked to create a release, complete phase 1 and remind the maintainer to run `gpg-sign-release.sh` after CI finishes. Do not attempt to run the signing script in the same session — the release artifacts won't exist yet.
 
 ### Lockfile
 
@@ -239,8 +275,8 @@ For incremental local edits before full validation:
 
 Exact commands (must match `local-validate.sh`):
 - Fmt: `cargo +nightly-2025-11-30 fmt --all -- --check`
-- Clippy: `cargo +nightly-2025-11-30 clippy -Z unstable-options --workspace --all-features --all-targets --timings -- -D warnings`
-- macOS without `nvcc`: clippy without `--all-features`
+- Clippy: `just lint` (OS-aware: on macOS excludes CUDA features, on Linux uses `--all-features`)
+- Tests: `just test` (OS-aware: on macOS uses nextest without CUDA features, on Linux uses `--all-features`)
 - macOS app (Darwin hosts): `./scripts/build-swift-bridge.sh && ./scripts/generate-swift-project.sh && ./scripts/lint-swift.sh && xcodebuild -project apps/macos/Moltis.xcodeproj -scheme Moltis -configuration Release -destination "platform=macOS" -derivedDataPath apps/macos/.derivedData-local-validate build`
 - iOS app (Darwin hosts): `cargo run -p moltis-schema-export -- apps/ios/GraphQL/Schema/schema.graphqls && ./scripts/generate-ios-graphql.sh && ./scripts/generate-ios-project.sh && xcodebuild -project apps/ios/Moltis.xcodeproj -scheme Moltis -configuration Debug -destination "generic/platform=iOS" CODE_SIGNING_ALLOWED=NO build`
 
@@ -256,9 +292,9 @@ with exact commands), `## Manual QA`. Include concrete test steps.
 - [ ] `taplo fmt` (TOML changes)
 - [ ] `biome check --write` (JS changes)
 - [ ] Rust fmt passes (exact command above)
-- [ ] Rust clippy passes (exact command above)
+- [ ] `just lint` passes (OS-aware clippy)
 - [ ] `just release-preflight` passes
-- [ ] `cargo test` passes
+- [ ] `just test` passes
 - [ ] Conventional commit message
 - [ ] No debug code or temp files
 
@@ -267,22 +303,151 @@ with exact commands), `## Manual QA`. Include concrete test steps.
 Source in `docs/src/` (mdBook). Auto-deployed to docs.moltis.org on push to main.
 Update `docs/src/SUMMARY.md` when adding pages. Preview: `cd docs && mdbook serve`.
 
+**Keep docs in sync with code.** When adding or changing user-facing features
+(config fields, CLI commands, channel behavior, API endpoints, tools), update
+the relevant `docs/src/` pages and the config template (`crates/config/src/template.rs`)
+in the same PR. Documentation drift causes real user confusion — treat outdated
+docs as a bug.
+
 ## Session Completion
 
 **Work is NOT complete until `git push` succeeds.** Mandatory steps:
 1. File issues for remaining work
 2. Run quality gates
 3. Update issue status
-4. **Push**: `git pull --rebase && bd sync && git push && git status`
+4. **Push**: `git pull --rebase && bd dolt commit && git push && git status`
+   If this repo uses a Dolt remote for beads, also run `bd dolt pull` / `bd dolt push`.
 5. Clean up stashes/branches
 6. Hand off context
-
-## Issue Tracking
-
-Uses **bd (beads)**: `bd ready`, `bd create "Title" --type task --priority 2`,
-`bd close <id>`, `bd sync` (run at session end). Full details: `bd prime`.
 
 ## Plans and Session History
 
 Plans in `prompts/`. After significant work, write summary to
 `prompts/session-YYYY-MM-DD-<topic>.md`.
+
+<!-- BEGIN BEADS INTEGRATION -->
+## Issue Tracking with bd (beads)
+
+**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+
+### Why bd?
+
+- Dependency-aware: Track blockers and relationships between issues
+- Git-friendly: Dolt-powered version control with native sync
+- Agent-optimized: JSON output, ready work detection, discovered-from links
+- Prevents duplicate tracking systems and confusion
+
+### Quick Start
+
+**Check for ready work:**
+
+```bash
+bd ready --json
+```
+
+**Create new issues:**
+
+```bash
+bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
+bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
+```
+
+**Claim and update:**
+
+```bash
+bd update <id> --claim --json
+bd update bd-42 --priority 1 --json
+```
+
+**Complete work:**
+
+```bash
+bd close bd-42 --reason "Completed" --json
+```
+
+### Issue Types
+
+- `bug` - Something broken
+- `feature` - New functionality
+- `task` - Work item (tests, docs, refactoring)
+- `epic` - Large feature with subtasks
+- `chore` - Maintenance (dependencies, tooling)
+
+### Priorities
+
+- `0` - Critical (security, data loss, broken builds)
+- `1` - High (major features, important bugs)
+- `2` - Medium (default, nice-to-have)
+- `3` - Low (polish, optimization)
+- `4` - Backlog (future ideas)
+
+### Workflow for AI Agents
+
+1. **Check ready work**: `bd ready` shows unblocked issues
+2. **Claim your task atomically**: `bd update <id> --claim`
+3. **Work on it**: Implement, test, document
+4. **Discover new work?** Create linked issue:
+   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
+5. **Complete**: `bd close <id> --reason "Done"`
+
+### Auto-Sync
+
+bd automatically syncs via Dolt:
+
+- Each write auto-commits to Dolt history
+- Use `bd dolt push`/`bd dolt pull` for remote sync
+- No manual export/import needed!
+
+### Worktrees
+
+If you create a git worktree with plain `git worktree add`, Beads will not
+automatically share the main checkout's `.beads` state. For an existing
+worktree, run:
+
+```bash
+./scripts/bd-worktree-attach.sh
+```
+
+This writes `.beads/redirect` so the worktree uses the main repository's Beads
+database. If you create worktrees through `bd worktree create`, it should set
+up the redirect for you automatically.
+
+### Important Rules
+
+- ✅ Use bd for ALL task tracking
+- ✅ Always use `--json` flag for programmatic use
+- ✅ Link discovered work with `discovered-from` dependencies
+- ✅ Check `bd ready` before asking "what should I work on?"
+- ❌ Do NOT create markdown TODO lists
+- ❌ Do NOT use external issue trackers
+- ❌ Do NOT duplicate tracking systems
+
+For more details, see README.md and docs/QUICKSTART.md.
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+
+<!-- END BEADS INTEGRATION -->

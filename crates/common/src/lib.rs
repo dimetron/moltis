@@ -2,6 +2,8 @@
 
 pub mod error;
 pub mod hooks;
+pub mod http_client;
+pub mod secret_serde;
 pub mod types;
 
 pub use error::{Error, FromMessage, MoltisError, Result};

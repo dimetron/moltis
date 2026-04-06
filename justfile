@@ -17,9 +17,17 @@ format-check:
 lockfile-check:
     cargo fetch --locked
 
-# Lint Rust code using clippy
+# Lint Rust code using clippy (OS-aware: macOS excludes CUDA features)
 lint: lockfile-check
-    cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --timings -- -D warnings
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" = "Darwin" ]; then
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --exclude moltis-providers --exclude moltis-gateway --timings -- -D warnings
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options -p moltis-providers --all-targets --features local-llm-metal --timings -- -D warnings
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options -p moltis-gateway --all-targets --features local-llm-metal --timings -- -D warnings
+    else
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --timings -- -D warnings
+    fi
 
 # Build Tailwind CSS for the web UI.
 build-css:
@@ -74,7 +82,7 @@ deb-all: deb-amd64 deb-arm64
 arch-pkg: build-release
     #!/usr/bin/env bash
     set -euo pipefail
-    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    VERSION="${MOLTIS_VERSION:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
     ARCH=$(uname -m)
     PKG_DIR="target/arch-pkg"
     rm -rf "$PKG_DIR"
@@ -98,7 +106,7 @@ arch-pkg-x86_64:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release --target x86_64-unknown-linux-gnu
-    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    VERSION="${MOLTIS_VERSION:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
     PKG_DIR="target/arch-pkg-x86_64"
     rm -rf "$PKG_DIR"
     mkdir -p "$PKG_DIR/usr/bin"
@@ -121,7 +129,7 @@ arch-pkg-aarch64:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release --target aarch64-unknown-linux-gnu
-    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    VERSION="${MOLTIS_VERSION:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
     PKG_DIR="target/arch-pkg-aarch64"
     rm -rf "$PKG_DIR"
     mkdir -p "$PKG_DIR/usr/bin"
@@ -163,7 +171,7 @@ rpm-all: rpm-x86_64 rpm-aarch64
 appimage: build-release
     #!/usr/bin/env bash
     set -euo pipefail
-    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    VERSION="${MOLTIS_VERSION:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
     ARCH=$(uname -m)
     APP_DIR="target/moltis.AppDir"
     rm -rf "$APP_DIR"
@@ -249,9 +257,8 @@ build-test: build-css
     exit $(( TEST_EXIT > 0 ? TEST_EXIT : E2E_EXIT ))
 
 # Run the same Rust preflight gates used before release packaging.
-release-preflight: lockfile-check
+release-preflight: lint
     cargo +{{nightly_toolchain}} fmt --all -- --check
-    cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --timings -- -D warnings
 
 # Sync repo-root install.sh into website/install.sh for Cloudflare deployment.
 sync-website-install:
@@ -284,16 +291,24 @@ changelog-unreleased:
 
 # Generate release entries for unreleased commits under the provided version.
 changelog-release version:
-    git-cliff --config cliff.toml --unreleased --tag "v{{version}}" --strip all
+    git-cliff --config cliff.toml --unreleased --tag "{{version}}" --strip all
 
 # Commit all changes, push branch, create/update PR, and run local validation.
 # All args are optional; defaults are auto-generated from branch + changed files.
 ship commit_message='' pr_title='' pr_body='':
     ./scripts/ship-pr.sh {{ quote(commit_message) }} {{ quote(pr_title) }} {{ quote(pr_body) }}
 
-# Run all tests (nightly to share build cache with clippy/lint)
+# Run all tests (nightly to share build cache with clippy/lint, OS-aware)
 test:
-    cargo +{{nightly_toolchain}} nextest run --all-features
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" = "Darwin" ]; then
+        cargo +{{nightly_toolchain}} nextest run --workspace --all-features --exclude moltis-providers --exclude moltis-gateway
+        cargo +{{nightly_toolchain}} nextest run -p moltis-providers --features local-llm-metal
+        cargo +{{nightly_toolchain}} nextest run -p moltis-gateway --features local-llm-metal
+    else
+        cargo +{{nightly_toolchain}} nextest run --workspace --all-features
+    fi
 
 # Run contract test suites (channel, provider, memory, tools)
 contract-tests:
@@ -387,3 +402,8 @@ courier-deploy:
 # Run the APNS push relay (dev).
 courier-run *ARGS:
     cargo run -p moltis-courier -- {{ARGS}}
+
+# Serve the website locally with SSR partial injection (default port 4000).
+website-dev:
+    node website/scripts/build-changelog.mjs
+    node website/scripts/dev-server.mjs

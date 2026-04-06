@@ -22,6 +22,7 @@ use {
     moltis_config::schema::ProvidersConfig,
     moltis_oauth::{
         CallbackServer, OAuthFlow, TokenStore, callback_port, device_flow, load_oauth_config,
+        parse_callback_input,
     },
     moltis_providers::{ProviderRegistry, raw_model_id},
 };
@@ -790,6 +791,15 @@ pub fn known_providers() -> Vec<KnownProvider> {
             key_optional: false,
         },
         KnownProvider {
+            name: "fireworks",
+            display_name: "Fireworks",
+            auth_type: AuthType::ApiKey,
+            env_key: Some("FIREWORKS_API_KEY"),
+            default_base_url: Some("https://api.fireworks.ai/inference/v1"),
+            requires_model: false,
+            key_optional: false,
+        },
+        KnownProvider {
             name: "mistral",
             display_name: "Mistral",
             auth_type: AuthType::ApiKey,
@@ -840,6 +850,15 @@ pub fn known_providers() -> Vec<KnownProvider> {
             auth_type: AuthType::ApiKey,
             env_key: Some("Z_API_KEY"),
             default_base_url: Some("https://api.z.ai/api/paas/v4"),
+            requires_model: false,
+            key_optional: false,
+        },
+        KnownProvider {
+            name: "zai-code",
+            display_name: "Z.AI (Coding Plan)",
+            auth_type: AuthType::ApiKey,
+            env_key: Some("Z_CODE_API_KEY"),
+            default_base_url: Some("https://api.z.ai/api/coding/paas/v4"),
             requires_model: false,
             key_optional: false,
         },
@@ -1035,19 +1054,11 @@ fn set_provider_enabled_in_config(provider: &str, enabled: bool) -> ServiceResul
 }
 
 fn normalize_provider_name(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
+    moltis_config::normalize_provider_name(value).unwrap_or_default()
 }
 
 fn env_value_with_overrides(env_overrides: &HashMap<String, String>, key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            env_overrides
-                .get(key)
-                .cloned()
-                .filter(|value| !value.trim().is_empty())
-        })
+    moltis_config::env_value_with_overrides(env_overrides, key)
 }
 
 fn ui_offered_provider_order(config: &ProvidersConfig) -> Vec<String> {
@@ -1114,6 +1125,14 @@ pub fn detect_auto_provider_sources_with_overrides(
             && env_value_with_overrides(env_overrides, env_key).is_some()
         {
             sources.push(format!("env:{env_key}"));
+        }
+        if provider.auth_type == AuthType::ApiKey
+            && let Some(source) = moltis_config::generic_provider_env_source_for_provider(
+                provider.name,
+                env_overrides,
+            )
+        {
+            sources.push(source);
         }
 
         if config
@@ -1418,6 +1437,12 @@ impl LiveProviderSetupService {
         // Check if the provider has an API key set via env
         if let Some(env_key) = provider.env_key
             && env_value_with_overrides(&self.env_overrides, env_key).is_some()
+        {
+            return true;
+        }
+        if provider.auth_type == AuthType::ApiKey
+            && moltis_config::generic_provider_api_key_from_env(provider.name, &self.env_overrides)
+                .is_some()
         {
             return true;
         }
@@ -1934,18 +1959,19 @@ impl ProviderSetupService for LiveProviderSetupService {
         let verifier = auth_req.pkce.verifier.clone();
         let expected_state = auth_req.state.clone();
 
+        let pending = PendingOAuthFlow {
+            provider_name: provider_name.clone(),
+            oauth_config: oauth_config_for_pending,
+            verifier: verifier.clone(),
+        };
+        self.pending_oauth
+            .write()
+            .await
+            .insert(expected_state.clone(), pending);
+
         // Browser/server callback mode: callback lands on this gateway instance,
         // then `/auth/callback` completes the exchange with `oauth_complete`.
         if use_server_callback {
-            let pending = PendingOAuthFlow {
-                provider_name,
-                oauth_config: oauth_config_for_pending,
-                verifier,
-            };
-            self.pending_oauth
-                .write()
-                .await
-                .insert(expected_state, pending);
             return Ok(serde_json::json!({
                 "authUrl": auth_url,
             }));
@@ -1957,9 +1983,26 @@ impl ProviderSetupService for LiveProviderSetupService {
         let config = self.effective_config();
         let env_overrides = self.env_overrides.clone();
         let bind_addr = self.callback_bind_addr.clone();
+        let pending_oauth = Arc::clone(&self.pending_oauth);
+        let callback_state = expected_state.clone();
         tokio::spawn(async move {
-            match CallbackServer::wait_for_code(port, expected_state, &bind_addr).await {
+            match CallbackServer::wait_for_code(port, callback_state, &bind_addr).await {
                 Ok(code) => {
+                    // If a manual pasted callback already completed this flow,
+                    // skip duplicate exchange.
+                    let state_is_pending = pending_oauth
+                        .write()
+                        .await
+                        .remove(&expected_state)
+                        .is_some();
+                    if !state_is_pending {
+                        tracing::debug!(
+                            provider = %provider_name,
+                            "OAuth callback received after flow was already completed manually"
+                        );
+                        return;
+                    }
+
                     match flow.exchange(&code, &verifier).await {
                         Ok(tokens) => {
                             if let Err(e) = token_store.save(&provider_name, &tokens) {
@@ -1996,6 +2039,15 @@ impl ProviderSetupService for LiveProviderSetupService {
                     }
                 },
                 Err(e) => {
+                    // Ignore callback timeout/noise after successful manual completion.
+                    if pending_oauth.read().await.get(&expected_state).is_none() {
+                        tracing::debug!(
+                            provider = %provider_name,
+                            error = %e,
+                            "OAuth callback wait ended after flow was completed elsewhere"
+                        );
+                        return;
+                    }
                     tracing::error!(
                         provider = %provider_name,
                         error = %e,
@@ -2011,23 +2063,58 @@ impl ProviderSetupService for LiveProviderSetupService {
     }
 
     async fn oauth_complete(&self, params: Value) -> ServiceResult {
+        let parsed_callback = params
+            .get("callback")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(parse_callback_input)
+            .transpose()
+            .map_err(ServiceError::message)?;
+
         let code = params
             .get("code")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing 'code' parameter".to_string())?
-            .to_string();
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| parsed_callback.as_ref().map(|parsed| parsed.code.clone()))
+            .ok_or_else(|| "missing 'code' parameter".to_string())?;
         let state = params
             .get("state")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing 'state' parameter".to_string())?
-            .to_string();
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| parsed_callback.as_ref().map(|parsed| parsed.state.clone()))
+            .ok_or_else(|| "missing 'state' parameter".to_string())?;
+        let requested_provider = params
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
 
-        let pending = self
-            .pending_oauth
-            .write()
-            .await
-            .remove(&state)
-            .ok_or_else(|| "unknown or expired OAuth state".to_string())?;
+        let pending = {
+            let mut pending_oauth = self.pending_oauth.write().await;
+            let pending = pending_oauth
+                .get(&state)
+                .cloned()
+                .ok_or_else(|| "unknown or expired OAuth state".to_string())?;
+
+            if let Some(provider) = requested_provider.as_deref()
+                && provider != pending.provider_name
+            {
+                return Err(ServiceError::message(format!(
+                    "provider mismatch for OAuth state: expected '{}', got '{}'",
+                    pending.provider_name, provider
+                )));
+            }
+
+            pending_oauth
+                .remove(&state)
+                .ok_or_else(|| "unknown or expired OAuth state".to_string())?
+        };
 
         let flow = OAuthFlow::new(pending.oauth_config);
         let tokens = flow
@@ -2137,8 +2224,6 @@ impl ProviderSetupService for LiveProviderSetupService {
     }
 
     async fn validate_key(&self, params: Value) -> ServiceResult {
-        use moltis_agents::model::ChatMessage;
-
         let provider_name = params
             .get("provider")
             .and_then(|v| v.as_str())
@@ -2290,6 +2375,62 @@ impl ProviderSetupService for LiveProviderSetupService {
             }
         }
 
+        // Custom OpenAI-compatible providers: discover models via /v1/models
+        // when no model is specified, instead of probing (which can timeout).
+        if is_custom && selected_model.is_none() {
+            let api_key_str = api_key.unwrap_or_default();
+            let base = base_url_value.unwrap_or_default();
+            match moltis_providers::openai::fetch_models_from_api(
+                Secret::new(api_key_str.to_string()),
+                base.to_string(),
+            )
+            .await
+            {
+                Ok(discovered) => {
+                    let model_list: Vec<Value> = discovered
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({
+                                "id": format!("{provider_name}::{}", m.id),
+                                "displayName": &m.display_name,
+                                "provider": provider_name,
+                            })
+                        })
+                        .collect();
+                    self.emit_validation_progress(
+                        &validation_provider_name,
+                        request_id.as_deref(),
+                        "complete",
+                        progress_payload(serde_json::json!({
+                            "message": "Discovered models from endpoint.",
+                            "modelCount": model_list.len(),
+                        })),
+                    )
+                    .await;
+                    return Ok(serde_json::json!({
+                        "valid": true,
+                        "models": model_list,
+                    }));
+                },
+                Err(err) => {
+                    let error = format!("Failed to discover models from endpoint: {err}");
+                    self.emit_validation_progress(
+                        &validation_provider_name,
+                        request_id.as_deref(),
+                        "error",
+                        progress_payload(serde_json::json!({
+                            "message": error.clone(),
+                        })),
+                    )
+                    .await;
+                    return Ok(serde_json::json!({
+                        "valid": false,
+                        "error": error,
+                    }));
+                },
+            }
+        }
+
         let normalized_base_url = if provider_name == "ollama" {
             base_url_value.map(|url| normalize_ollama_openai_base_url(Some(url)))
         } else {
@@ -2358,14 +2499,18 @@ impl ProviderSetupService for LiveProviderSetupService {
         .await;
 
         const VALIDATION_MAX_MODEL_PROBES: usize = 8;
-        const VALIDATION_MAX_TIMEOUTS: usize = 3;
-        const VALIDATION_PROBE_TIMEOUT_SECS: u64 = 10;
+        // With a 30 s per-probe timeout, a single timeout is enough to
+        // decide the endpoint is unreachable — keeps worst-case at ~30 s.
+        const VALIDATION_MAX_TIMEOUTS: usize = 1;
+        // Local LLM servers may need 10-20+ seconds to load a model before
+        // responding.  30 s gives them room while still failing reasonably
+        // fast when the endpoint is genuinely unreachable.
+        const VALIDATION_PROBE_TIMEOUT_SECS: u64 = 30;
 
         reorder_models_for_validation(&mut models);
 
         let total_probe_attempts = models.len().min(VALIDATION_MAX_MODEL_PROBES);
 
-        let probe = [ChatMessage::user("ping")];
         let mut probe_attempted = false;
         let mut unsupported_errors = Vec::new();
         let mut last_error: Option<String> = None;
@@ -2406,7 +2551,7 @@ impl ProviderSetupService for LiveProviderSetupService {
             .await;
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(VALIDATION_PROBE_TIMEOUT_SECS),
-                llm_provider.complete(&probe, &[]),
+                llm_provider.probe(),
             )
             .await;
 
@@ -2776,6 +2921,7 @@ fn reorder_models_for_validation(models: &mut [moltis_providers::ModelInfo]) {
     /// Known-fast model substrings, ordered by preference.
     /// These are small/cheap models that respond quickly on every major provider.
     const FAST_PATTERNS: &[&str] = &[
+        "highspeed",
         "gpt-4o-mini",
         "gpt-4.1-mini",
         "gpt-4.1-nano",
@@ -3329,6 +3475,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn available_marks_provider_configured_from_generic_provider_env() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None)
+            .with_env_overrides(HashMap::from([
+                ("MOLTIS_PROVIDER".to_string(), "openai".to_string()),
+                (
+                    "MOLTIS_API_KEY".to_string(),
+                    "sk-test-openai-generic".to_string(),
+                ),
+            ]));
+
+        let result = svc.available().await.unwrap();
+        let arr = result
+            .as_array()
+            .expect("providers.available should return array");
+        let openai = arr
+            .iter()
+            .find(|provider| provider.get("name").and_then(|v| v.as_str()) == Some("openai"))
+            .expect("openai should be present");
+
+        assert_eq!(
+            openai.get("configured").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
     async fn available_hides_unconfigured_providers_not_in_offered_list() {
         let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
             &ProvidersConfig::default(),
@@ -3391,6 +3566,31 @@ mod tests {
         assert!(
             github_copilot_idx < openai_idx && openai_idx < anthropic_idx,
             "offered provider order should be preserved, got: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_accepts_offered_provider_aliases() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let config = ProvidersConfig {
+            offered: vec!["claude".into()],
+            ..ProvidersConfig::default()
+        };
+        let svc = LiveProviderSetupService::new(registry, config, None);
+        let result = svc.available().await.unwrap();
+        let arr = result
+            .as_array()
+            .expect("providers.available should return array");
+        let names: Vec<&str> = arr
+            .iter()
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+            .collect();
+
+        assert!(
+            names.contains(&"anthropic"),
+            "anthropic should be visible when offered contains alias 'claude', got: {names:?}"
         );
     }
 
@@ -3664,6 +3864,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_start_stores_pending_state_for_registered_redirect_provider() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+
+        let result = svc
+            .oauth_start(serde_json::json!({
+                "provider": "openai-codex",
+            }))
+            .await
+            .expect("oauth start should succeed");
+
+        if result
+            .get("alreadyAuthenticated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let auth_url = result
+            .get("authUrl")
+            .and_then(|v| v.as_str())
+            .expect("missing authUrl");
+        let parsed = reqwest::Url::parse(auth_url).expect("authUrl should be a valid URL");
+        let state = parsed
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.into_owned())
+            .expect("oauth authUrl should include state");
+
+        assert!(
+            svc.pending_oauth.read().await.contains_key(&state),
+            "pending oauth map should track non-device flow state for manual completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_complete_accepts_callback_input_parameter() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+
+        let result = svc
+            .oauth_complete(serde_json::json!({
+                "callback": "http://localhost:1455/auth/callback?code=fake&state=missing",
+            }))
+            .await;
+
+        let err = result.expect_err("missing state should fail");
+        assert!(
+            err.to_string().contains("unknown or expired OAuth state"),
+            "expected parsed callback to reach pending-state validation, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_complete_rejects_provider_mismatch_without_consuming_state() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+
+        let start_result = match svc
+            .oauth_start(serde_json::json!({
+                "provider": "openai-codex",
+            }))
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => panic!("oauth start should succeed: {error}"),
+        };
+
+        if start_result
+            .get("alreadyAuthenticated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let auth_url = match start_result.get("authUrl").and_then(|v| v.as_str()) {
+            Some(value) => value,
+            None => panic!("missing authUrl"),
+        };
+        let parsed = match reqwest::Url::parse(auth_url) {
+            Ok(value) => value,
+            Err(error) => panic!("authUrl should be valid: {error}"),
+        };
+        let state = match parsed
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.into_owned())
+        {
+            Some(value) => value,
+            None => panic!("oauth authUrl should include state"),
+        };
+
+        let mismatch_result = svc
+            .oauth_complete(serde_json::json!({
+                "provider": "github-copilot",
+                "callback": format!("http://localhost:1455/auth/callback?code=fake&state={state}"),
+            }))
+            .await;
+        let mismatch_error = match mismatch_result {
+            Ok(_) => panic!("provider mismatch should fail"),
+            Err(error) => error,
+        };
+
+        assert!(
+            mismatch_error
+                .to_string()
+                .contains("provider mismatch for OAuth state"),
+            "unexpected mismatch error: {mismatch_error}"
+        );
+        assert!(
+            svc.pending_oauth.read().await.contains_key(&state),
+            "provider mismatch should not consume pending OAuth state"
+        );
+    }
+
+    #[tokio::test]
     async fn oauth_status_returns_not_authenticated() {
         let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
             &ProvidersConfig::default(),
@@ -3716,6 +4040,7 @@ mod tests {
         assert!(names.contains(&"minimax"), "missing minimax");
         assert!(names.contains(&"moonshot"), "missing moonshot");
         assert!(names.contains(&"zai"), "missing zai");
+        assert!(names.contains(&"zai-code"), "missing zai-code");
         assert!(names.contains(&"kimi-code"), "missing kimi-code");
         assert!(names.contains(&"venice"), "missing venice");
         assert!(names.contains(&"ollama"), "missing ollama");
@@ -3743,6 +4068,7 @@ mod tests {
             ("minimax", "MINIMAX_API_KEY"),
             ("moonshot", "MOONSHOT_API_KEY"),
             ("zai", "Z_API_KEY"),
+            ("zai-code", "Z_CODE_API_KEY"),
             ("kimi-code", "KIMI_API_KEY"),
             ("venice", "VENICE_API_KEY"),
             ("ollama", "OLLAMA_API_KEY"),
@@ -3774,6 +4100,7 @@ mod tests {
             "minimax",
             "moonshot",
             "zai",
+            "zai-code",
             "kimi-code",
             "venice",
             "ollama",
@@ -3811,6 +4138,7 @@ mod tests {
             "minimax",
             "moonshot",
             "zai",
+            "zai-code",
             "kimi-code",
             "venice",
             "ollama",
@@ -3904,6 +4232,22 @@ mod tests {
             ..Default::default()
         });
         assert!(has_explicit_provider_settings(&model_only));
+    }
+
+    #[test]
+    fn detect_auto_provider_sources_includes_generic_provider_env() {
+        let detected = detect_auto_provider_sources_with_overrides(
+            &ProvidersConfig::default(),
+            None,
+            &HashMap::from([
+                ("PROVIDER".to_string(), "openai".to_string()),
+                ("API_KEY".to_string(), "sk-test-openai-generic".to_string()),
+            ]),
+        );
+
+        assert!(detected.iter().any(|source| {
+            source.provider == "openai" && source.source == "env:PROVIDER+API_KEY"
+        }));
     }
 
     #[tokio::test]
@@ -4327,6 +4671,7 @@ mod tests {
             provider: "test".to_string(),
             display_name: id.to_string(),
             created_at: None,
+            recommended: false,
         }
     }
 
@@ -4428,6 +4773,234 @@ mod tests {
         assert_eq!(
             ids[2], "openrouter::gpt-4o-search-preview",
             "slow namespaced model should be last, got: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn reorder_models_for_validation_prefers_highspeed_variants() {
+        let mut models = vec![
+            make_model("minimax::MiniMax-M2.7"),
+            make_model("minimax::MiniMax-M2.7-highspeed"),
+            make_model("minimax::MiniMax-M2.5"),
+        ];
+
+        reorder_models_for_validation(&mut models);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+
+        assert_eq!(
+            ids[0], "minimax::MiniMax-M2.7-highspeed",
+            "highspeed variant should probe first, got: {ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_key_custom_provider_without_model_returns_discovered_models() {
+        use axum::{Json, Router, routing::get};
+
+        let app = Router::new().route(
+            "/models",
+            get(|| async {
+                Json(serde_json::json!({
+                    "data": [
+                        {"id": "gpt-4o", "object": "model", "created": 1700000000},
+                        {"id": "gpt-4o-mini", "object": "model", "created": 1700000001},
+                        {"id": "dall-e-3", "object": "model", "created": 1700000002}
+                    ]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+        let result = svc
+            .validate_key(serde_json::json!({
+                "provider": "custom-test-server",
+                "apiKey": "sk-test",
+                "baseUrl": format!("http://{addr}")
+            }))
+            .await
+            .expect("validate_key should return payload");
+        server.abort();
+
+        assert_eq!(result.get("valid").and_then(|v| v.as_bool()), Some(true));
+        let models = result
+            .get("models")
+            .and_then(|v| v.as_array())
+            .expect("models array should be present");
+        // Chat-capable models should be included (namespaced with provider).
+        assert!(
+            models.iter().any(|m| m.get("id").and_then(|v| v.as_str())
+                == Some("custom-test-server::gpt-4o"))
+        );
+        assert!(models.iter().any(
+            |m| m.get("id").and_then(|v| v.as_str()) == Some("custom-test-server::gpt-4o-mini")
+        ));
+        // Non-chat models (dall-e-3) are filtered by fetch_models_from_api.
+        assert!(
+            !models
+                .iter()
+                .any(|m| m.get("id").and_then(|v| v.as_str())
+                    == Some("custom-test-server::dall-e-3"))
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_key_custom_provider_discovery_error_returns_invalid() {
+        use axum::{Router, http::StatusCode, routing::get};
+
+        let app = Router::new().route(
+            "/models",
+            get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+        let result = svc
+            .validate_key(serde_json::json!({
+                "provider": "custom-test-server",
+                "apiKey": "sk-test",
+                "baseUrl": format!("http://{addr}")
+            }))
+            .await
+            .expect("validate_key should return payload");
+        server.abort();
+
+        assert_eq!(result.get("valid").and_then(|v| v.as_bool()), Some(false));
+        let error = result.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            error.contains("Failed to discover models"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Regression test for <https://github.com/moltis-org/moltis/issues/502>.
+    ///
+    /// Before the fix, custom providers without a model fell through to the
+    /// model-probing loop, which sent chat completions to every discovered
+    /// model and timed out. The discovery path must return the model list
+    /// directly without ever hitting the chat completions endpoint.
+    #[tokio::test]
+    async fn validate_key_custom_provider_does_not_probe_when_model_unset() {
+        use {
+            axum::{
+                Json, Router,
+                http::StatusCode,
+                routing::{get, post},
+            },
+            std::sync::atomic::{AtomicBool, Ordering},
+        };
+
+        let completions_called = Arc::new(AtomicBool::new(false));
+        let cc1 = completions_called.clone();
+        let cc2 = completions_called.clone();
+
+        let app = Router::new()
+            .route(
+                "/models",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "data": [
+                            {"id": "llama-3.1-70b", "object": "model", "created": 1700000000},
+                        ]
+                    }))
+                }),
+            )
+            .route(
+                "/chat/completions",
+                post(move || async move {
+                    cc1.store(true, Ordering::SeqCst);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }),
+            )
+            .route(
+                "/v1/chat/completions",
+                post(move || async move {
+                    cc2.store(true, Ordering::SeqCst);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+        let result = svc
+            .validate_key(serde_json::json!({
+                "provider": "custom-test-server",
+                "apiKey": "sk-test",
+                "baseUrl": format!("http://{addr}")
+            }))
+            .await
+            .expect("validate_key should return payload");
+        server.abort();
+
+        assert_eq!(result.get("valid").and_then(|v| v.as_bool()), Some(true));
+        assert!(
+            result.get("models").and_then(|v| v.as_array()).is_some(),
+            "should return discovered models"
+        );
+        assert!(
+            !completions_called.load(Ordering::SeqCst),
+            "chat completions endpoint must NOT be called when model is unset — \
+             the discovery path should return models directly (issue #502)"
+        );
+    }
+
+    /// When a custom provider's `/models` endpoint is unreachable, validation
+    /// should return an error promptly rather than falling through to probing.
+    #[tokio::test]
+    async fn validate_key_custom_provider_connection_refused_returns_error() {
+        // Bind a port and immediately drop the listener so connections are refused.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+        let result = svc
+            .validate_key(serde_json::json!({
+                "provider": "custom-test-server",
+                "apiKey": "sk-test",
+                "baseUrl": format!("http://{addr}")
+            }))
+            .await
+            .expect("validate_key should return payload");
+
+        assert_eq!(result.get("valid").and_then(|v| v.as_bool()), Some(false));
+        let error = result.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            error.contains("Failed to discover models"),
+            "should report discovery failure, got: {error}"
         );
     }
 }

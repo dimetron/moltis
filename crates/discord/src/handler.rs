@@ -21,7 +21,10 @@ use moltis_channels::{
     ChannelEvent, ChannelType,
     gating::DmPolicy,
     message_log::MessageLogEntry,
-    otp::{OtpInitResult, OtpVerifyResult},
+    otp::{
+        OtpInitResult, OtpVerifyResult, approve_sender_via_otp, emit_otp_challenge,
+        emit_otp_resolution,
+    },
     plugin::{ChannelEventSink, ChannelMessageKind, ChannelMessageMeta, ChannelReplyTarget},
 };
 
@@ -385,6 +388,7 @@ impl EventHandler for Handler {
             account_id: self.account_id.clone(),
             chat_id: chat_id.clone(),
             message_id: Some(msg.id.to_string()),
+            thread_id: None,
         };
 
         let Some(sink) = event_sink else {
@@ -568,21 +572,16 @@ async fn handle_otp_flow(
 
         match result {
             OtpVerifyResult::Approved => {
-                // Auto-approve: add to allowlist via the event sink.
                 let identifier = peer_id;
-                if let Some(sink) = event_sink {
-                    sink.request_sender_approval("discord", account_id, identifier)
-                        .await;
-
-                    sink.emit(ChannelEvent::OtpResolved {
-                        channel_type: ChannelType::Discord,
-                        account_id: account_id.to_string(),
-                        peer_id: peer_id.to_string(),
-                        username: username.map(String::from),
-                        resolution: "approved".into(),
-                    })
-                    .await;
-                }
+                approve_sender_via_otp(
+                    event_sink,
+                    ChannelType::Discord,
+                    account_id,
+                    identifier,
+                    peer_id,
+                    username,
+                )
+                .await;
 
                 let _ = send_discord_text_simple(
                     ctx,
@@ -610,16 +609,15 @@ async fn handle_otp_flow(
                 )
                 .await;
 
-                if let Some(sink) = event_sink {
-                    sink.emit(ChannelEvent::OtpResolved {
-                        channel_type: ChannelType::Discord,
-                        account_id: account_id.to_string(),
-                        peer_id: peer_id.to_string(),
-                        username: username.map(String::from),
-                        resolution: "locked_out".into(),
-                    })
-                    .await;
-                }
+                emit_otp_resolution(
+                    event_sink,
+                    ChannelType::Discord,
+                    account_id,
+                    peer_id,
+                    username,
+                    "locked_out",
+                )
+                .await;
             },
             OtpVerifyResult::Expired => {
                 let _ = send_discord_text_simple(
@@ -629,16 +627,15 @@ async fn handle_otp_flow(
                 )
                 .await;
 
-                if let Some(sink) = event_sink {
-                    sink.emit(ChannelEvent::OtpResolved {
-                        channel_type: ChannelType::Discord,
-                        account_id: account_id.to_string(),
-                        peer_id: peer_id.to_string(),
-                        username: username.map(String::from),
-                        resolution: "expired".into(),
-                    })
-                    .await;
-                }
+                emit_otp_resolution(
+                    event_sink,
+                    ChannelType::Discord,
+                    account_id,
+                    peer_id,
+                    username,
+                    "expired",
+                )
+                .await;
             },
             OtpVerifyResult::NoPending => {
                 // Shouldn't happen since we checked has_pending, but handle gracefully.
@@ -665,19 +662,18 @@ async fn handle_otp_flow(
             OtpInitResult::Created(code) => {
                 let _ = send_discord_text_simple(ctx, channel_id, OTP_CHALLENGE_MSG).await;
 
-                if let Some(sink) = event_sink {
-                    let expires_at = unix_now() + 300; // 5 minutes
-                    sink.emit(ChannelEvent::OtpChallenge {
-                        channel_type: ChannelType::Discord,
-                        account_id: account_id.to_string(),
-                        peer_id: peer_id.to_string(),
-                        username: username.map(String::from),
-                        sender_name: sender_name.map(String::from),
-                        code,
-                        expires_at,
-                    })
-                    .await;
-                }
+                let expires_at = unix_now() + 300; // 5 minutes
+                emit_otp_challenge(
+                    event_sink,
+                    ChannelType::Discord,
+                    account_id,
+                    peer_id,
+                    username,
+                    sender_name,
+                    code,
+                    expires_at,
+                )
+                .await;
             },
             OtpInitResult::AlreadyPending | OtpInitResult::LockedOut => {
                 // Silent ignore.

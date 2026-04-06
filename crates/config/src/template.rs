@@ -28,6 +28,16 @@ ws_request_logs = false                # Enable WebSocket RPC request/response l
 update_releases_url = "https://www.moltis.org/releases.json"    # Releases manifest URL for update checks (override to use a custom URL)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# UPSTREAM PROXY
+# ══════════════════════════════════════════════════════════════════════════════
+# Route all outbound traffic (providers, channels, tools, OAuth) through a
+# proxy. Supports http://, https://, socks5://, socks5h:// schemes.
+# Authentication via URL: "http://user:pass@host:port"
+# When unset, reqwest honours HTTP_PROXY / HTTPS_PROXY / ALL_PROXY env vars.
+
+# upstream_proxy = "http://127.0.0.1:1080"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # AUTHENTICATION
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -93,10 +103,11 @@ auto_generate = true              # Auto-generate local CA and server certificat
 
 [providers]
 offered = ["local-llm", "github-copilot", "openai-codex", "openai", "anthropic", "openrouter", "ollama", "moonshot", "minimax", "zai"] # Enabled providers and those shown in onboarding/picker UI ([] = enable/show all)
+# show_legacy_models = true  # Show models older than 1 year in the chat model selector (they always appear in Settings)
 # All available providers:
 #   "anthropic", "openai", "gemini", "groq", "xai", "deepseek",
-#   "mistral", "openrouter", "cerebras", "minimax", "moonshot",
-#   "zai", "venice", "ollama", "local-llm", "openai-codex",
+#   "fireworks", "mistral", "openrouter", "cerebras", "minimax",
+#   "moonshot", "zai", "zai-code", "venice", "ollama", "local-llm", "openai-codex",
 #   "github-copilot", "kimi-code"
 
 # ── Anthropic (Claude) ────────────────────────────────────────
@@ -107,6 +118,7 @@ offered = ["local-llm", "github-copilot", "openai-codex", "openai", "anthropic",
 # fetch_models = true                          # Set false to skip remote discovery
 # base_url = "https://api.anthropic.com"     # API endpoint
 # alias = "anthropic"                         # Custom name for metrics
+# cache_retention = "short"                    # Prompt caching: "none" | "short" | "long"
 
 # ── OpenAI ────────────────────────────────────────────────────
 [providers.openai]
@@ -141,6 +153,15 @@ models = ["gpt-5.3", "gpt-5.2"]              # Preferred models shown first
 # models = ["deepseek-chat"]
 # base_url = "https://api.deepseek.com"
 # alias = "deepseek"
+
+# ── Fireworks ────────────────────────────────────────────────
+# [providers.fireworks]
+# enabled = true
+# api_key = "..."                             # Or set FIREWORKS_API_KEY env var
+# models = ["accounts/fireworks/routers/kimi-k2p5-turbo"]
+# fetch_models = true                          # Set false to skip remote discovery
+# base_url = "https://api.fireworks.ai/inference/v1"
+# alias = "fireworks"
 
 # ── xAI (Grok) ────────────────────────────────────────────────
 # [providers.xai]
@@ -206,6 +227,7 @@ message_queue_mode = "followup"   # Default: process queued messages one-by-one 
 agent_timeout_secs = 600          # Max seconds for an agent run (0 = no timeout)
 agent_max_iterations = 25         # Max LLM/tool loop iterations before stopping
 max_tool_result_bytes = 50000     # Max bytes per tool result before truncation (50KB)
+# registry_mode = "full"          # "full" = all schemas every turn, "lazy" = tool_search discovery
 
 # ── Maps ─────────────────────────────────────────────────────────────────────
 
@@ -230,6 +252,12 @@ security_level = "allowlist"      # Security mode:
                                   #   "strict"     - Very restrictive
 allowlist = []                    # Command patterns to allow (when security_level = "allowlist")
                                   # Example: ["git *", "npm *", "cargo *"]
+host = "local"                    # Where to run commands:
+                                  #   "local" - Run on this machine (default)
+                                  #   "node"  - Run on a connected Moltis node
+                                  #   "ssh"   - Run through the system ssh client
+# node = "mac-mini"               # Default node id/display name when host = "node"
+# ssh_target = "deploy@box"       # SSH host alias or user@host when host = "ssh"
 
 # ── Sandbox Configuration ─────────────────────────────────────────────────────
 # Commands run inside isolated containers for security.
@@ -247,6 +275,7 @@ workspace_mount = "ro"            # How to mount workspace in sandbox:
                                   #   "ro"   - Read-only (safe)
                                   #   "rw"   - Read-write (can modify files)
                                   #   "none" - No mount
+# host_data_dir = "/host/path/data"  # Optional override if auto-detection cannot resolve the host-visible data dir
 home_persistence = "shared"       # Persist /home/sandbox across container recreation:
                                   #   "off"     - Ephemeral home
                                   #   "session" - Per-session persisted home
@@ -388,6 +417,21 @@ max_redirects = 3                 # Maximum HTTP redirects to follow
 readability = true                # Use readability extraction for HTML (cleaner output)
 # ssrf_allowlist = ["172.22.0.0/16"] # CIDR ranges exempt from SSRF blocking (e.g. Docker networks)
 
+# ── Firecrawl (API-based web scraping) ────────────────────────────────────────
+# High-quality markdown extraction from web pages, including JS-heavy and
+# bot-protected sites.  Used as a standalone firecrawl_scrape tool, as a
+# web_search provider, and as a fallback extractor in web_fetch.
+# Get an API key at https://firecrawl.dev or self-host.
+
+# [tools.web.firecrawl]
+# enabled = false                        # Enable Firecrawl integration
+# api_key = "fc-..."                     # Or set FIRECRAWL_API_KEY env var
+# base_url = "https://api.firecrawl.dev" # API endpoint (change for self-hosted)
+# only_main_content = true               # Strip navs, footers, sidebars
+# timeout_seconds = 30                   # HTTP request timeout
+# cache_ttl_minutes = 15                 # Cache scraped pages (0 = no cache)
+# web_fetch_fallback = true              # Use as fallback when readability fails
+
 # ── Browser Automation ────────────────────────────────────────────────────────
 # Full browser control via Chrome DevTools Protocol (CDP).
 # Use for JavaScript-heavy sites, form filling, screenshots.
@@ -428,9 +472,10 @@ allowed_domains = []              # Empty = all domains allowed
 [skills]
 enabled = true                    # Enable skills system
 search_paths = []                 # Additional directories to search for skills
-                                  # Default locations: ~/.config/moltis/skills/, ./skills/
+                                  # Default locations include ~/.moltis/skills/
 auto_load = []                    # Skills to always load without explicit activation
                                   # Example: ["code-review", "commit"]
+enable_agent_sidecar_files = false # Allow agents to write supplementary text files inside personal skill dirs
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MCP SERVERS
@@ -439,6 +484,7 @@ auto_load = []                    # Skills to always load without explicit activ
 # See https://modelcontextprotocol.io for available servers.
 
 [mcp]
+request_timeout_secs = 30        # Default timeout for MCP requests
 # Each server has a name and configuration:
 #
 # [mcp.servers.server-name]
@@ -446,8 +492,10 @@ auto_load = []                    # Skills to always load without explicit activ
 # args = ["-y", "@package/name"]  # Command arguments
 # env = {{ KEY = "value" }}         # Environment variables for the process
 # enabled = true                  # Whether this server is enabled
-# transport = "stdio"             # Transport: "stdio" (default) or "sse"
-# url = "http://..."              # URL for SSE transport
+# request_timeout_secs = 90       # Optional timeout override for this server
+# transport = "stdio"             # Transport: "stdio" (default), "sse", or "streamable-http"
+# url = "http://..."              # URL for SSE/Streamable HTTP transport
+# headers = {{ Authorization = "Bearer ${{TOKEN}}" }}  # Optional HTTP headers for remote transport
 
 # Example: Filesystem access
 # [mcp.servers.filesystem]
@@ -465,7 +513,15 @@ auto_load = []                    # Skills to always load without explicit activ
 # Example: SSE server
 # [mcp.servers.remote]
 # transport = "sse"
-# url = "http://localhost:8080/mcp"
+# url = "http://localhost:8080/mcp?api_key=$REMOTE_MCP_KEY"
+# headers = {{ "x-api-key" = "${{REMOTE_MCP_KEY}}" }}
+# enabled = true
+
+# Example: Streamable HTTP server
+# [mcp.servers.remote-http]
+# transport = "streamable-http"
+# url = "https://mcp.example.com/mcp"
+# headers = {{ Authorization = "Bearer ${{API_KEY}}" }}
 # enabled = true
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -540,6 +596,17 @@ providers = ["whisper", "mistral", "elevenlabs"] # UI allowlist (empty = show al
 # model = "tts-1"                 # tts-1 or tts-1-hd
 
 # ══════════════════════════════════════════════════════════════════════════════
+# NGROK
+# ══════════════════════════════════════════════════════════════════════════════
+# Expose moltis through a public HTTPS tunnel managed by ngrok.
+# Requires a build with the `ngrok` feature and an ngrok authtoken.
+
+[ngrok]
+enabled = false                   # true = create a public HTTPS tunnel at startup
+# authtoken = "${{NGROK_AUTHTOKEN}}" # Optional if NGROK_AUTHTOKEN env var is already set
+# domain = "team-gateway.ngrok.app"  # Optional reserved/static ngrok domain
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TAILSCALE
 # ══════════════════════════════════════════════════════════════════════════════
 # Expose moltis via Tailscale Serve (private) or Funnel (public).
@@ -572,12 +639,38 @@ reset_on_exit = true              # Reset serve/funnel when gateway shuts down
 # CHANNELS
 # ══════════════════════════════════════════════════════════════════════════════
 # External messaging integrations.
+# Note: channels added or edited in the web UI are stored in Moltis's internal
+# database at data_dir()/moltis.db. They are not written back into this file.
+# Keep channel config here only if you want to manage it manually in TOML.
 
 [channels]
+# Which channel types appear in the web UI's "+ Add Channel" menu.
+# Default: ["telegram", "discord", "slack"]
+# Add "matrix", "whatsapp", or "msteams" to enable them in the UI.
+# offered = ["telegram", "discord", "slack", "matrix", "whatsapp"]
+
+# WhatsApp linked-device accounts
+# [channels.whatsapp.my-bot]
+# dm_policy = "open"              # "open", "allowlist", or "disabled"
+# group_policy = "disabled"       # "open", "allowlist", or "disabled"
+# model = "anthropic/claude-sonnet-4-20250514"
+# model_provider = "anthropic"
+# otp_self_approval = true        # OTP self-approval for non-allowlisted DM users
+# otp_cooldown_secs = 300         # Cooldown after 3 failed OTP attempts
+
 # Telegram bots
 # [channels.telegram.my-bot]
 # token = "..."                   # Bot token from @BotFather
-# allowed_users = []              # Telegram user IDs allowed to chat (empty = all)
+# dm_policy = "allowlist"         # "open", "allowlist", or "disabled"
+# group_policy = "open"           # "open", "allowlist", or "disabled"
+# mention_mode = "mention"        # "mention", "always", or "none"
+# allowlist = []                  # Telegram user IDs or usernames (strings)
+# group_allowlist = []            # Telegram group/chat IDs (strings)
+# reply_to_message = false        # Send responses as Telegram replies
+# otp_self_approval = true        # OTP self-approval for non-allowlisted DM users
+# otp_cooldown_secs = 300         # Cooldown after 3 failed OTP attempts
+# stream_mode = "edit_in_place"   # "edit_in_place" or "off"
+# edit_throttle_ms = 300          # Min ms between streaming edits
 
 # Microsoft Teams bots
 # [channels.msteams.my-bot]
@@ -599,6 +692,52 @@ reset_on_exit = true              # Reset serve/funnel when gateway shuts down
 # activity = "with AI"            # Bot activity status text
 # activity_type = "custom"        # "playing", "listening", "watching", "competing", or "custom"
 # status = "online"               # "online", "idle", "dnd", or "invisible"
+# otp_self_approval = true        # OTP self-approval for non-allowlisted DM users
+# otp_cooldown_secs = 300         # Cooldown after 3 failed OTP attempts
+
+# Slack bots
+# [channels.slack.my-bot]
+# bot_token = "xoxb-..."          # Bot user OAuth token
+# app_token = "xapp-..."          # App-level token for Socket Mode
+# connection_mode = "socket_mode" # "socket_mode" or "events_api"
+# signing_secret = "..."          # Required for events_api mode
+# dm_policy = "allowlist"         # "open", "allowlist", or "disabled"
+# group_policy = "open"           # "open", "allowlist", or "disabled"
+# mention_mode = "mention"        # "mention", "always", or "none"
+# allowlist = []                  # Slack user IDs (strings)
+# channel_allowlist = []          # Slack channel IDs (strings)
+# stream_mode = "edit_in_place"   # "edit_in_place", "native", or "off"
+# edit_throttle_ms = 500          # Min ms between streaming edits
+# thread_replies = true           # Reply in threads
+
+# Matrix bots / appservices using access tokens or password login
+# NOTE: Matrix encrypted rooms require password auth. Access tokens can connect
+# for plain Matrix traffic, but they reuse an existing Matrix session without
+# that device's private E2EE keys, so Moltis cannot reliably decrypt encrypted
+# chats from token auth alone. Use password auth so Moltis creates and persists
+# its own Matrix device keys, then finish Element verification in the chat with
+# `verify yes`, `verify no`, `verify show`, or `verify cancel`.
+# [channels.matrix.my-bot]
+# homeserver = "https://matrix.example.com"
+# access_token = "syt_..."        # Plain/unencrypted Matrix traffic only
+# password = "..."                # Required for encrypted Matrix chats
+# user_id = "@bot:example.com"    # Required for password login, auto-detected for token auth
+# device_id = "MOLTISBOT"         # Optional device ID for session restore
+# device_display_name = "Moltis Matrix Bot"  # Optional display name for password logins
+# ownership_mode = "moltis_owned" # "moltis_owned" or "user_managed"
+# dm_policy = "allowlist"         # "open", "allowlist", or "disabled"
+# room_policy = "allowlist"       # "open", "allowlist", or "disabled"
+# mention_mode = "mention"        # "mention", "always", or "none"
+# room_allowlist = []             # Matrix room IDs or aliases
+# user_allowlist = []             # Matrix user IDs
+# auto_join = "always"            # "always", "allowlist", or "off"
+# model = "gpt-4.1"
+# model_provider = "openai"
+# stream_mode = "edit_in_place"   # "edit_in_place" or "off"
+# edit_throttle_ms = 500          # Min ms between streaming edits
+# stream_min_initial_chars = 30   # Delay first streamed send until this many chars
+# reply_to_message = true         # Send threaded/rich replies when possible
+# ack_reaction = "👀"             # Emoji reaction while processing (omit to disable)
 # otp_self_approval = true        # OTP self-approval for non-allowlisted DM users
 # otp_cooldown_secs = 300         # Cooldown after 3 failed OTP attempts
 

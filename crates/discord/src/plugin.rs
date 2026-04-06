@@ -243,7 +243,7 @@ impl ChannelPlugin for DiscordPlugin {
         let accounts = self.accounts.read().unwrap_or_else(|e| e.into_inner());
         accounts
             .get(account_id)
-            .and_then(|s| serde_json::to_value(&s.config).ok())
+            .and_then(|s| serde_json::to_value(crate::config::RedactedConfig(&s.config)).ok())
     }
 
     fn update_account_config(
@@ -293,12 +293,14 @@ impl ChannelStatus for DiscordPlugin {
                 connected,
                 account_id: state.account_id.clone(),
                 details: Some(details),
+                extra: None,
             })
         } else {
             Ok(ChannelHealthSnapshot {
                 connected: false,
                 account_id: account_id.to_string(),
                 details: Some("account not started".into()),
+                extra: None,
             })
         }
     }

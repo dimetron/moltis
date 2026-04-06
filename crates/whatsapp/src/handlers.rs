@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 
 use {
     tracing::{debug, info, warn},
@@ -10,14 +10,44 @@ use {
 
 use moltis_channels::{
     ChannelAttachment, ChannelEvent, ChannelMessageKind, ChannelMessageMeta, ChannelReplyTarget,
-    ChannelType, message_log::MessageLogEntry,
+    ChannelType,
+    message_log::MessageLogEntry,
+    otp::{approve_sender_via_otp, emit_otp_challenge, emit_otp_resolution},
 };
 
 use crate::{
     access::{self, AccessDenied},
+    config::WhatsAppAccountConfig,
     otp::{OTP_CHALLENGE_MSG, OtpInitResult, OtpVerifyResult},
     state::{AccountState, AccountStateMap, has_bot_watermark},
 };
+
+fn mirror_connected(accounts: &AccountStateMap, account_id: &str, connected: bool) {
+    let map = accounts.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = map.get(account_id) {
+        state.connected.store(connected, Ordering::Relaxed);
+    }
+}
+
+fn mirror_latest_qr(accounts: &AccountStateMap, account_id: &str, qr: Option<String>) {
+    let mut map = accounts.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = map.get_mut(account_id)
+        && let Ok(mut latest_qr) = state.latest_qr.write()
+    {
+        *latest_qr = qr;
+    }
+}
+
+fn current_config(
+    accounts: &AccountStateMap,
+    account_id: &str,
+    fallback: &WhatsAppAccountConfig,
+) -> WhatsAppAccountConfig {
+    let map = accounts.read().unwrap_or_else(|e| e.into_inner());
+    map.get(account_id)
+        .map(|s| s.config.clone())
+        .unwrap_or_else(|| fallback.clone())
+}
 
 /// Process an incoming whatsapp-rust event for the given account.
 pub async fn handle_event(
@@ -34,6 +64,7 @@ pub async fn handle_event(
             if let Ok(mut qr) = state.latest_qr.write() {
                 *qr = Some(code.clone());
             }
+            mirror_latest_qr(&accounts, &state.account_id, Some(code.clone()));
 
             if let Some(ref sink) = state.event_sink {
                 sink.emit(ChannelEvent::PairingQrCode {
@@ -46,14 +77,14 @@ pub async fn handle_event(
         },
         Event::Connected(_) => {
             info!(account_id = %state.account_id, "WhatsApp connected");
-            state
-                .connected
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            state.connected.store(true, Ordering::Relaxed);
+            mirror_connected(&accounts, &state.account_id, true);
 
             // Clear QR data once connected.
             if let Ok(mut qr) = state.latest_qr.write() {
                 *qr = None;
             }
+            mirror_latest_qr(&accounts, &state.account_id, None);
 
             let display_name = state.client.get_push_name().await;
             let display = if display_name.is_empty() {
@@ -84,15 +115,13 @@ pub async fn handle_event(
         },
         Event::Disconnected(_) => {
             info!(account_id = %state.account_id, "WhatsApp disconnected");
-            state
-                .connected
-                .store(false, std::sync::atomic::Ordering::Relaxed);
+            state.connected.store(false, Ordering::Relaxed);
+            mirror_connected(&accounts, &state.account_id, false);
         },
         Event::LoggedOut(_) => {
             warn!(account_id = %state.account_id, "WhatsApp logged out");
-            state
-                .connected
-                .store(false, std::sync::atomic::Ordering::Relaxed);
+            state.connected.store(false, Ordering::Relaxed);
+            mirror_connected(&accounts, &state.account_id, false);
             if let Some(ref sink) = state.event_sink {
                 sink.emit(ChannelEvent::AccountDisabled {
                     channel_type: ChannelType::Whatsapp,
@@ -195,6 +224,7 @@ async fn handle_message(
         .unwrap_or("");
 
     let message_kind = classify_message(&msg, text);
+    let effective_config = current_config(accounts, &state.account_id, &state.config);
 
     // Access control. Self-chat messages from the account owner always bypass
     // access control — the owner is inherently authorized.
@@ -207,7 +237,13 @@ async fn handle_message(
     let access_result = if is_owner_self_chat {
         Ok(())
     } else {
-        access::check_access(&state.config, is_group, &peer_id, Some(&username), group_id)
+        access::check_access(
+            &effective_config,
+            is_group,
+            &peer_id,
+            Some(&username),
+            group_id,
+        )
     };
     let access_granted = access_result.is_ok();
 
@@ -265,7 +301,8 @@ async fn handle_message(
         );
 
         // OTP self-approval for non-allowlisted DM users.
-        if reason == AccessDenied::NotOnAllowlist && !is_group && state.config.otp_self_approval {
+        if reason == AccessDenied::NotOnAllowlist && !is_group && effective_config.otp_self_approval
+        {
             handle_otp_flow(
                 accounts,
                 &state.account_id,
@@ -288,6 +325,7 @@ async fn handle_message(
             account_id: state.account_id.clone(),
             chat_id: chat_id.clone(),
             message_id: Some(info.id.to_string()),
+            thread_id: None,
         };
         if let Some(ref sink) = state.event_sink {
             match sink.dispatch_command(cmd, reply_to).await {
@@ -318,13 +356,14 @@ async fn handle_message(
         account_id: state.account_id.clone(),
         chat_id: chat_id.clone(),
         message_id: Some(info.id.to_string()),
+        thread_id: None,
     };
     let meta = ChannelMessageMeta {
         channel_type: ChannelType::Whatsapp,
         sender_name,
         username: Some(username),
         message_kind: Some(message_kind),
-        model: state.config.model.clone(),
+        model: effective_config.model.clone(),
         audio_filename: None,
     };
 
@@ -361,6 +400,13 @@ async fn handle_message(
             handle_location(&msg, account_id, reply_to, meta, chat_jid, state).await;
         },
         ChannelMessageKind::Other => {
+            info!(
+                account_id = %state.account_id,
+                chat = %chat_jid,
+                "unhandled WhatsApp message type — replying with error. \
+                 Message fields present: {}",
+                describe_message_fields(&msg),
+            );
             let reply_msg = wa::Message {
                 conversation: Some(
                     "Sorry, I can't understand that message type. Check logs for details.".into(),
@@ -682,6 +728,42 @@ fn is_owner_user(jid: &Jid, own_pn: Option<&Jid>, own_lid: Option<&Jid>) -> bool
         || own_lid.is_some_and(|lid| lid.is_same_user_as(jid))
 }
 
+/// List which `Option` fields on `wa::Message` are `Some`, giving operators a
+/// concrete clue about the unhandled message type (e.g. "sticker_message, reaction_message").
+///
+/// Only checks fields that are NOT already handled by `classify_message` to avoid
+/// misleading output — if a field appears here it genuinely was not dispatched.
+fn describe_message_fields(msg: &wa::Message) -> String {
+    let mut present = Vec::new();
+    macro_rules! check {
+        ($($field:ident),+ $(,)?) => {
+            $(if msg.$field.is_some() { present.push(stringify!($field)); })+
+        };
+    }
+    // Omit fields already handled by classify_message:
+    //   conversation, extended_text_message, image_message, audio_message,
+    //   video_message, document_message, location_message, live_location_message
+    check!(
+        sender_key_distribution_message,
+        contact_message,
+        call,
+        protocol_message,
+        contacts_array_message,
+        sticker_message,
+        reaction_message,
+        poll_creation_message,
+        poll_update_message,
+        interactive_message,
+        edited_message,
+        event_message,
+    );
+    if present.is_empty() {
+        "none".to_owned()
+    } else {
+        present.join(", ")
+    }
+}
+
 /// Classify the inbound message kind based on its content.
 ///
 /// Media types take priority over text — an image with a caption is still `Photo`,
@@ -759,23 +841,21 @@ async fn handle_otp_flow(
 
         match result {
             OtpVerifyResult::Approved => {
+                approve_sender_via_otp(
+                    state.event_sink.as_deref(),
+                    ChannelType::Whatsapp,
+                    account_id,
+                    peer_id,
+                    peer_id,
+                    username,
+                )
+                .await;
+
                 let reply = wa::Message {
                     conversation: Some("Access granted! You can now use this bot.".into()),
                     ..Default::default()
                 };
                 let _ = state.send_message(chat_jid.clone(), reply).await;
-
-                // Emit OTP resolved event for the gateway to persist the allowlist change.
-                if let Some(ref sink) = state.event_sink {
-                    sink.emit(ChannelEvent::OtpResolved {
-                        channel_type: ChannelType::Whatsapp,
-                        account_id: account_id.to_string(),
-                        peer_id: peer_id.to_string(),
-                        username: username.map(String::from),
-                        resolution: "approved".to_string(),
-                    })
-                    .await;
-                }
             },
             OtpVerifyResult::WrongCode { attempts_left } => {
                 let reply = wa::Message {
@@ -797,6 +877,15 @@ async fn handle_otp_flow(
                     ..Default::default()
                 };
                 let _ = state.send_message(chat_jid.clone(), reply).await;
+                emit_otp_resolution(
+                    state.event_sink.as_deref(),
+                    ChannelType::Whatsapp,
+                    account_id,
+                    peer_id,
+                    username,
+                    "locked_out",
+                )
+                .await;
             },
             OtpVerifyResult::Expired => {
                 let reply = wa::Message {
@@ -806,6 +895,15 @@ async fn handle_otp_flow(
                     ..Default::default()
                 };
                 let _ = state.send_message(chat_jid.clone(), reply).await;
+                emit_otp_resolution(
+                    state.event_sink.as_deref(),
+                    ChannelType::Whatsapp,
+                    account_id,
+                    peer_id,
+                    username,
+                    "expired",
+                )
+                .await;
             },
             OtpVerifyResult::NoPending => {},
         }
@@ -844,18 +942,17 @@ async fn handle_otp_flow(
                 .as_secs() as i64
                 + 300;
 
-            if let Some(ref sink) = state.event_sink {
-                sink.emit(ChannelEvent::OtpChallenge {
-                    channel_type: ChannelType::Whatsapp,
-                    account_id: account_id.to_string(),
-                    peer_id: peer_id.to_string(),
-                    username: username.map(String::from),
-                    sender_name: sender_name.map(String::from),
-                    code,
-                    expires_at,
-                })
-                .await;
-            }
+            emit_otp_challenge(
+                state.event_sink.as_deref(),
+                ChannelType::Whatsapp,
+                account_id,
+                peer_id,
+                username,
+                sender_name,
+                code,
+                expires_at,
+            )
+            .await;
         },
         OtpInitResult::AlreadyPending => {
             // Resend the challenge message.
@@ -913,5 +1010,40 @@ mod tests {
 
         assert!(is_self_chat);
         assert!(!sender_is_owner);
+    }
+
+    #[test]
+    fn describe_message_fields_reports_present_fields() {
+        let msg = wa::Message {
+            sticker_message: Some(Default::default()),
+            reaction_message: Some(Default::default()),
+            ..Default::default()
+        };
+        let desc = describe_message_fields(&msg);
+        assert!(
+            desc.contains("sticker_message"),
+            "expected sticker_message in: {desc}"
+        );
+        assert!(
+            desc.contains("reaction_message"),
+            "expected reaction_message in: {desc}"
+        );
+    }
+
+    #[test]
+    fn describe_message_fields_empty_message_returns_none() {
+        let msg = wa::Message::default();
+        assert_eq!(describe_message_fields(&msg), "none");
+    }
+
+    #[test]
+    fn describe_message_fields_excludes_handled_types() {
+        // image_message is handled by classify_message — should NOT appear
+        let msg = wa::Message {
+            image_message: Some(Default::default()),
+            ..Default::default()
+        };
+        let desc = describe_message_fields(&msg);
+        assert_eq!(desc, "none", "handled fields should not appear: {desc}");
     }
 }

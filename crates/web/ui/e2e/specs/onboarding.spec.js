@@ -22,6 +22,9 @@ async function clickFirstVisibleButton(page, roleQuery) {
 async function waitForOnboardingStepLoaded(page) {
 	await expect(page.locator(".onboarding-card")).toBeVisible();
 	await expect(page.getByText("Loading…")).toHaveCount(0, { timeout: 10_000 });
+	await expect(page.getByText("Scanning OpenClaw installation…", { exact: true })).not.toBeVisible({
+		timeout: 10_000,
+	});
 }
 
 async function visibleOnboardingHeadingText(page) {
@@ -39,30 +42,41 @@ async function visibleOnboardingHeadingText(page) {
 async function waitForOnboardingHeadingAdvance(page, previousHeading) {
 	if (!previousHeading) return true;
 	try {
-		await expect
-			.poll(() => visibleOnboardingHeadingText(page), { timeout: 10_000 })
-			.not.toBe(previousHeading);
+		await expect.poll(() => visibleOnboardingHeadingText(page), { timeout: 10_000 }).not.toBe(previousHeading);
 		return true;
 	} catch {
 		return false;
 	}
 }
 
+async function waitForLlmStepReady(page) {
+	const llmLoading = page.getByText("Loading LLMs…", { exact: true });
+	if (await isVisible(llmLoading)) {
+		await expect(llmLoading).not.toBeVisible({ timeout: 10_000 });
+	}
+
+	const llmHeading = page.getByRole("heading", { name: LLM_STEP_HEADING });
+	await expect(llmHeading).toBeVisible({ timeout: 10_000 });
+}
+
+async function waitForStepToDisappear(locator) {
+	await expect.poll(() => isVisible(locator), { timeout: 10_000 }).toBeFalsy();
+}
+
 async function maybeSkipAuth(page) {
 	const authHeading = page.getByRole("heading", { name: "Secure your instance", exact: true });
 	if (!(await isVisible(authHeading))) return false;
-	const headingBefore = await visibleOnboardingHeadingText(page);
 
 	const clicked = await clickFirstVisibleButton(page, { name: /skip/i });
 	expect(clicked).toBeTruthy();
 	await waitForOnboardingStepLoaded(page);
-	return waitForOnboardingHeadingAdvance(page, headingBefore);
+	await waitForStepToDisappear(authHeading);
+	return true;
 }
 
 async function maybeCompleteIdentity(page) {
 	const identityHeading = page.getByRole("heading", { name: "Set up your identity", exact: true });
 	if (!(await isVisible(identityHeading))) return false;
-	const headingBefore = await visibleOnboardingHeadingText(page);
 
 	const userNameInput = page.getByPlaceholder("e.g. Alice");
 	if (!(await isVisible(userNameInput))) return false;
@@ -81,7 +95,8 @@ async function maybeCompleteIdentity(page) {
 
 	await page.getByRole("button", { name: "Continue", exact: true }).click();
 	await waitForOnboardingStepLoaded(page);
-	return waitForOnboardingHeadingAdvance(page, headingBefore);
+	await waitForStepToDisappear(identityHeading);
+	return true;
 }
 
 async function maybeSkipOpenClawImport(page) {
@@ -89,39 +104,85 @@ async function maybeSkipOpenClawImport(page) {
 	if (!(await isVisible(importHeading))) return false;
 	const headingBefore = await visibleOnboardingHeadingText(page);
 
-	// The import step has "Skip for now" (when detected) or "Skip" (when not detected).
-	const skipped = await clickFirstVisibleButton(page, { name: /^Skip( for now)?$/i });
-	if (!skipped) {
-		const continued = await clickFirstVisibleButton(page, { name: "Continue", exact: true });
-		if (!continued) return false;
+	const card = page.locator(".onboarding-card");
+	const skipForNow = card.getByText("Skip for now", { exact: true });
+	const skipButton = card.getByRole("button", { name: "Skip", exact: true });
+	const continueButton = card.getByRole("button", { name: "Continue", exact: true });
+
+	await expect
+		.poll(
+			async () => {
+				return (await isVisible(skipForNow)) || (await isVisible(skipButton)) || (await isVisible(continueButton));
+			},
+			{ timeout: 10_000 },
+		)
+		.toBeTruthy();
+
+	if (await isVisible(skipForNow)) {
+		await skipForNow.click();
+	} else if (await isVisible(skipButton)) {
+		await skipButton.click();
+	} else if (await isVisible(continueButton)) {
+		await continueButton.click();
+	} else {
+		return false;
 	}
 	await waitForOnboardingStepLoaded(page);
-	return waitForOnboardingHeadingAdvance(page, headingBefore);
+	if (await waitForOnboardingHeadingAdvance(page, headingBefore)) return true;
+
+	await expect
+		.poll(
+			async () => {
+				if (await isVisible(importHeading)) return "import";
+				const heading = await visibleOnboardingHeadingText(page);
+				if (heading) return heading;
+				const loadingLlms = page.getByText("Loading LLMs…", { exact: true });
+				if (await isVisible(loadingLlms)) return "loading-llm";
+				return "transitioning";
+			},
+			{ timeout: 10_000 },
+		)
+		.not.toBe("import");
+	return true;
+}
+
+async function maybeWaitForLlmLoading(page) {
+	const loadingLlms = page.getByText("Loading LLMs…", { exact: true });
+	if (!(await isVisible(loadingLlms))) return false;
+	await expect(loadingLlms).toHaveCount(0, { timeout: 10_000 });
+	return true;
 }
 
 async function moveToLlmStep(page) {
-	await waitForOnboardingStepLoaded(page);
-
 	const llmHeading = page.getByRole("heading", { name: LLM_STEP_HEADING });
-	if (await isVisible(llmHeading)) return true;
-
-	// Onboarding step order can vary by environment (auth/import/identity may appear
-	// before LLM). Try each known pre-LLM step until one advances the wizard.
-	for (let i = 0; i < 4; i++) {
-		if (await isVisible(llmHeading)) return true;
+	// Onboarding step order can vary by environment, and the OpenClaw import step
+	// is populated asynchronously after the card first appears. Keep polling until
+	// a real pre-LLM step is visible and can advance.
+	for (let i = 0; i < 40; i++) {
+		await waitForOnboardingStepLoaded(page);
+		if (await isVisible(llmHeading)) {
+			await waitForLlmStepReady(page);
+			return true;
+		}
+		if (await maybeWaitForLlmLoading(page)) {
+			await waitForLlmStepReady(page);
+			return true;
+		}
 
 		if (await maybeSkipOpenClawImport(page)) continue;
 		if (await maybeSkipAuth(page)) continue;
 		if (await maybeCompleteIdentity(page)) continue;
-		break;
-	}
 
-	const backBtn = page.getByRole("button", { name: "Back", exact: true }).first();
-	if (await isVisible(backBtn)) {
-		await backBtn.click();
-	}
+		const backBtn = page.getByRole("button", { name: "Back", exact: true }).first();
+		if (await isVisible(backBtn)) {
+			await backBtn.click();
+			continue;
+		}
 
-	await expect(llmHeading).toBeVisible({ timeout: 10_000 });
+		// Wait for a step transition instead of a fixed delay
+		await waitForOnboardingStepLoaded(page);
+	}
+	await waitForLlmStepReady(page);
 	return true;
 }
 
@@ -151,10 +212,13 @@ async function moveToChannelStep(page) {
 	const channelHeading = page.getByRole("heading", { name: "Connect a Channel", exact: true });
 	if (await isVisible(channelHeading)) return true;
 
-	for (let i = 0; i < 4; i++) {
-		const skipBtn = page.getByRole("button", { name: "Skip for now", exact: true });
-		if (!(await isVisible(skipBtn))) break;
-		await skipBtn.click();
+	for (let i = 0; i < 6; i++) {
+		if (await clickFirstVisibleButton(page, { name: "Skip for now", exact: true })) {
+			if (await isVisible(channelHeading)) return true;
+			continue;
+		}
+
+		if (!(await clickFirstVisibleButton(page, { name: "Continue", exact: true }))) break;
 		if (await isVisible(channelHeading)) return true;
 	}
 
@@ -283,6 +347,19 @@ test.describe("Onboarding wizard", () => {
 		expect(importIdx).toBeLessThan(llmIdx);
 	});
 
+	test("step indicator orders Remote before Channel", async ({ page }) => {
+		await page.goto("/onboarding");
+		await page.waitForLoadState("networkidle");
+
+		const labels = (await page.locator(".onboarding-step-label").allTextContents()).map((value) => value.trim());
+		const remoteAccessIdx = labels.indexOf("Remote");
+		const channelIdx = labels.indexOf("Channel");
+
+		expect(remoteAccessIdx).toBeGreaterThan(-1);
+		expect(channelIdx).toBeGreaterThan(-1);
+		expect(remoteAccessIdx).toBeLessThan(channelIdx);
+	});
+
 	test("auth step renders actionable controls when shown", async ({ page }) => {
 		await page.goto("/onboarding");
 		await page.waitForLoadState("networkidle");
@@ -305,6 +382,12 @@ test.describe("Onboarding wizard", () => {
 		await expect(passwordCard).toBeVisible();
 
 		await passwordCard.click();
+		const passwordInput = page.getByLabel(/^Password(?: \*)?$/);
+		const confirmPasswordInput = page.getByLabel("Confirm password", { exact: true });
+		await expect(passwordInput).toHaveAttribute("type", "password");
+		await expect(passwordInput).toHaveAttribute("autocomplete", "new-password");
+		await expect(confirmPasswordInput).toHaveAttribute("type", "password");
+		await expect(confirmPasswordInput).toHaveAttribute("autocomplete", "new-password");
 		await expect(page.getByRole("button", { name: /Set password|Skip/i }).first()).toBeVisible();
 	});
 
@@ -331,7 +414,7 @@ test.describe("Onboarding wizard", () => {
 			const currentHeading = page.locator(".onboarding-card h2").first();
 			await expect(currentHeading).toBeVisible();
 			const headingText = (await currentHeading.textContent())?.trim() || "";
-			expect(["Add LLMs", "Voice (optional)", "Connect a Channel"]).toContain(headingText);
+			expect(["Add LLMs", "Voice (optional)", "Remote Access", "Connect a Channel"]).toContain(headingText);
 			const canSkip = await clickFirstVisibleButton(page, { name: /skip/i });
 			const canContinue = await clickFirstVisibleButton(page, { name: /continue/i });
 			expect(canSkip || canContinue).toBeTruthy();
@@ -523,6 +606,122 @@ test.describe("Onboarding wizard", () => {
 		await expect(qrImage).toBeVisible();
 		await expect(qrImage).toHaveAttribute("src", /data:image\/svg\+xml;utf8,/);
 		await expect(page.getByText("2@mock_payload")).toHaveCount(0);
+		expect(pageErrors).toEqual([]);
+	});
+
+	test("matrix onboarding renders a real mask icon", async ({ page }) => {
+		const pageErrors = watchPageErrors(page);
+		await page.goto("/onboarding");
+		await expect.poll(() => new URL(page.url()).pathname, { timeout: 15_000 }).toMatch(/^\/(?:onboarding|chats\/.+)$/);
+		await page.waitForLoadState("networkidle");
+
+		await page.evaluate(() => {
+			const probe = document.createElement("span");
+			probe.className = "icon icon-xl icon-matrix";
+			probe.id = "matrix-icon-probe";
+			document.body.append(probe);
+		});
+
+		const matrixIcon = page.locator("#matrix-icon-probe");
+		await expect(matrixIcon).toBeVisible();
+		await expect
+			.poll(() => {
+				return matrixIcon.evaluate((node) => {
+					const style = window.getComputedStyle(node);
+					return style.maskImage || style.webkitMaskImage || "";
+				});
+			})
+			.not.toBe("none");
+
+		expect(pageErrors).toEqual([]);
+	});
+
+	test("matrix onboarding exposes advanced config patch and storage note", async ({ page }) => {
+		const pageErrors = watchPageErrors(page);
+		await page.goto("/onboarding");
+		await page.waitForLoadState("networkidle");
+
+		const reachedChannel = await moveToChannelStep(page);
+		if (!reachedChannel) {
+			test.skip(true, "could not reach channel step in this onboarding flow");
+			return;
+		}
+
+		await expect(page.getByText(/stored in Moltis's internal database \(.+moltis\.db\)/)).toBeVisible();
+
+		const matrixSelectBtn = page.getByRole("button", { name: "Matrix", exact: true });
+		if (await isVisible(matrixSelectBtn)) {
+			await matrixSelectBtn.click();
+		}
+
+		const homeserverInput = page.locator('input[name="matrix_homeserver"]');
+		if (!(await isVisible(homeserverInput))) {
+			test.skip(true, "Matrix onboarding option is not available in this run");
+			return;
+		}
+		await expect(page.getByText("Encrypted Matrix chats require Password auth.", { exact: false })).toBeVisible();
+		await expect(page.getByText("Use Password if you want encrypted Matrix chats.", { exact: false })).toBeVisible();
+		await expect(
+			page.getByText("do not transfer that device's private encryption keys into Moltis", { exact: false }),
+		).toBeVisible();
+		await expect(page.getByText("verify yes", { exact: false })).toBeVisible();
+
+		await page.evaluate(async () => {
+			const onboardingScript = document.querySelector('script[type="module"][src*="js/onboarding-app.js"]');
+			if (!onboardingScript) throw new Error("onboarding-app.js script not found");
+			const appUrl = new URL(onboardingScript.src, window.location.origin).href;
+			const marker = "js/onboarding-app.js";
+			const markerIdx = appUrl.indexOf(marker);
+			if (markerIdx < 0) throw new Error("onboarding-app.js marker not found in script URL");
+			const prefix = appUrl.slice(0, markerIdx);
+			const state = await import(`${prefix}js/state.js`);
+			const wsOpen = typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1;
+			window.__matrixOnboardingAddRequest = null;
+			state.setConnected(true);
+			state.setWs({
+				readyState: wsOpen,
+				send(raw) {
+					const req = JSON.parse(raw || "{}");
+					const resolver = state.pending[req.id];
+					if (!resolver) return;
+					if (req.method === "channels.add") {
+						window.__matrixOnboardingAddRequest = req.params || null;
+						resolver({ ok: true, payload: {} });
+					} else if (req.method === "channels.status") {
+						resolver({ ok: true, payload: { channels: [] } });
+					} else {
+						resolver({ ok: false, error: { message: `unexpected rpc in onboarding matrix test: ${req.method}` } });
+					}
+					delete state.pending[req.id];
+				},
+			});
+		});
+
+		const authSelect = page.getByText("Authentication", { exact: true }).locator("xpath=following-sibling::select[1]");
+		await expect(authSelect).toHaveValue("password");
+		await homeserverInput.fill("https://matrix.example.com");
+		await expect(page.getByLabel("Let Moltis own this Matrix account", { exact: true })).toBeChecked();
+		await authSelect.selectOption("access_token");
+		await page.locator('input[name="matrix_credential"]').fill("syt_test_token");
+		await page.getByText("Advanced Config JSON", { exact: true }).click();
+		await page
+			.locator('textarea[name="channel_advanced_config"]')
+			.fill('{"reply_to_message":true,"stream_mode":"off"}');
+		await page.getByRole("button", { name: "Connect Matrix", exact: true }).click();
+
+		await expect.poll(() => page.evaluate(() => window.__matrixOnboardingAddRequest)).not.toBeNull();
+
+		const sentRequest = await page.evaluate(() => window.__matrixOnboardingAddRequest);
+		expect(sentRequest.account_id).toMatch(/^matrix-example-com-[a-z0-9]{6}$/);
+		expect(sentRequest.config).toMatchObject({
+			homeserver: "https://matrix.example.com",
+			access_token: "syt_test_token",
+			ownership_mode: "user_managed",
+			otp_self_approval: true,
+			otp_cooldown_secs: 300,
+			reply_to_message: true,
+			stream_mode: "off",
+		});
 		expect(pageErrors).toEqual([]);
 	});
 

@@ -7,6 +7,8 @@ version.workspace = true
 async-trait    = { workspace = true }
 futures        = { workspace = true }
 moltis-metrics = { optional = true, workspace = true }
+reqwest        = { workspace = true }
+secrecy        = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 thiserror      = { workspace = true }
