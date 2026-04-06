@@ -144,7 +144,7 @@ var sections = [
 	{
 		id: "webhooks",
 		label: "Webhooks",
-		icon: html`<span class="icon icon-link"></span>`,
+		icon: html`<span class="icon icon-globe"></span>`,
 		page: true,
 	},
 	{
