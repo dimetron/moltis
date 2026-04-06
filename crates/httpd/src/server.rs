@@ -1125,10 +1125,10 @@ pub async fn prepare_gateway(
         fn webhook_cors_headers(mut resp: axum::response::Response) -> axum::response::Response {
             use axum::http::HeaderValue;
             let h = resp.headers_mut();
-            if let Ok(v) = HeaderValue::from_static("*").try_into() { h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, v); }
-            if let Ok(v) = HeaderValue::from_str("POST, OPTIONS") { h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_METHODS, v); }
-            if let Ok(v) = HeaderValue::from_str("Content-Type, Authorization, X-Hub-Signature-256, X-GitHub-Event, X-GitHub-Delivery, X-Gitlab-Token, X-Gitlab-Event, Stripe-Signature, X-Webhook-Secret, X-Event-Type, X-Delivery-Id, Idempotency-Key, Linear-Signature, X-PagerDuty-Signature, Sentry-Hook-Signature") { h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS, v); }
-            if let Ok(v) = HeaderValue::from_str("86400") { h.insert(axum::http::header::ACCESS_CONTROL_MAX_AGE, v); }
+            h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+            h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("POST, OPTIONS"));
+            h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type, Authorization, X-Hub-Signature-256, X-GitHub-Event, X-GitHub-Delivery, X-Gitlab-Token, X-Gitlab-Event, Stripe-Signature, X-Webhook-Secret, X-Event-Type, X-Delivery-Id, Idempotency-Key, Linear-Signature, X-PagerDuty-Signature, Sentry-Hook-Signature"));
+            h.insert(axum::http::header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
             resp
         }
 
