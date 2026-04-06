@@ -2431,11 +2431,12 @@ pub async fn prepare_gateway_core(
                 let before_ms = cutoff_ms.saturating_sub(retention_ms);
 
                 // Collect session keys from old runs before pruning.
+                // On failure, skip this cycle entirely to avoid orphaning sessions.
                 let session_keys = match prune_store.list_session_keys_before(before_ms).await {
                     Ok(keys) => keys,
                     Err(e) => {
                         tracing::debug!(error = %e, "cron session pruning: failed to list session keys");
-                        Vec::new()
+                        continue;
                     },
                 };
 
