@@ -1,9 +1,11 @@
 //! Webhook authentication verification.
 
-use axum::http::HeaderMap;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use subtle::ConstantTimeEq;
+use {
+    axum::http::HeaderMap,
+    hmac::{Hmac, Mac},
+    sha2::Sha256,
+    subtle::ConstantTimeEq,
+};
 
 use crate::{Error, Result, types::AuthMode};
 
@@ -80,8 +82,8 @@ fn verify_github_hmac(
     let sig_bytes =
         hex::decode(sig_hex).map_err(|_| Error::auth_failed("invalid signature hex"))?;
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| Error::auth_failed(e.to_string()))?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|e| Error::auth_failed(e.to_string()))?;
     mac.update(body);
     let expected = mac.finalize().into_bytes();
 
@@ -118,10 +120,11 @@ fn verify_stripe_signature(
         match (kv.next(), kv.next()) {
             (Some("t"), Some(ts)) => timestamp = Some(ts),
             (Some("v1"), Some(sig)) => signatures.push(sig.to_string()),
-            _ => {}
+            _ => {},
         }
     }
-    let ts = timestamp.ok_or_else(|| Error::auth_failed("missing timestamp in Stripe signature"))?;
+    let ts =
+        timestamp.ok_or_else(|| Error::auth_failed("missing timestamp in Stripe signature"))?;
     if signatures.is_empty() {
         return Err(Error::auth_failed("missing v1 signature"));
     }
@@ -137,12 +140,15 @@ fn verify_stripe_signature(
 
     // Compute expected signature: HMAC-SHA256(secret, "timestamp.body")
     let signed_payload = format!("{ts}.{}", std::str::from_utf8(body).unwrap_or(""));
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| Error::auth_failed(e.to_string()))?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|e| Error::auth_failed(e.to_string()))?;
     mac.update(signed_payload.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
 
-    if signatures.iter().any(|s| s.as_bytes().ct_eq(expected.as_bytes()).into()) {
+    if signatures
+        .iter()
+        .any(|s| s.as_bytes().ct_eq(expected.as_bytes()).into())
+    {
         Ok(())
     } else {
         Err(Error::auth_failed("Stripe signature mismatch"))
@@ -154,7 +160,14 @@ fn verify_linear_signature(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<()> {
-    verify_hmac_header(config, headers, body, "linear-signature", "secret", "sha256=")
+    verify_hmac_header(
+        config,
+        headers,
+        body,
+        "linear-signature",
+        "secret",
+        "sha256=",
+    )
 }
 
 fn verify_pagerduty_signature(
@@ -166,8 +179,8 @@ fn verify_pagerduty_signature(
     let secret = get_config_str(config, "secret")?;
     let sig_header = get_header_str(headers, "x-pagerduty-signature")?;
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| Error::auth_failed(e.to_string()))?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|e| Error::auth_failed(e.to_string()))?;
     mac.update(body);
     let expected = hex::encode(mac.finalize().into_bytes());
 
@@ -193,14 +206,7 @@ fn verify_sentry_signature(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<()> {
-    verify_hmac_header(
-        config,
-        headers,
-        body,
-        "sentry-hook-signature",
-        "secret",
-        "",
-    )
+    verify_hmac_header(config, headers, body, "sentry-hook-signature", "secret", "")
 }
 
 /// Generic HMAC-SHA256 header verifier.
@@ -224,8 +230,8 @@ fn verify_hmac_header(
     let sig_bytes =
         hex::decode(sig_hex).map_err(|_| Error::auth_failed("invalid signature hex"))?;
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| Error::auth_failed(e.to_string()))?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|e| Error::auth_failed(e.to_string()))?;
     mac.update(body);
     let expected = mac.finalize().into_bytes();
 
@@ -289,8 +295,19 @@ mod tests {
     #[test]
     fn test_github_hmac_bad_sig() {
         let config = serde_json::json!({ "secret": "mysecret" });
-        let headers = make_headers(&[("x-hub-signature-256", "sha256=0000000000000000000000000000000000000000000000000000000000000000")]);
-        assert!(verify(&AuthMode::GithubHmacSha256, Some(&config), &headers, b"body").is_err());
+        let headers = make_headers(&[(
+            "x-hub-signature-256",
+            "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+        )]);
+        assert!(
+            verify(
+                &AuthMode::GithubHmacSha256,
+                Some(&config),
+                &headers,
+                b"body"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -317,10 +334,7 @@ mod tests {
         let sig = hex::encode(mac.finalize().into_bytes());
 
         let config = serde_json::json!({ "secret": secret });
-        let headers = make_headers(&[(
-            "stripe-signature",
-            &format!("t=invalid,v1={sig}"),
-        )]);
+        let headers = make_headers(&[("stripe-signature", &format!("t=invalid,v1={sig}"))]);
         let result = verify(
             &AuthMode::StripeWebhookSignature,
             Some(&config),
@@ -346,10 +360,7 @@ mod tests {
         let sig = hex::encode(mac.finalize().into_bytes());
 
         let config = serde_json::json!({ "secret": secret });
-        let headers = make_headers(&[(
-            "stripe-signature",
-            &format!("t={old_ts},v1={sig}"),
-        )]);
+        let headers = make_headers(&[("stripe-signature", &format!("t={old_ts},v1={sig}"))]);
         let result = verify(
             &AuthMode::StripeWebhookSignature,
             Some(&config),
@@ -369,7 +380,15 @@ mod tests {
 
         let config = serde_json::json!({ "secret": secret });
         let headers = make_headers(&[("x-pagerduty-signature", &format!("v1={sig}"))]);
-        assert!(verify(&AuthMode::PagerdutyV2Signature, Some(&config), &headers, body).is_ok());
+        assert!(
+            verify(
+                &AuthMode::PagerdutyV2Signature,
+                Some(&config),
+                &headers,
+                body
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -382,10 +401,18 @@ mod tests {
 
         // Simulate key rotation: old sig first, new sig second.
         let config = serde_json::json!({ "secret": secret });
-        let header_val = format!("v1=0000000000000000000000000000000000000000000000000000000000000000,v1={good_sig}");
+        let header_val = format!(
+            "v1=0000000000000000000000000000000000000000000000000000000000000000,v1={good_sig}"
+        );
         let headers = make_headers(&[("x-pagerduty-signature", &header_val)]);
         assert!(
-            verify(&AuthMode::PagerdutyV2Signature, Some(&config), &headers, body).is_ok(),
+            verify(
+                &AuthMode::PagerdutyV2Signature,
+                Some(&config),
+                &headers,
+                body
+            )
+            .is_ok(),
             "should accept when any v1 entry matches"
         );
     }
@@ -393,7 +420,18 @@ mod tests {
     #[test]
     fn test_pagerduty_bad_signature() {
         let config = serde_json::json!({ "secret": "real_secret" });
-        let headers = make_headers(&[("x-pagerduty-signature", "v1=0000000000000000000000000000000000000000000000000000000000000000")]);
-        assert!(verify(&AuthMode::PagerdutyV2Signature, Some(&config), &headers, b"body").is_err());
+        let headers = make_headers(&[(
+            "x-pagerduty-signature",
+            "v1=0000000000000000000000000000000000000000000000000000000000000000",
+        )]);
+        assert!(
+            verify(
+                &AuthMode::PagerdutyV2Signature,
+                Some(&config),
+                &headers,
+                b"body"
+            )
+            .is_err()
+        );
     }
 }

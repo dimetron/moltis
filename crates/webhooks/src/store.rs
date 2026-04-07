@@ -1,8 +1,10 @@
 //! Persistence for webhooks, deliveries, and response actions.
 
-use async_trait::async_trait;
-use sqlx::{Row, SqlitePool};
-use time::OffsetDateTime;
+use {
+    async_trait::async_trait,
+    sqlx::{Row, SqlitePool},
+    time::OffsetDateTime,
+};
 
 use crate::{
     Error, Result,
@@ -106,12 +108,11 @@ fn now_iso() -> String {
 
 fn row_to_webhook(row: &sqlx::sqlite::SqliteRow) -> Result<Webhook> {
     let auth_mode_str: String = row.get("auth_mode");
-    let auth_mode: AuthMode = serde_json::from_value(serde_json::Value::String(auth_mode_str))
-        .unwrap_or_default();
+    let auth_mode: AuthMode =
+        serde_json::from_value(serde_json::Value::String(auth_mode_str)).unwrap_or_default();
     let session_mode_str: String = row.get("session_mode");
     let session_mode: SessionMode =
-        serde_json::from_value(serde_json::Value::String(session_mode_str))
-            .unwrap_or_default();
+        serde_json::from_value(serde_json::Value::String(session_mode_str)).unwrap_or_default();
     let tool_policy: Option<ToolPolicy> = row
         .get::<Option<String>, _>("tool_policy_json")
         .and_then(|s| serde_json::from_str(&s).ok());
@@ -159,8 +160,8 @@ fn row_to_webhook(row: &sqlx::sqlite::SqliteRow) -> Result<Webhook> {
 
 fn row_to_delivery(row: &sqlx::sqlite::SqliteRow) -> Result<WebhookDelivery> {
     let status_str: String = row.get("status");
-    let status: DeliveryStatus =
-        serde_json::from_value(serde_json::Value::String(status_str)).unwrap_or(DeliveryStatus::Received);
+    let status: DeliveryStatus = serde_json::from_value(serde_json::Value::String(status_str))
+        .unwrap_or(DeliveryStatus::Received);
 
     Ok(WebhookDelivery {
         id: row.get("id"),
@@ -224,10 +225,22 @@ impl WebhookStore for SqliteWebhookStore {
             .as_str()
             .unwrap_or("per_delivery")
             .to_string();
-        let tool_policy_json = create.tool_policy.as_ref().map(|p| serde_json::to_string(p)).transpose()?;
+        let tool_policy_json = create
+            .tool_policy
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let event_filter_json = serde_json::to_string(&create.event_filter)?;
-        let auth_config_json = create.auth_config.as_ref().map(|c| serde_json::to_string(c)).transpose()?;
-        let source_config_json = create.source_config.as_ref().map(|c| serde_json::to_string(c)).transpose()?;
+        let auth_config_json = create
+            .auth_config
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let source_config_json = create
+            .source_config
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let allowed_cidrs_json = serde_json::to_string(&create.allowed_cidrs)?;
 
         let result = sqlx::query(
@@ -323,10 +336,22 @@ impl WebhookStore for SqliteWebhookStore {
             .as_str()
             .unwrap_or("per_delivery")
             .to_string();
-        let tool_policy_json = webhook.tool_policy.as_ref().map(|p| serde_json::to_string(p)).transpose()?;
+        let tool_policy_json = webhook
+            .tool_policy
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let event_filter_json = serde_json::to_string(&webhook.event_filter)?;
-        let auth_config_json = webhook.auth_config.as_ref().map(|c| serde_json::to_string(c)).transpose()?;
-        let source_config_json = webhook.source_config.as_ref().map(|c| serde_json::to_string(c)).transpose()?;
+        let auth_config_json = webhook
+            .auth_config
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let source_config_json = webhook
+            .source_config
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let allowed_cidrs_json = serde_json::to_string(&webhook.allowed_cidrs)?;
 
         sqlx::query(
@@ -553,11 +578,10 @@ impl WebhookStore for SqliteWebhookStore {
     }
 
     async fn prune_deliveries_before(&self, before: &str) -> Result<u64> {
-        let result =
-            sqlx::query("DELETE FROM webhook_deliveries WHERE received_at < ?")
-                .bind(before)
-                .execute(&self.pool)
-                .await?;
+        let result = sqlx::query("DELETE FROM webhook_deliveries WHERE received_at < ?")
+            .bind(before)
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected())
     }
 }
@@ -565,8 +589,7 @@ impl WebhookStore for SqliteWebhookStore {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::*;
+    use {super::*, crate::types::*};
 
     async fn make_store() -> SqliteWebhookStore {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -618,14 +641,11 @@ mod tests {
         let store = make_store().await;
         let wh = store.create_webhook(make_create("hook1")).await.unwrap();
         let updated = store
-            .update_webhook(
-                wh.id,
-                WebhookPatch {
-                    name: Some("renamed".into()),
-                    enabled: Some(false),
-                    ..Default::default()
-                },
-            )
+            .update_webhook(wh.id, WebhookPatch {
+                name: Some("renamed".into()),
+                enabled: Some(false),
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(updated.name, "renamed");
@@ -700,17 +720,13 @@ mod tests {
             .unwrap();
 
         store
-            .update_delivery_status(
-                delivery_id,
-                DeliveryStatus::Completed,
-                DeliveryUpdate {
-                    session_key: Some("webhook:test:1".into()),
-                    duration_ms: Some(1500),
-                    input_tokens: Some(100),
-                    output_tokens: Some(200),
-                    ..Default::default()
-                },
-            )
+            .update_delivery_status(delivery_id, DeliveryStatus::Completed, DeliveryUpdate {
+                session_key: Some("webhook:test:1".into()),
+                duration_ms: Some(1500),
+                input_tokens: Some(100),
+                output_tokens: Some(200),
+                ..Default::default()
+            })
             .await
             .unwrap();
 

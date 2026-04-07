@@ -3,7 +3,7 @@
 //! Deduplication is handled by the store's `find_by_delivery_key` method.
 //! This module provides the dedup check used by the ingress handler.
 
-use crate::{store::WebhookStore, Result};
+use crate::{Result, store::WebhookStore};
 
 /// Check if a delivery with this key already exists for the given webhook.
 /// Returns `Some(delivery_id)` if duplicate, `None` if new.

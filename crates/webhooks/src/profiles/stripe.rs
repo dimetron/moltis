@@ -23,15 +23,51 @@ impl SourceProfile for StripeProfile {
 
     fn event_catalog(&self) -> Vec<EventCatalogEntry> {
         vec![
-            EventCatalogEntry { event_type: "checkout.session.completed".into(), description: "Successful checkout".into(), common_use_case: Some("Fulfill order".into()) },
-            EventCatalogEntry { event_type: "payment_intent.succeeded".into(), description: "Payment captured".into(), common_use_case: Some("Update order status".into()) },
-            EventCatalogEntry { event_type: "payment_intent.payment_failed".into(), description: "Payment failed".into(), common_use_case: Some("Notify customer".into()) },
-            EventCatalogEntry { event_type: "invoice.paid".into(), description: "Invoice paid".into(), common_use_case: Some("Activate subscription".into()) },
-            EventCatalogEntry { event_type: "invoice.payment_failed".into(), description: "Invoice payment failed".into(), common_use_case: Some("Dunning".into()) },
-            EventCatalogEntry { event_type: "customer.subscription.created".into(), description: "New subscription".into(), common_use_case: Some("Provision access".into()) },
-            EventCatalogEntry { event_type: "customer.subscription.updated".into(), description: "Subscription changed".into(), common_use_case: Some("Adjust access".into()) },
-            EventCatalogEntry { event_type: "customer.subscription.deleted".into(), description: "Subscription canceled".into(), common_use_case: Some("Revoke access".into()) },
-            EventCatalogEntry { event_type: "charge.dispute.created".into(), description: "Chargeback opened".into(), common_use_case: Some("Alert, gather evidence".into()) },
+            EventCatalogEntry {
+                event_type: "checkout.session.completed".into(),
+                description: "Successful checkout".into(),
+                common_use_case: Some("Fulfill order".into()),
+            },
+            EventCatalogEntry {
+                event_type: "payment_intent.succeeded".into(),
+                description: "Payment captured".into(),
+                common_use_case: Some("Update order status".into()),
+            },
+            EventCatalogEntry {
+                event_type: "payment_intent.payment_failed".into(),
+                description: "Payment failed".into(),
+                common_use_case: Some("Notify customer".into()),
+            },
+            EventCatalogEntry {
+                event_type: "invoice.paid".into(),
+                description: "Invoice paid".into(),
+                common_use_case: Some("Activate subscription".into()),
+            },
+            EventCatalogEntry {
+                event_type: "invoice.payment_failed".into(),
+                description: "Invoice payment failed".into(),
+                common_use_case: Some("Dunning".into()),
+            },
+            EventCatalogEntry {
+                event_type: "customer.subscription.created".into(),
+                description: "New subscription".into(),
+                common_use_case: Some("Provision access".into()),
+            },
+            EventCatalogEntry {
+                event_type: "customer.subscription.updated".into(),
+                description: "Subscription changed".into(),
+                common_use_case: Some("Adjust access".into()),
+            },
+            EventCatalogEntry {
+                event_type: "customer.subscription.deleted".into(),
+                description: "Subscription canceled".into(),
+                common_use_case: Some("Revoke access".into()),
+            },
+            EventCatalogEntry {
+                event_type: "charge.dispute.created".into(),
+                description: "Chargeback opened".into(),
+                common_use_case: Some("Alert, gather evidence".into()),
+            },
         ]
     }
 
@@ -65,11 +101,7 @@ impl SourceProfile for StripeProfile {
         None
     }
 
-    fn normalize_payload(
-        &self,
-        event_type: &str,
-        body: &serde_json::Value,
-    ) -> NormalizedPayload {
+    fn normalize_payload(&self, event_type: &str, body: &serde_json::Value) -> NormalizedPayload {
         let mut summary = format!("Stripe event: {event_type}\n\n");
 
         if let Some(id) = body.get("id").and_then(|i| i.as_str()) {

@@ -23,18 +23,66 @@ impl SourceProfile for GitHubProfile {
 
     fn event_catalog(&self) -> Vec<EventCatalogEntry> {
         vec![
-            EventCatalogEntry { event_type: "pull_request.opened".into(), description: "New pull request".into(), common_use_case: Some("Code review, labeling".into()) },
-            EventCatalogEntry { event_type: "pull_request.synchronize".into(), description: "PR updated with new commits".into(), common_use_case: Some("Re-review".into()) },
-            EventCatalogEntry { event_type: "pull_request.closed".into(), description: "PR closed or merged".into(), common_use_case: Some("Cleanup, changelog".into()) },
-            EventCatalogEntry { event_type: "push".into(), description: "Commits pushed".into(), common_use_case: Some("CI trigger, deploy check".into()) },
-            EventCatalogEntry { event_type: "issues.opened".into(), description: "New issue".into(), common_use_case: Some("Triage, auto-respond".into()) },
-            EventCatalogEntry { event_type: "issues.labeled".into(), description: "Issue labeled".into(), common_use_case: Some("Route to agent".into()) },
-            EventCatalogEntry { event_type: "issue_comment.created".into(), description: "New comment on issue/PR".into(), common_use_case: Some("Respond to questions".into()) },
-            EventCatalogEntry { event_type: "pull_request_review.submitted".into(), description: "PR review submitted".into(), common_use_case: Some("Respond to review".into()) },
-            EventCatalogEntry { event_type: "release.published".into(), description: "New release".into(), common_use_case: Some("Announce, post-release tasks".into()) },
-            EventCatalogEntry { event_type: "check_suite.completed".into(), description: "CI finished".into(), common_use_case: Some("Report results".into()) },
-            EventCatalogEntry { event_type: "workflow_run.completed".into(), description: "GitHub Actions workflow done".into(), common_use_case: Some("Post-CI analysis".into()) },
-            EventCatalogEntry { event_type: "ping".into(), description: "Webhook configuration test".into(), common_use_case: Some("Verify setup".into()) },
+            EventCatalogEntry {
+                event_type: "pull_request.opened".into(),
+                description: "New pull request".into(),
+                common_use_case: Some("Code review, labeling".into()),
+            },
+            EventCatalogEntry {
+                event_type: "pull_request.synchronize".into(),
+                description: "PR updated with new commits".into(),
+                common_use_case: Some("Re-review".into()),
+            },
+            EventCatalogEntry {
+                event_type: "pull_request.closed".into(),
+                description: "PR closed or merged".into(),
+                common_use_case: Some("Cleanup, changelog".into()),
+            },
+            EventCatalogEntry {
+                event_type: "push".into(),
+                description: "Commits pushed".into(),
+                common_use_case: Some("CI trigger, deploy check".into()),
+            },
+            EventCatalogEntry {
+                event_type: "issues.opened".into(),
+                description: "New issue".into(),
+                common_use_case: Some("Triage, auto-respond".into()),
+            },
+            EventCatalogEntry {
+                event_type: "issues.labeled".into(),
+                description: "Issue labeled".into(),
+                common_use_case: Some("Route to agent".into()),
+            },
+            EventCatalogEntry {
+                event_type: "issue_comment.created".into(),
+                description: "New comment on issue/PR".into(),
+                common_use_case: Some("Respond to questions".into()),
+            },
+            EventCatalogEntry {
+                event_type: "pull_request_review.submitted".into(),
+                description: "PR review submitted".into(),
+                common_use_case: Some("Respond to review".into()),
+            },
+            EventCatalogEntry {
+                event_type: "release.published".into(),
+                description: "New release".into(),
+                common_use_case: Some("Announce, post-release tasks".into()),
+            },
+            EventCatalogEntry {
+                event_type: "check_suite.completed".into(),
+                description: "CI finished".into(),
+                common_use_case: Some("Report results".into()),
+            },
+            EventCatalogEntry {
+                event_type: "workflow_run.completed".into(),
+                description: "GitHub Actions workflow done".into(),
+                common_use_case: Some("Post-CI analysis".into()),
+            },
+            EventCatalogEntry {
+                event_type: "ping".into(),
+                description: "Webhook configuration test".into(),
+                common_use_case: Some("Verify setup".into()),
+            },
         ]
     }
 
@@ -44,10 +92,10 @@ impl SourceProfile for GitHubProfile {
             .and_then(|v| v.to_str().ok())?;
 
         // Combine event + action for finer granularity
-        if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) {
-            if let Some(action) = parsed.get("action").and_then(|a| a.as_str()) {
-                return Some(format!("{event}.{action}"));
-            }
+        if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body)
+            && let Some(action) = parsed.get("action").and_then(|a| a.as_str())
+        {
+            return Some(format!("{event}.{action}"));
         }
         Some(event.to_string())
     }
@@ -86,11 +134,7 @@ impl SourceProfile for GitHubProfile {
         None
     }
 
-    fn normalize_payload(
-        &self,
-        event_type: &str,
-        body: &serde_json::Value,
-    ) -> NormalizedPayload {
+    fn normalize_payload(&self, event_type: &str, body: &serde_json::Value) -> NormalizedPayload {
         let mut summary = format!("GitHub event: {event_type}\n\n");
 
         if let Some(repo) = body
@@ -133,15 +177,15 @@ impl SourceProfile for GitHubProfile {
             if let Some(draft) = pr.get("draft").and_then(|d| d.as_bool()) {
                 summary.push_str(&format!("  Draft: {draft}\n"));
             }
-            if let Some(body_text) = pr.get("body").and_then(|b| b.as_str()) {
-                if !body_text.is_empty() {
-                    let truncated = if body_text.len() > 500 {
-                        format!("{}...", crate::normalize::truncate_str(body_text, 500))
-                    } else {
-                        body_text.to_string()
-                    };
-                    summary.push_str(&format!("\nDescription:\n  {truncated}\n"));
-                }
+            if let Some(body_text) = pr.get("body").and_then(|b| b.as_str())
+                && !body_text.is_empty()
+            {
+                let truncated = if body_text.len() > 500 {
+                    format!("{}...", crate::normalize::truncate_str(body_text, 500))
+                } else {
+                    body_text.to_string()
+                };
+                summary.push_str(&format!("\nDescription:\n  {truncated}\n"));
             }
             if let (Some(add), Some(del)) = (
                 pr.get("additions").and_then(|a| a.as_u64()),

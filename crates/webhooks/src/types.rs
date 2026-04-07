@@ -160,10 +160,11 @@ pub struct WebhookPatch {
 // ── Enums ──────────────────────────────────────────────────────────────
 
 /// Authentication mode for verifying inbound webhook requests.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
     None,
+    #[default]
     StaticHeader,
     Bearer,
     GithubHmacSha256,
@@ -174,25 +175,14 @@ pub enum AuthMode {
     SentryWebhookSignature,
 }
 
-impl Default for AuthMode {
-    fn default() -> Self {
-        Self::StaticHeader
-    }
-}
-
 /// Session creation strategy for deliveries.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
+    #[default]
     PerDelivery,
     PerEntity,
     NamedSession,
-}
-
-impl Default for SessionMode {
-    fn default() -> Self {
-        Self::PerDelivery
-    }
 }
 
 /// Tool allow/deny policy.
@@ -361,6 +351,7 @@ pub fn generate_public_id() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

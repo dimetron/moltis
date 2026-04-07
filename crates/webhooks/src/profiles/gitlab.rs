@@ -23,14 +23,46 @@ impl SourceProfile for GitLabProfile {
 
     fn event_catalog(&self) -> Vec<EventCatalogEntry> {
         vec![
-            EventCatalogEntry { event_type: "merge_request.open".into(), description: "New merge request".into(), common_use_case: Some("Code review".into()) },
-            EventCatalogEntry { event_type: "merge_request.update".into(), description: "MR updated".into(), common_use_case: Some("Re-review".into()) },
-            EventCatalogEntry { event_type: "merge_request.merge".into(), description: "MR merged".into(), common_use_case: Some("Post-merge actions".into()) },
-            EventCatalogEntry { event_type: "push".into(), description: "Commits pushed".into(), common_use_case: Some("CI trigger".into()) },
-            EventCatalogEntry { event_type: "note".into(), description: "New comment".into(), common_use_case: Some("Respond to questions".into()) },
-            EventCatalogEntry { event_type: "issue.open".into(), description: "New issue".into(), common_use_case: Some("Triage".into()) },
-            EventCatalogEntry { event_type: "pipeline".into(), description: "Pipeline status change".into(), common_use_case: Some("Report failures".into()) },
-            EventCatalogEntry { event_type: "release".into(), description: "New release".into(), common_use_case: Some("Changelog, announce".into()) },
+            EventCatalogEntry {
+                event_type: "merge_request.open".into(),
+                description: "New merge request".into(),
+                common_use_case: Some("Code review".into()),
+            },
+            EventCatalogEntry {
+                event_type: "merge_request.update".into(),
+                description: "MR updated".into(),
+                common_use_case: Some("Re-review".into()),
+            },
+            EventCatalogEntry {
+                event_type: "merge_request.merge".into(),
+                description: "MR merged".into(),
+                common_use_case: Some("Post-merge actions".into()),
+            },
+            EventCatalogEntry {
+                event_type: "push".into(),
+                description: "Commits pushed".into(),
+                common_use_case: Some("CI trigger".into()),
+            },
+            EventCatalogEntry {
+                event_type: "note".into(),
+                description: "New comment".into(),
+                common_use_case: Some("Respond to questions".into()),
+            },
+            EventCatalogEntry {
+                event_type: "issue.open".into(),
+                description: "New issue".into(),
+                common_use_case: Some("Triage".into()),
+            },
+            EventCatalogEntry {
+                event_type: "pipeline".into(),
+                description: "Pipeline status change".into(),
+                common_use_case: Some("Report failures".into()),
+            },
+            EventCatalogEntry {
+                event_type: "release".into(),
+                description: "New release".into(),
+                common_use_case: Some("Changelog, announce".into()),
+            },
         ]
     }
 
@@ -52,23 +84,19 @@ impl SourceProfile for GitLabProfile {
         };
 
         // Add action for finer granularity
-        if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) {
-            if let Some(action) = parsed
+        if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body)
+            && let Some(action) = parsed
                 .get("object_attributes")
                 .and_then(|oa| oa.get("action"))
                 .and_then(|a| a.as_str())
-            {
-                return Some(format!("{normalized}.{action}"));
-            }
+        {
+            return Some(format!("{normalized}.{action}"));
         }
         Some(normalized.to_string())
     }
 
     fn parse_delivery_key(&self, headers: &HeaderMap, body: &[u8]) -> Option<String> {
-        if let Some(key) = headers
-            .get("idempotency-key")
-            .and_then(|v| v.to_str().ok())
-        {
+        if let Some(key) = headers.get("idempotency-key").and_then(|v| v.to_str().ok()) {
             return Some(key.to_string());
         }
         // Fall back to body hash
@@ -100,11 +128,7 @@ impl SourceProfile for GitLabProfile {
         None
     }
 
-    fn normalize_payload(
-        &self,
-        event_type: &str,
-        body: &serde_json::Value,
-    ) -> NormalizedPayload {
+    fn normalize_payload(&self, event_type: &str, body: &serde_json::Value) -> NormalizedPayload {
         let mut summary = format!("GitLab event: {event_type}\n\n");
 
         if let Some(project) = body

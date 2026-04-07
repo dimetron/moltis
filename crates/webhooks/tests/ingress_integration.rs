@@ -5,15 +5,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axum::http::HeaderMap;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use sqlx::SqlitePool;
+use {
+    axum::http::HeaderMap,
+    hmac::{Hmac, Mac},
+    sha2::Sha256,
+    sqlx::SqlitePool,
+};
 
 use moltis_webhooks::{
-    auth,
-    dedup,
-    profiles::{ProfileRegistry, SourceProfile},
+    auth, dedup,
+    profiles::ProfileRegistry,
     store::{NewDelivery, SqliteWebhookStore, WebhookStore},
     types::{AuthMode, DeliveryStatus, EventFilter, SessionMode, WebhookCreate},
 };
@@ -184,7 +185,11 @@ async fn test_github_pr_ingress_full_flow() {
     let dup2 = dedup::check_duplicate(&store, wh.id, delivery_key.as_deref())
         .await
         .unwrap();
-    assert_eq!(dup2, Some(did), "second delivery with same key is a duplicate");
+    assert_eq!(
+        dup2,
+        Some(did),
+        "second delivery with same key is a duplicate"
+    );
 
     // 11. Verify body can be retrieved
     let stored_body = store.get_delivery_body(did).await.unwrap();
@@ -249,7 +254,9 @@ async fn test_static_header_auth_flow() {
             system_prompt_suffix: None,
             tool_policy: None,
             auth_mode: AuthMode::StaticHeader,
-            auth_config: Some(serde_json::json!({ "header": "x-webhook-secret", "value": "my-token" })),
+            auth_config: Some(
+                serde_json::json!({ "header": "x-webhook-secret", "value": "my-token" }),
+            ),
             source_profile: "generic".into(),
             source_config: None,
             event_filter: EventFilter::default(),
@@ -272,7 +279,15 @@ async fn test_static_header_auth_flow() {
 
     // Missing header
     let empty_headers = HeaderMap::new();
-    assert!(auth::verify(&wh.auth_mode, wh.auth_config.as_ref(), &empty_headers, b"{}").is_err());
+    assert!(
+        auth::verify(
+            &wh.auth_mode,
+            wh.auth_config.as_ref(),
+            &empty_headers,
+            b"{}"
+        )
+        .is_err()
+    );
 }
 
 // ── Event filter blocks unwanted events ────────────────────────────────
@@ -410,13 +425,10 @@ async fn test_disabled_webhook_lookup() {
 
     // Disable it
     store
-        .update_webhook(
-            wh.id,
-            moltis_webhooks::types::WebhookPatch {
-                enabled: Some(false),
-                ..Default::default()
-            },
-        )
+        .update_webhook(wh.id, moltis_webhooks::types::WebhookPatch {
+            enabled: Some(false),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -469,7 +481,10 @@ fn test_auth_with_null_config_fails_clearly() {
     let result = auth::verify(&AuthMode::StaticHeader, None, &headers, b"");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("missing auth config key"), "error should mention missing config, got: {err}");
+    assert!(
+        err.contains("missing auth config key"),
+        "error should mention missing config, got: {err}"
+    );
 }
 
 // ── UTF-8 safe truncation ─────────────────────────────────────────────
@@ -478,7 +493,10 @@ fn test_auth_with_null_config_fails_clearly() {
 fn test_truncate_str_ascii() {
     let s = "hello world";
     assert_eq!(moltis_webhooks::normalize::truncate_str(s, 5), "hello");
-    assert_eq!(moltis_webhooks::normalize::truncate_str(s, 100), "hello world");
+    assert_eq!(
+        moltis_webhooks::normalize::truncate_str(s, 100),
+        "hello world"
+    );
 }
 
 #[test]
@@ -642,7 +660,10 @@ fn test_generic_profile_no_body_hash_dedup() {
     // Without delivery ID headers, dedup key should be None.
     let headers = make_headers(&[("content-type", "application/json")]);
     let key = profile.parse_delivery_key(&headers, b"{\"same\":\"body\"}");
-    assert!(key.is_none(), "generic profile should not generate dedup key from body hash");
+    assert!(
+        key.is_none(),
+        "generic profile should not generate dedup key from body hash"
+    );
 
     // With an explicit header, dedup key should be present.
     let headers_with_id = make_headers(&[("x-delivery-id", "abc-123")]);
@@ -698,7 +719,10 @@ fn test_webhook_redacted_hides_secrets() {
 
     let redacted = wh.redacted();
     assert_eq!(redacted.auth_config, Some(serde_json::json!("[REDACTED]")));
-    assert_eq!(redacted.source_config, Some(serde_json::json!("[REDACTED]")));
+    assert_eq!(
+        redacted.source_config,
+        Some(serde_json::json!("[REDACTED]"))
+    );
 
     // Serialized JSON must not contain the secret.
     let json = serde_json::to_string(&redacted).unwrap();
@@ -767,7 +791,7 @@ fn test_cidr_match_exact_ip() {
 #[test]
 fn test_cidr_allowlist_logic() {
     // Simulate the allowlist check logic from the ingress handler.
-    let allowed_cidrs = vec!["10.0.0.0/8".to_string(), "192.168.1.0/24".to_string()];
+    let allowed_cidrs = ["10.0.0.0/8".to_string(), "192.168.1.0/24".to_string()];
     let check = |ip_str: &str| -> bool {
         if let Ok(addr) = ip_str.parse::<std::net::IpAddr>() {
             allowed_cidrs.iter().any(|cidr| {
@@ -803,8 +827,7 @@ async fn test_source_profile_not_in_patch() {
         "name": "renamed",
         "sourceProfile": "github",  // should be ignored
     });
-    let patch: moltis_webhooks::types::WebhookPatch =
-        serde_json::from_value(patch_json).unwrap();
+    let patch: moltis_webhooks::types::WebhookPatch = serde_json::from_value(patch_json).unwrap();
     assert_eq!(patch.name, Some("renamed".into()));
     // source_profile is not a field on WebhookPatch, so it's silently ignored.
     // The webhook keeps its original source_profile.
@@ -834,5 +857,8 @@ async fn test_source_profile_not_in_patch() {
 
     let updated = store.update_webhook(wh.id, patch).await.unwrap();
     assert_eq!(updated.name, "renamed");
-    assert_eq!(updated.source_profile, "generic", "source_profile must not change via patch");
+    assert_eq!(
+        updated.source_profile, "generic",
+        "source_profile must not change via patch"
+    );
 }

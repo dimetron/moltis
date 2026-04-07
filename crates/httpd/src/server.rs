@@ -1125,21 +1125,28 @@ pub async fn prepare_gateway(
         fn webhook_cors_headers(mut resp: axum::response::Response) -> axum::response::Response {
             use axum::http::HeaderValue;
             let h = resp.headers_mut();
-            h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
-            h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("POST, OPTIONS"));
+            h.insert(
+                axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+            h.insert(
+                axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+                HeaderValue::from_static("POST, OPTIONS"),
+            );
             h.insert(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type, Authorization, X-Hub-Signature-256, X-GitHub-Event, X-GitHub-Delivery, X-Gitlab-Token, X-Gitlab-Event, Stripe-Signature, X-Webhook-Secret, X-Event-Type, X-Delivery-Id, Idempotency-Key, Linear-Signature, X-PagerDuty-Signature, Sentry-Hook-Signature"));
-            h.insert(axum::http::header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
+            h.insert(
+                axum::http::header::ACCESS_CONTROL_MAX_AGE,
+                HeaderValue::from_static("86400"),
+            );
             resp
         }
 
         // OPTIONS preflight handler.
         app = app.route(
             "/api/webhooks/ingest/{public_id}",
-            axum::routing::options(
-                move |_: axum::extract::Path<String>| async move {
-                    webhook_cors_headers(StatusCode::NO_CONTENT.into_response())
-                },
-            ),
+            axum::routing::options(move |_: axum::extract::Path<String>| async move {
+                webhook_cors_headers(StatusCode::NO_CONTENT.into_response())
+            }),
         );
 
         let state_for_webhook_ingest = Arc::clone(&state);
@@ -1172,169 +1179,190 @@ pub async fn prepare_gateway(
                         };
 
                         let resp = async {
-                        let Some(store) = gw.webhook_store.get() else {
-                            return (
-                                StatusCode::NOT_FOUND,
-                                Json(serde_json::json!({ "error": "webhooks not configured" })),
-                            )
-                                .into_response();
-                        };
-
-                        // Look up webhook by public_id.
-                        let webhook = match store.get_webhook_by_public_id(&public_id).await {
-                            Ok(w) if w.enabled => w,
-                            Ok(_) => {
+                            let Some(store) = gw.webhook_store.get() else {
                                 return (
                                     StatusCode::NOT_FOUND,
-                                    Json(serde_json::json!({ "error": "webhook not found" })),
+                                    Json(serde_json::json!({ "error": "webhooks not configured" })),
                                 )
                                     .into_response();
-                            },
-                            Err(_) => {
-                                return (
-                                    StatusCode::NOT_FOUND,
-                                    Json(serde_json::json!({ "error": "webhook not found" })),
-                                )
-                                    .into_response();
-                            },
-                        };
-
-                        // Check CIDR allowlist (before auth to avoid timing side-channels).
-                        if !webhook.allowed_cidrs.is_empty() {
-                            let allowed = match &remote_ip {
-                                Some(ip) => {
-                                    if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
-                                        webhook.allowed_cidrs.iter().any(|cidr| {
-                                            cidr.parse::<ipnet::IpNet>()
-                                                .map(|net| net.contains(&addr))
-                                                .unwrap_or_else(|_| {
-                                                    // Fall back to exact string match.
-                                                    cidr == ip
-                                                })
-                                        })
-                                    } else {
-                                        // IP couldn't be parsed — no match.
-                                        false
-                                    }
-                                }
-                                None => false, // No IP available — can't match allowlist.
                             };
-                            if !allowed {
-                                return (
-                                    StatusCode::FORBIDDEN,
-                                    Json(serde_json::json!({ "error": "IP not in allowlist" })),
-                                )
-                                    .into_response();
-                            }
-                        }
 
-                        // Check body size limit.
-                        if body.len() > webhook.max_body_bytes {
-                            return (
-                                StatusCode::PAYLOAD_TOO_LARGE,
-                                Json(serde_json::json!({
-                                    "error": "payload too large",
-                                    "maxBytes": webhook.max_body_bytes,
-                                })),
+                            // Look up webhook by public_id.
+                            let mut webhook = match store.get_webhook_by_public_id(&public_id).await
+                            {
+                                Ok(w) if w.enabled => w,
+                                Ok(_) => {
+                                    return (
+                                        StatusCode::NOT_FOUND,
+                                        Json(serde_json::json!({ "error": "webhook not found" })),
+                                    )
+                                        .into_response();
+                                },
+                                Err(_) => {
+                                    return (
+                                        StatusCode::NOT_FOUND,
+                                        Json(serde_json::json!({ "error": "webhook not found" })),
+                                    )
+                                        .into_response();
+                                },
+                            };
+
+                            #[cfg(feature = "vault")]
+                            if let Err(error) = moltis_gateway::webhooks::decrypt_webhook_secrets(
+                                &mut webhook,
+                                gw.vault.as_ref(),
                             )
-                                .into_response();
-                        }
-
-                        // Verify authentication.
-                        if let Err(e) = moltis_webhooks::auth::verify(
-                            &webhook.auth_mode,
-                            webhook.auth_config.as_ref(),
-                            &headers,
-                            &body,
-                        ) {
-                            tracing::warn!(
-                                webhook_id = webhook.id,
-                                public_id = %webhook.public_id,
-                                error = %e,
-                                "webhook auth verification failed"
-                            );
-                            return (
-                                StatusCode::UNAUTHORIZED,
-                                Json(serde_json::json!({ "error": "authentication failed" })),
-                            )
-                                .into_response();
-                        }
-
-                        // Parse event type and delivery key from source profile.
-                        let profile_registry =
-                            moltis_webhooks::profiles::ProfileRegistry::new();
-                        let profile = profile_registry.get(&webhook.source_profile);
-                        let event_type =
-                            profile.and_then(|p| p.parse_event_type(&headers, &body));
-                        let delivery_key =
-                            profile.and_then(|p| p.parse_delivery_key(&headers, &body));
-
-                        // Check event filter.
-                        if let Some(ref et) = event_type {
-                            if !webhook.event_filter.accepts(et) {
+                            .await
+                            {
+                                tracing::warn!(
+                                    public_id = %webhook.public_id,
+                                    error = %error,
+                                    "webhook secrets unavailable for runtime verification"
+                                );
                                 return (
-                                    StatusCode::OK,
+                                    StatusCode::SERVICE_UNAVAILABLE,
                                     Json(serde_json::json!({
-                                        "status": "filtered",
-                                        "eventType": et,
+                                        "error": "webhook secrets unavailable",
                                     })),
                                 )
                                     .into_response();
                             }
-                        }
 
-                        // Check rate limit.
-                        if !gw
-                            .webhook_rate_limiter
-                            .check(webhook.id, webhook.rate_limit_per_minute)
-                        {
-                            return (
-                                StatusCode::TOO_MANY_REQUESTS,
-                                Json(serde_json::json!({ "error": "rate limited" })),
-                            )
-                                .into_response();
-                        }
+                            // Check CIDR allowlist (before auth to avoid timing side-channels).
+                            if !webhook.allowed_cidrs.is_empty() {
+                                let allowed = match &remote_ip {
+                                    Some(ip) => {
+                                        if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+                                            webhook.allowed_cidrs.iter().any(|cidr| {
+                                                cidr.parse::<ipnet::IpNet>()
+                                                    .map(|net| net.contains(&addr))
+                                                    .unwrap_or_else(|_| {
+                                                        // Fall back to exact string match.
+                                                        cidr == ip
+                                                    })
+                                            })
+                                        } else {
+                                            // IP couldn't be parsed — no match.
+                                            false
+                                        }
+                                    },
+                                    None => false, // No IP available — can't match allowlist.
+                                };
+                                if !allowed {
+                                    return (
+                                        StatusCode::FORBIDDEN,
+                                        Json(serde_json::json!({ "error": "IP not in allowlist" })),
+                                    )
+                                        .into_response();
+                                }
+                            }
 
-                        // Dedup check.
-                        if let Some(ref dk) = delivery_key {
-                            match moltis_webhooks::dedup::check_duplicate(
-                                store.as_ref(),
-                                webhook.id,
-                                Some(dk.as_str()),
-                            )
-                            .await
-                            {
-                                Ok(Some(existing_id)) => {
+                            // Check body size limit.
+                            if body.len() > webhook.max_body_bytes {
+                                return (
+                                    StatusCode::PAYLOAD_TOO_LARGE,
+                                    Json(serde_json::json!({
+                                        "error": "payload too large",
+                                        "maxBytes": webhook.max_body_bytes,
+                                    })),
+                                )
+                                    .into_response();
+                            }
+
+                            // Verify authentication.
+                            if let Err(e) = moltis_webhooks::auth::verify(
+                                &webhook.auth_mode,
+                                webhook.auth_config.as_ref(),
+                                &headers,
+                                &body,
+                            ) {
+                                tracing::warn!(
+                                    webhook_id = webhook.id,
+                                    public_id = %webhook.public_id,
+                                    error = %e,
+                                    "webhook auth verification failed"
+                                );
+                                return (
+                                    StatusCode::UNAUTHORIZED,
+                                    Json(serde_json::json!({ "error": "authentication failed" })),
+                                )
+                                    .into_response();
+                            }
+
+                            // Parse event type and delivery key from source profile.
+                            let profile_registry =
+                                moltis_webhooks::profiles::ProfileRegistry::new();
+                            let profile = profile_registry.get(&webhook.source_profile);
+                            let event_type =
+                                profile.and_then(|p| p.parse_event_type(&headers, &body));
+                            let delivery_key =
+                                profile.and_then(|p| p.parse_delivery_key(&headers, &body));
+
+                            // Check event filter.
+                            if let Some(ref et) = event_type {
+                                if !webhook.event_filter.accepts(et) {
                                     return (
                                         StatusCode::OK,
                                         Json(serde_json::json!({
-                                            "status": "deduplicated",
-                                            "existingDeliveryId": existing_id,
+                                            "status": "filtered",
+                                            "eventType": et,
                                         })),
                                     )
                                         .into_response();
-                                },
-                                Ok(None) => { /* new delivery, continue */ },
-                                Err(e) => {
-                                    tracing::error!(
-                                        webhook_id = webhook.id,
-                                        error = %e,
-                                        "dedup check failed"
-                                    );
-                                    // Continue despite dedup error — better to
-                                    // accept a potential duplicate than reject.
-                                },
+                                }
                             }
-                        }
 
-                        // Build timestamp.
-                        let received_at = time::OffsetDateTime::now_utc()
-                            .format(&time::format_description::well_known::Rfc3339)
-                            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
+                            // Check rate limit.
+                            if !gw
+                                .webhook_rate_limiter
+                                .check(webhook.id, webhook.rate_limit_per_minute)
+                            {
+                                return (
+                                    StatusCode::TOO_MANY_REQUESTS,
+                                    Json(serde_json::json!({ "error": "rate limited" })),
+                                )
+                                    .into_response();
+                            }
 
-                        // Extract entity key.
-                        let entity_key =
-                            if let (Some(p), Some(et)) = (profile, &event_type) {
+                            // Dedup check.
+                            if let Some(ref dk) = delivery_key {
+                                match moltis_webhooks::dedup::check_duplicate(
+                                    store.as_ref(),
+                                    webhook.id,
+                                    Some(dk.as_str()),
+                                )
+                                .await
+                                {
+                                    Ok(Some(existing_id)) => {
+                                        return (
+                                            StatusCode::OK,
+                                            Json(serde_json::json!({
+                                                "status": "deduplicated",
+                                                "existingDeliveryId": existing_id,
+                                            })),
+                                        )
+                                            .into_response();
+                                    },
+                                    Ok(None) => { /* new delivery, continue */ },
+                                    Err(e) => {
+                                        tracing::error!(
+                                            webhook_id = webhook.id,
+                                            error = %e,
+                                            "dedup check failed"
+                                        );
+                                        // Continue despite dedup error — better to
+                                        // accept a potential duplicate than reject.
+                                    },
+                                }
+                            }
+
+                            // Build timestamp.
+                            let received_at = time::OffsetDateTime::now_utc()
+                                .format(&time::format_description::well_known::Rfc3339)
+                                .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
+
+                            // Extract entity key.
+                            let entity_key = if let (Some(p), Some(et)) = (profile, &event_type) {
                                 let body_val: serde_json::Value =
                                     serde_json::from_slice(&body).unwrap_or_default();
                                 p.entity_key(et, &body_val)
@@ -1342,85 +1370,87 @@ pub async fn prepare_gateway(
                                 None
                             };
 
-                        // Extract safe headers for audit logging.
-                        let safe_headers =
-                            moltis_webhooks::normalize::extract_safe_headers(&headers);
-                        let headers_json = serde_json::to_string(&safe_headers).ok();
+                            // Extract safe headers for audit logging.
+                            let safe_headers =
+                                moltis_webhooks::normalize::extract_safe_headers(&headers);
+                            let headers_json = serde_json::to_string(&safe_headers).ok();
 
-                        let content_type = headers
-                            .get("content-type")
-                            .and_then(|v| v.to_str().ok())
-                            .map(String::from);
+                            let content_type = headers
+                                .get("content-type")
+                                .and_then(|v| v.to_str().ok())
+                                .map(String::from);
 
-                        // Persist delivery.
-                        let delivery = moltis_webhooks::store::NewDelivery {
-                            webhook_id: webhook.id,
-                            received_at: received_at.clone(),
-                            status: moltis_webhooks::types::DeliveryStatus::Queued,
-                            event_type: event_type.clone(),
-                            entity_key,
-                            delivery_key,
-                            http_method: Some("POST".into()),
-                            content_type,
-                            remote_ip: remote_ip.clone(),
-                            headers_json,
-                            body_size: body.len(),
-                            body_blob: Some(body.to_vec()),
-                            rejection_reason: None,
-                        };
+                            // Persist delivery.
+                            let delivery = moltis_webhooks::store::NewDelivery {
+                                webhook_id: webhook.id,
+                                received_at: received_at.clone(),
+                                status: moltis_webhooks::types::DeliveryStatus::Queued,
+                                event_type: event_type.clone(),
+                                entity_key,
+                                delivery_key,
+                                http_method: Some("POST".into()),
+                                content_type,
+                                remote_ip: remote_ip.clone(),
+                                headers_json,
+                                body_size: body.len(),
+                                body_blob: Some(body.to_vec()),
+                                rejection_reason: None,
+                            };
 
-                        let delivery_id = match store.insert_delivery(&delivery).await {
-                            Ok(id) => id,
-                            Err(e) => {
-                                tracing::error!(
+                            let delivery_id = match store.insert_delivery(&delivery).await {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    tracing::error!(
+                                        webhook_id = webhook.id,
+                                        error = %e,
+                                        "failed to persist webhook delivery"
+                                    );
+                                    return (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(serde_json::json!({
+                                            "error": "failed to persist delivery"
+                                        })),
+                                    )
+                                        .into_response();
+                                },
+                            };
+
+                            // Update denormalized delivery count.
+                            if let Err(e) = store
+                                .increment_delivery_count(webhook.id, &received_at)
+                                .await
+                            {
+                                tracing::warn!(
                                     webhook_id = webhook.id,
                                     error = %e,
-                                    "failed to persist webhook delivery"
-                                );
-                                return (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    Json(serde_json::json!({
-                                        "error": "failed to persist delivery"
-                                    })),
-                                )
-                                    .into_response();
-                            },
-                        };
-
-                        // Update denormalized delivery count.
-                        if let Err(e) =
-                            store.increment_delivery_count(webhook.id, &received_at).await
-                        {
-                            tracing::warn!(
-                                webhook_id = webhook.id,
-                                error = %e,
-                                "failed to increment delivery count"
-                            );
-                        }
-
-                        // Queue for async processing.
-                        if let Some(tx) = gw.webhook_worker_tx.get() {
-                            if let Err(e) = tx.send(delivery_id).await {
-                                tracing::error!(
-                                    delivery_id,
-                                    error = %e,
-                                    "failed to queue webhook delivery for processing"
+                                    "failed to increment delivery count"
                                 );
                             }
-                        }
 
-                        (
-                            StatusCode::ACCEPTED,
-                            Json(serde_json::json!({
-                                "deliveryId": delivery_id,
-                                "status": "queued",
-                                "webhookId": webhook.public_id,
-                                "eventType": event_type,
-                                "receivedAt": received_at,
-                            })),
-                        )
-                            .into_response()
-                        }.await;
+                            // Queue for async processing.
+                            if let Some(tx) = gw.webhook_worker_tx.get() {
+                                if let Err(e) = tx.send(delivery_id).await {
+                                    tracing::error!(
+                                        delivery_id,
+                                        error = %e,
+                                        "failed to queue webhook delivery for processing"
+                                    );
+                                }
+                            }
+
+                            (
+                                StatusCode::ACCEPTED,
+                                Json(serde_json::json!({
+                                    "deliveryId": delivery_id,
+                                    "status": "queued",
+                                    "webhookId": webhook.public_id,
+                                    "eventType": event_type,
+                                    "receivedAt": received_at,
+                                })),
+                            )
+                                .into_response()
+                        }
+                        .await;
                         webhook_cors_headers(resp)
                     }
                 },

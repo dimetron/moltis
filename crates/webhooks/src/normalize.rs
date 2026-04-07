@@ -79,10 +79,9 @@ pub fn extract_safe_headers(headers: &axum::http::HeaderMap) -> serde_json::Valu
         if safe_prefixes
             .iter()
             .any(|prefix| name_lower.starts_with(prefix) || name_lower == *prefix)
+            && let Ok(v) = value.to_str()
         {
-            if let Ok(v) = value.to_str() {
-                map.insert(name_lower, serde_json::Value::String(v.into()));
-            }
+            map.insert(name_lower, serde_json::Value::String(v.into()));
         }
     }
     serde_json::Value::Object(map)

@@ -1,8 +1,9 @@
 //! Per-webhook and global rate limiting.
 
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Mutex,
+};
 
 /// Combined state for per-webhook and global sliding windows.
 struct RateLimitState {

@@ -34,11 +34,7 @@ pub trait SourceProfile: Send + Sync {
     fn entity_key(&self, event_type: &str, body: &serde_json::Value) -> Option<String>;
 
     /// Produce a structured summary of the payload for the agent prompt.
-    fn normalize_payload(
-        &self,
-        event_type: &str,
-        body: &serde_json::Value,
-    ) -> NormalizedPayload;
+    fn normalize_payload(&self, event_type: &str, body: &serde_json::Value) -> NormalizedPayload;
 
     /// Whether this profile provides response tools.
     fn has_response_tools(&self) -> bool {

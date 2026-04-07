@@ -225,7 +225,7 @@ payload:
 Sessions are labeled for easy identification in the sidebar:
 
 - **per_delivery**: `webhook:{public_id}:{delivery_id}`
-- **per_entity**: `webhook:{entity_key}`
+- **per_entity**: `webhook:{public_id}:{entity_key}`
 - **named_session**: configured key or `webhook:{public_id}`
 
 ## Agent Execution
@@ -332,13 +332,13 @@ deduplicated events do not count against rate limits.
 - **Request body size is limited** (default: 1 MB, configurable per webhook).
 - **Auth headers are never logged.** Only safe headers (event type, delivery
   ID, content type) are persisted.
-- **Source API credentials** (for response actions) are stored encrypted at
-  rest.
+- **Webhook secrets and source API credentials** are encrypted at rest when
+  Vault is enabled.
 
 ```admonish warning title="Secret Management"
-Webhook secrets and API tokens are stored in the SQLite database. Use Moltis
-[Vault](vault.md) for encryption at rest. Rotate secrets periodically —
-the edit view provides a secret rotation flow.
+Without Vault, webhook secrets and API tokens remain plaintext in the SQLite
+database. Enable Moltis [Vault](vault.md) if these secrets are going to live on
+disk. Rotate secrets periodically.
 ```
 
 ## Delivery Inspector

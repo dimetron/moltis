@@ -2129,9 +2129,18 @@ pub async fn prepare_gateway_core(
     services = services.with_cron(live_cron);
 
     // Webhooks
-    let webhook_store: Arc<dyn moltis_webhooks::store::WebhookStore> =
-        Arc::new(moltis_webhooks::store::SqliteWebhookStore::with_pool(db_pool.clone()));
-    let live_webhooks = Arc::new(crate::webhooks::LiveWebhooksService::new(Arc::clone(&webhook_store)));
+    let webhook_store_inner: Arc<dyn moltis_webhooks::store::WebhookStore> = Arc::new(
+        moltis_webhooks::store::SqliteWebhookStore::with_pool(db_pool.clone()),
+    );
+    #[cfg(feature = "vault")]
+    let webhook_store: Arc<dyn moltis_webhooks::store::WebhookStore> = Arc::new(
+        crate::webhooks::VaultWebhookStore::new(Arc::clone(&webhook_store_inner), vault.clone()),
+    );
+    #[cfg(not(feature = "vault"))]
+    let webhook_store = webhook_store_inner;
+    let live_webhooks = Arc::new(crate::webhooks::LiveWebhooksService::new(Arc::clone(
+        &webhook_store,
+    )));
     services = services.with_webhooks(live_webhooks);
 
     // Build sandbox router from config (shared across sessions).
@@ -3289,10 +3298,20 @@ pub async fn prepare_gateway_core(
                     if let Some(ref agent_id) = req.agent_id {
                         params["agent_id"] = serde_json::Value::String(agent_id.clone());
                     }
-                    let result = chat.send_sync(params).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                    if let Some(ref tool_policy) = req.tool_policy {
+                        params["_tool_policy"] = serde_json::to_value(tool_policy)
+                            .map_err(|error| anyhow::anyhow!(error))?;
+                    }
+                    let result = chat
+                        .send_sync(params)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                     let input_tokens = result.get("inputTokens").and_then(|v| v.as_i64());
                     let output_tokens = result.get("outputTokens").and_then(|v| v.as_i64());
-                    let output = result.get("text").and_then(|v| v.as_str()).map(String::from);
+                    let output = result
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                     Ok(moltis_webhooks::worker::ProcessResult {
                         output,
                         input_tokens,

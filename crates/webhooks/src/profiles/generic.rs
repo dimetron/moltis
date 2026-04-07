@@ -56,11 +56,7 @@ impl SourceProfile for GenericProfile {
         None
     }
 
-    fn normalize_payload(
-        &self,
-        event_type: &str,
-        body: &serde_json::Value,
-    ) -> NormalizedPayload {
+    fn normalize_payload(&self, event_type: &str, body: &serde_json::Value) -> NormalizedPayload {
         let pretty = serde_json::to_string_pretty(body).unwrap_or_default();
         let truncated = if pretty.len() > 8192 {
             format!(
