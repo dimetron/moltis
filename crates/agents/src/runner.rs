@@ -249,7 +249,7 @@ fn enforce_tool_result_context_budget(
 const CONTEXT_WINDOW_PATTERNS: &[&str] = &[
     "context_length_exceeded",
     "context_window_exceeded",
-    "model_context_window_exceeded",
+    "context_window_exceeded",
     "max_tokens",
     "too many tokens",
     "request too large",
