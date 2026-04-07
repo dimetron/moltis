@@ -2826,7 +2826,8 @@ impl ProviderRegistry {
                     base_url.clone(),
                     name.clone(),
                 )
-                .with_stream_transport(entry.stream_transport);
+                .with_stream_transport(entry.stream_transport)
+                .with_cache_retention(entry.cache_retention);
                 if !matches!(entry.wire_api, moltis_config::WireApi::ChatCompletions) {
                     oai = oai.with_wire_api(entry.wire_api);
                 }

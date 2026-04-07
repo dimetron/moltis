@@ -1273,6 +1273,8 @@ impl OpenAiProvider {
 
             let mut input_tokens: u32 = 0;
             let mut output_tokens: u32 = 0;
+            let mut cache_read_tokens: u32 = 0;
+            let mut cache_write_tokens: u32 = 0;
             let mut current_tool_index: usize = 0;
             let mut tool_calls: HashMap<usize, (String, String)> = HashMap::new();
             let mut completed_tool_calls: HashSet<usize> = HashSet::new();
@@ -1342,6 +1344,8 @@ impl OpenAiProvider {
                             let parsed = parse_openai_compat_usage(usage);
                             input_tokens = parsed.input_tokens;
                             output_tokens = parsed.output_tokens;
+                            cache_read_tokens = parsed.cache_read_tokens;
+                            cache_write_tokens = parsed.cache_write_tokens;
                         }
                         let mut pending: Vec<usize> = tool_calls.keys().copied().collect();
                         pending.sort_unstable();
@@ -1387,7 +1391,8 @@ impl OpenAiProvider {
             yield StreamEvent::Done(Usage {
                 input_tokens,
                 output_tokens,
-                ..Default::default()
+                cache_read_tokens,
+                cache_write_tokens,
             });
         })
     }
@@ -1456,6 +1461,8 @@ impl OpenAiProvider {
         let mut fn_call_args: Vec<String> = Vec::new();
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
+        let mut cache_read_tokens: u32 = 0;
+        let cache_write_tokens: u32 = 0;
 
         let full_body = http_resp.text().await.unwrap_or_default();
         for line in full_body.lines() {
@@ -1503,6 +1510,8 @@ impl OpenAiProvider {
                             u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         output_tokens =
                             u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        cache_read_tokens =
+                            u.get("cached_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                     }
                 },
                 "error" | "response.failed" => {
@@ -1547,7 +1556,8 @@ impl OpenAiProvider {
             usage: Usage {
                 input_tokens,
                 output_tokens,
-                ..Default::default()
+                cache_read_tokens,
+                cache_write_tokens,
             },
         })
     }
@@ -2839,6 +2849,60 @@ mod tests {
         );
         assert!(body.get("messages").is_none(), "should not have 'messages'");
         assert_eq!(body["stream"], true);
+    }
+
+    #[tokio::test]
+    async fn responses_sse_stream_propagates_cached_tokens() {
+        // Responses API nests cached_tokens under input_tokens_details.
+        let sse = "\
+            data: {\"type\":\"response.output_text.delta\",\"delta\":\"cached\"}\n\n\
+            data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":10,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\n";
+        let (base_url, _) = start_responses_mock(sse.to_string()).await;
+        let provider = OpenAiProvider::new(
+            Secret::new("test-key".to_string()),
+            "test-model".to_string(),
+            base_url,
+        )
+        .with_wire_api(WireApi::Responses);
+
+        let mut stream = provider.stream_with_tools(vec![ChatMessage::user("hi")], vec![]);
+        let mut done_usage = None;
+        while let Some(event) = stream.next().await {
+            if let StreamEvent::Done(u) = event {
+                done_usage = Some(u);
+            }
+        }
+        let usage = done_usage.expect("should have received Done event");
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 10);
+        assert_eq!(usage.cache_read_tokens, 80);
+        assert_eq!(usage.cache_write_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn responses_sse_stream_cached_tokens_default_to_zero() {
+        // Provider omits cached_tokens — should default to zero, not panic.
+        let sse = "\
+            data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n\
+            data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n";
+        let (base_url, _) = start_responses_mock(sse.to_string()).await;
+        let provider = OpenAiProvider::new(
+            Secret::new("test-key".to_string()),
+            "test-model".to_string(),
+            base_url,
+        )
+        .with_wire_api(WireApi::Responses);
+
+        let mut stream = provider.stream_with_tools(vec![ChatMessage::user("hi")], vec![]);
+        let mut done_usage = None;
+        while let Some(event) = stream.next().await {
+            if let StreamEvent::Done(u) = event {
+                done_usage = Some(u);
+            }
+        }
+        let usage = done_usage.expect("should have received Done event");
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.cache_write_tokens, 0);
     }
 
     #[tokio::test]
