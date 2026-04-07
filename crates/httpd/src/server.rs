@@ -1192,6 +1192,35 @@ pub async fn prepare_gateway(
                             },
                         };
 
+                        // Check CIDR allowlist (before auth to avoid timing side-channels).
+                        if !webhook.allowed_cidrs.is_empty() {
+                            let allowed = match &remote_ip {
+                                Some(ip) => {
+                                    if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+                                        webhook.allowed_cidrs.iter().any(|cidr| {
+                                            cidr.parse::<ipnet::IpNet>()
+                                                .map(|net| net.contains(&addr))
+                                                .unwrap_or_else(|_| {
+                                                    // Fall back to exact string match.
+                                                    cidr == ip
+                                                })
+                                        })
+                                    } else {
+                                        // IP couldn't be parsed — no match.
+                                        false
+                                    }
+                                }
+                                None => false, // No IP available — can't match allowlist.
+                            };
+                            if !allowed {
+                                return (
+                                    StatusCode::FORBIDDEN,
+                                    Json(serde_json::json!({ "error": "IP not in allowlist" })),
+                                )
+                                    .into_response();
+                            }
+                        }
+
                         // Check body size limit.
                         if body.len() > webhook.max_body_bytes {
                             return (

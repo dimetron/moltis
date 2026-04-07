@@ -22,11 +22,9 @@ pub use error::{Error, Result};
 /// Creates the `webhooks`, `webhook_deliveries`, and `webhook_response_actions`
 /// tables. Call at application startup.
 pub async fn run_migrations(pool: &sqlx::SqlitePool) -> Result<()> {
-    // Enable foreign key enforcement so ON DELETE CASCADE works.
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(pool)
-        .await
-        .map_err(Error::from)?;
+    // Foreign key enforcement (for ON DELETE CASCADE) is enabled via
+    // `.foreign_keys(true)` on the pool's SqliteConnectOptions, which
+    // applies to every connection — not per-query PRAGMA.
     sqlx::migrate!("./migrations")
         .set_ignore_missing(true)
         .run(pool)

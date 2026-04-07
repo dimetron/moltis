@@ -1564,6 +1564,7 @@ pub async fn prepare_gateway_core(
         let mut options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))
             .expect("invalid database path")
             .create_if_missing(true)
+            .foreign_keys(true)
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(std::time::Duration::from_secs(5));
         if !db_exists {
