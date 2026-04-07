@@ -41,8 +41,9 @@ impl RecordingChatService {
 impl ChatService for RecordingChatService {
     async fn send(&self, params: Value) -> ServiceResult {
         self.record("send");
-        assert_eq!(params["message"], "Hello");
-        assert_eq!(params["sessionKey"], "sess1");
+        if params["message"] != "Hello" || params["sessionKey"] != "sess1" {
+            return Err(format!("unexpected send params: {params}").into());
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -56,7 +57,9 @@ impl ChatService for RecordingChatService {
 
     async fn history(&self, params: Value) -> ServiceResult {
         self.record("history");
-        assert_eq!(params["sessionKey"], "sess1");
+        if params["sessionKey"] != "sess1" {
+            return Err(format!("unexpected history params: {params}").into());
+        }
         Ok(json!([{
             "role": "assistant",
             "content": "History",
@@ -89,7 +92,9 @@ impl ChatService for RecordingChatService {
 
     async fn active(&self, params: Value) -> ServiceResult {
         self.record("active");
-        assert_eq!(params["sessionKey"], "sess1");
+        if params["sessionKey"] != "sess1" {
+            return Err(format!("unexpected active params: {params}").into());
+        }
         Ok(json!({ "active": true }))
     }
 }
