@@ -3985,6 +3985,18 @@ impl ChatService for LiveChatService {
             .ok_or_else(|| "missing 'text' parameter".to_string())?
             .to_string();
         let desired_reply_medium = infer_reply_medium(&params, &text);
+        let requested_agent_id = params
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let request_tool_policy = params
+            .get("_tool_policy")
+            .cloned()
+            .map(serde_json::from_value::<ToolPolicy>)
+            .transpose()
+            .map_err(|e| format!("invalid '_tool_policy' parameter: {e}"))?;
 
         let explicit_model = params.get("model").and_then(|v| v.as_str());
         let stream_only = !self.has_tools_sync();
@@ -4030,6 +4042,19 @@ impl ChatService for LiveChatService {
 
         // Ensure this session appears in the sessions list.
         let _ = self.session_metadata.upsert(&session_key, None).await;
+        if let Some(agent_id) = requested_agent_id.as_deref()
+            && let Err(error) = self
+                .session_metadata
+                .set_agent_id(&session_key, Some(agent_id))
+                .await
+        {
+            warn!(
+                session = %session_key,
+                agent_id,
+                error = %error,
+                "send_sync: failed to assign requested agent to session"
+            );
+        }
         self.session_metadata.touch(&session_key, 1).await;
 
         let session_entry = self.session_metadata.get(&session_key).await;
@@ -4055,7 +4080,14 @@ impl ChatService for LiveChatService {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let state = Arc::clone(&self.state);
-        let tool_registry = Arc::clone(&self.tool_registry);
+        let tool_registry = if let Some(policy) = request_tool_policy.as_ref() {
+            let registry_guard = self.tool_registry.read().await;
+            Arc::new(RwLock::new(
+                registry_guard.clone_allowed_by(|name| policy.is_allowed(name)),
+            ))
+        } else {
+            Arc::clone(&self.tool_registry)
+        };
         let hook_registry = self.hook_registry.clone();
         let provider_name = provider.name().to_string();
         let model_id = provider.id().to_string();

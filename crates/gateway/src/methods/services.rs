@@ -1582,6 +1582,138 @@ pub(super) fn register(reg: &mut MethodRegistry) {
         }),
     );
 
+    // Webhooks
+    reg.register(
+        "webhooks.list",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .list()
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.get",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .get(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.create",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .create(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.update",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .update(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.delete",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .delete(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.deliveries",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .deliveries(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.delivery.get",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .delivery_get(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.delivery.payload",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .delivery_payload(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.delivery.actions",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .delivery_actions(ctx.params.clone())
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+    reg.register(
+        "webhooks.profiles",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                ctx.state
+                    .services
+                    .webhooks
+                    .profiles()
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+
     // Heartbeat
     reg.register(
         "heartbeat.status",
