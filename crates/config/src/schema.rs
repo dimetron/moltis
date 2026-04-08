@@ -1555,6 +1555,12 @@ pub struct ToolsConfig {
     /// Maximum number of agent loop iterations before aborting. Default 25.
     #[serde(default = "default_agent_max_iterations")]
     pub agent_max_iterations: usize,
+    /// Maximum auto-continue nudges when the model stops mid-task (0 = disabled). Default 2.
+    #[serde(default = "default_agent_max_auto_continues")]
+    pub agent_max_auto_continues: usize,
+    /// Minimum tool calls in the current run before auto-continue can trigger. Default 3.
+    #[serde(default = "default_agent_auto_continue_min_tool_calls")]
+    pub agent_auto_continue_min_tool_calls: usize,
     /// Maximum bytes for a single tool result before truncation. Default 50KB.
     #[serde(default = "default_max_tool_result_bytes")]
     pub max_tool_result_bytes: usize,
@@ -1573,6 +1579,8 @@ impl Default for ToolsConfig {
             browser: BrowserConfig::default(),
             agent_timeout_secs: default_agent_timeout_secs(),
             agent_max_iterations: default_agent_max_iterations(),
+            agent_max_auto_continues: default_agent_max_auto_continues(),
+            agent_auto_continue_min_tool_calls: default_agent_auto_continue_min_tool_calls(),
             max_tool_result_bytes: default_max_tool_result_bytes(),
             registry_mode: ToolRegistryMode::default(),
         }
@@ -1585,6 +1593,14 @@ fn default_agent_timeout_secs() -> u64 {
 
 fn default_agent_max_iterations() -> usize {
     25
+}
+
+fn default_agent_max_auto_continues() -> usize {
+    2
+}
+
+fn default_agent_auto_continue_min_tool_calls() -> usize {
+    3
 }
 
 fn default_max_tool_result_bytes() -> usize {

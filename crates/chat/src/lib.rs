@@ -6580,6 +6580,20 @@ async fn run_with_tools(
                     "toolCallsMade": tool_calls_made,
                     "seq": seq,
                 }),
+                RunnerEvent::AutoContinue {
+                    iteration,
+                    max_iterations,
+                } => serde_json::json!({
+                    "runId": run_id,
+                    "sessionKey": sk,
+                    "state": "notice",
+                    "title": "Auto-continue",
+                    "message": format!(
+                        "Model paused at iteration {}/{}. Asking it to continue...",
+                        iteration, max_iterations
+                    ),
+                    "seq": seq,
+                }),
                 RunnerEvent::RetryingAfterError { error, delay_ms } => {
                     let error_obj =
                         parse_chat_error(&error, Some(provider_name_for_events.as_str()));
