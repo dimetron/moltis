@@ -2238,6 +2238,14 @@ impl ProviderSetupService for LiveProviderSetupService {
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(ToString::to_string);
+        let saved_config = self.key_store.load_config(provider_name);
+        let saved_base_url = saved_config
+            .as_ref()
+            .and_then(|config| config.base_url.as_deref())
+            .filter(|url| !url.trim().is_empty());
+        let effective_base_url = base_url
+            .filter(|url| !url.trim().is_empty())
+            .or(saved_base_url);
 
         // Custom providers bypass known_providers() validation.
         let is_custom = is_custom_provider(provider_name);
@@ -2268,16 +2276,15 @@ impl ProviderSetupService for LiveProviderSetupService {
         if is_custom && api_key.is_none() {
             return Err("missing 'apiKey' parameter".into());
         }
-        if is_custom && base_url.filter(|s| !s.trim().is_empty()).is_none() {
+        if is_custom && effective_base_url.is_none() {
             return Err("missing 'baseUrl' parameter".into());
         }
 
         let selected_model = preferred_models.first().map(String::as_str);
-        let base_url_value = base_url.filter(|s| !s.trim().is_empty());
         let validation_provider_name = validation_provider_name_for_endpoint(
             provider_name,
             provider_info.as_ref().and_then(|p| p.default_base_url),
-            base_url_value,
+            effective_base_url,
         );
         let _timing =
             ProviderSetupTiming::start("providers.validate_key", Some(&validation_provider_name));
@@ -2295,7 +2302,7 @@ impl ProviderSetupService for LiveProviderSetupService {
         // If no model is supplied, return discovered models for UI selection.
         if provider_name == "ollama" {
             let ollama_api_base = normalize_ollama_api_base_url(
-                base_url_value.or(provider_info.as_ref().and_then(|p| p.default_base_url)),
+                effective_base_url.or(provider_info.as_ref().and_then(|p| p.default_base_url)),
             );
             let discovered_models = match discover_ollama_models(&ollama_api_base).await {
                 Ok(models) => models,
@@ -2379,7 +2386,7 @@ impl ProviderSetupService for LiveProviderSetupService {
         // when no model is specified, instead of probing (which can timeout).
         if is_custom && selected_model.is_none() {
             let api_key_str = api_key.unwrap_or_default();
-            let base = base_url_value.unwrap_or_default();
+            let base = effective_base_url.unwrap_or_default();
             match moltis_providers::openai::fetch_models_from_api(
                 Secret::new(api_key_str.to_string()),
                 base.to_string(),
@@ -2432,9 +2439,9 @@ impl ProviderSetupService for LiveProviderSetupService {
         }
 
         let normalized_base_url = if provider_name == "ollama" {
-            base_url_value.map(|url| normalize_ollama_openai_base_url(Some(url)))
+            effective_base_url.map(|url| normalize_ollama_openai_base_url(Some(url)))
         } else {
-            base_url_value.map(String::from)
+            effective_base_url.map(String::from)
         };
 
         // Build a temporary ProvidersConfig with just this provider.
@@ -4850,6 +4857,64 @@ mod tests {
                 .iter()
                 .any(|m| m.get("id").and_then(|v| v.as_str())
                     == Some("custom-test-server::dall-e-3"))
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_key_custom_provider_uses_saved_base_url_when_request_omits_it() {
+        use axum::{Json, Router, routing::get};
+
+        let app = Router::new().route(
+            "/models",
+            get(|| async {
+                Json(serde_json::json!({
+                    "data": [
+                        {"id": "gpt-4o-mini", "object": "model", "created": 1700000001}
+                    ]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let registry = Arc::new(RwLock::new(ProviderRegistry::from_env_with_config(
+            &ProvidersConfig::default(),
+        )));
+        let svc = LiveProviderSetupService::new(registry, ProvidersConfig::default(), None);
+        svc.key_store
+            .save_config(
+                "custom-test-server",
+                Some("sk-saved".into()),
+                Some(format!("http://{addr}")),
+                None,
+            )
+            .expect("save custom provider config");
+
+        let result = svc
+            .validate_key(serde_json::json!({
+                "provider": "custom-test-server",
+                "apiKey": "sk-test"
+            }))
+            .await
+            .expect("validate_key should return payload");
+        server.abort();
+
+        assert_eq!(result.get("valid").and_then(|v| v.as_bool()), Some(true));
+        let models = result
+            .get("models")
+            .and_then(|v| v.as_array())
+            .expect("models array should be present");
+        assert!(
+            models
+                .iter()
+                .any(|m| m.get("id").and_then(|v| v.as_str())
+                    == Some("custom-test-server::gpt-4o-mini")),
+            "expected discovered model via saved base_url, got: {models:?}"
         );
     }
 
