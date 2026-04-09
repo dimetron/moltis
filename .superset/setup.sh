@@ -19,4 +19,5 @@ elif [[ "${envrc_source}" == "${envrc_target}" ]]; then
   echo "superset setup: already in root checkout, skipping .envrc copy"
 else
   cp "${envrc_source}" ./
+  direnv allow
 fi
