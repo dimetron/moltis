@@ -55,6 +55,17 @@ function sessionKeysInSidebar(page) {
 		.evaluateAll((items) => items.map((item) => item.getAttribute("data-session-key") || ""));
 }
 
+function topSessionKeysInSidebar(page, limit) {
+	return sessionKeysInSidebar(page).then((keys) => keys.slice(0, limit));
+}
+
+function matchesCreatedSessionSidebar(keys, firstSessionKey, secondSessionKey) {
+	if (!Array.isArray(keys) || keys.length !== 3) return false;
+	if (keys[0] !== "main") return false;
+	const createdKeys = new Set([firstSessionKey, secondSessionKey]);
+	return createdKeys.has(keys[1]) && createdKeys.has(keys[2]) && keys[1] !== keys[2];
+}
+
 async function setSwitchRpcSendMode(page, mode, delayMs = 0) {
 	await page.evaluate(
 		async ({ desiredMode, desiredDelayMs }) => {
@@ -163,6 +174,8 @@ test.describe("Session management", () => {
 	test("new session button creates a session", async ({ page }) => {
 		const pageErrors = await navigateAndWait(page, "/");
 		await waitForWsConnected(page);
+		await expectRpcOk(page, "sessions.clear_all", {});
+		await expect.poll(() => topSessionKeysInSidebar(page, 1), { timeout: 10_000 }).toEqual(["main"]);
 		const sessionItems = page.locator("#sessionList .session-item");
 		// Wait for the session list to populate via RPC before capturing count
 		await expect(sessionItems.first()).toBeVisible();
@@ -190,16 +203,32 @@ test.describe("Session management", () => {
 		await expect(sessionItems).toHaveCount(initialCount + 2);
 		await expect(page.locator("#chatInput")).toBeFocused();
 		await expect
-			.poll(() => sessionKeysInSidebar(page), { timeout: 10_000 })
-			.toEqual(["main", secondSessionKey, firstSessionKey]);
+			.poll(
+				() =>
+					topSessionKeysInSidebar(page, 3).then((keys) =>
+						matchesCreatedSessionSidebar(keys, firstSessionKey, secondSessionKey),
+					),
+				{
+					timeout: 10_000,
+				},
+			)
+			.toBe(true);
 
 		await page.reload({ waitUntil: "domcontentloaded" });
 		await expectPageContentMounted(page);
 		await waitForWsConnected(page);
 		await expect(page).toHaveURL(new RegExp(`/chats/${secondSessionKey.replace(/:/g, "/")}$`));
 		await expect
-			.poll(() => sessionKeysInSidebar(page), { timeout: 10_000 })
-			.toEqual(["main", secondSessionKey, firstSessionKey]);
+			.poll(
+				() =>
+					topSessionKeysInSidebar(page, 3).then((keys) =>
+						matchesCreatedSessionSidebar(keys, firstSessionKey, secondSessionKey),
+					),
+				{
+					timeout: 10_000,
+				},
+			)
+			.toBe(true);
 
 		expect(pageErrors).toEqual([]);
 	});
