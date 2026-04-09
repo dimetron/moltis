@@ -3053,6 +3053,21 @@ pub async fn prepare_gateway_core(
                     let data_memory_sub = data_dir.join("memory");
                     let agents_root = data_dir.join("agents");
 
+                    if let Err(error) = std::fs::create_dir_all(&data_memory_sub) {
+                        tracing::warn!(
+                            path = %data_memory_sub.display(),
+                            error = %error,
+                            "memory: failed to create memory directory"
+                        );
+                    }
+                    if let Err(error) = std::fs::create_dir_all(&agents_root) {
+                        tracing::warn!(
+                            path = %agents_root.display(),
+                            error = %error,
+                            "memory: failed to create agents directory"
+                        );
+                    }
+
                     let config = moltis_memory::config::MemoryConfig {
                         db_path: memory_db_path.to_string_lossy().into(),
                         data_dir: Some(data_dir.clone()),
@@ -3070,23 +3085,7 @@ pub async fn prepare_gateway_core(
                     let store = Box::new(moltis_memory::store_sqlite::SqliteMemoryStore::new(
                         memory_pool,
                     ));
-                    // Map file entries to their parent directory so that
-                    // root-level files like MEMORY.md are covered by the
-                    // watcher. Deduplicate via BTreeSet to avoid watching
-                    // the same directory twice.
-                    let watch_dirs: Vec<_> = config
-                        .memory_dirs
-                        .iter()
-                        .map(|p| {
-                            if p.is_dir() {
-                                p.clone()
-                            } else {
-                                p.parent().unwrap_or(p.as_path()).to_path_buf()
-                            }
-                        })
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .into_iter()
-                        .collect();
+                    let memory_dirs_for_watch = config.memory_dirs.clone();
                     let manager = Arc::new(if let Some(embedder) = embedder {
                         moltis_memory::manager::MemoryManager::new(config, store, embedder)
                     } else {
@@ -3125,7 +3124,9 @@ pub async fn prepare_gateway_core(
                         #[cfg(feature = "file-watcher")]
                         {
                             let watcher_manager = Arc::clone(&sync_manager);
-                            match moltis_memory::watcher::MemoryFileWatcher::start(watch_dirs) {
+                            let watch_specs =
+                                moltis_memory::watcher::build_watch_specs(&memory_dirs_for_watch);
+                            match moltis_memory::watcher::MemoryFileWatcher::start(watch_specs) {
                                 Ok((_watcher, mut rx)) => {
                                     info!("memory: file watcher started");
                                     tokio::spawn(async move {
@@ -3977,23 +3978,45 @@ pub async fn prepare_gateway_core(
     // Spawn skill file watcher for hot-reload.
     #[cfg(feature = "file-watcher")]
     {
-        let search_paths = moltis_skills::discover::FsSkillDiscoverer::default_paths();
-        let watch_dirs: Vec<PathBuf> = search_paths.into_iter().map(|(p, _)| p).collect();
-        if let Ok((_watcher, mut rx)) = moltis_skills::watcher::SkillWatcher::start(watch_dirs) {
-            let watcher_state = Arc::clone(&state);
-            tokio::spawn(async move {
-                let _watcher = _watcher; // keep alive
-                while let Some(_event) = rx.recv().await {
-                    broadcast(
-                        &watcher_state,
-                        "skills.changed",
-                        serde_json::json!({}),
-                        BroadcastOpts::default(),
-                    )
-                    .await;
+        let watcher_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let (mut watcher, mut rx) = match moltis_skills::watcher::default_watch_specs()
+                .and_then(moltis_skills::watcher::SkillWatcher::start)
+            {
+                Ok(started) => started,
+                Err(error) => {
+                    tracing::warn!("skills: failed to start file watcher: {error}");
+                    return;
+                },
+            };
+
+            loop {
+                let Some(_event) = rx.recv().await else {
+                    break;
+                };
+                broadcast(
+                    &watcher_state,
+                    "skills.changed",
+                    serde_json::json!({}),
+                    BroadcastOpts::default(),
+                )
+                .await;
+
+                match moltis_skills::watcher::default_watch_specs()
+                    .and_then(moltis_skills::watcher::SkillWatcher::start)
+                {
+                    Ok((new_watcher, new_rx)) => {
+                        watcher = new_watcher;
+                        rx = new_rx;
+                    },
+                    Err(error) => {
+                        tracing::warn!("skills: failed to refresh file watcher: {error}");
+                    },
                 }
-            });
-        }
+            }
+
+            drop(watcher);
+        });
     }
 
     // Spawn MCP health polling + auto-restart background task.
