@@ -264,6 +264,18 @@ impl ExecTool {
         self
     }
 
+    /// Override the default command timeout.
+    pub fn with_default_timeout(mut self, timeout: Duration) -> Self {
+        self.default_timeout = timeout;
+        self
+    }
+
+    /// Override the maximum output bytes per command.
+    pub fn with_max_output_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_output_bytes = max_bytes;
+        self
+    }
+
     /// Route command execution to a remote node instead of local/sandbox.
     pub fn with_node_provider(
         mut self,
@@ -306,6 +318,7 @@ impl AgentTool for ExecTool {
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
+        let timeout_default = self.default_timeout.as_secs();
         let mut properties = serde_json::json!({
             "command": {
                 "type": "string",
@@ -313,7 +326,7 @@ impl AgentTool for ExecTool {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (default 30, max 1800)"
+                "description": format!("Timeout in seconds (default {timeout_default}, max 1800)")
             },
             "working_dir": {
                 "type": "string",
@@ -1642,6 +1655,80 @@ mod tests {
         assert!(
             msg.contains("no nodes are currently connected"),
             "error should explain no nodes are connected, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_with_default_timeout() {
+        let tool = ExecTool::default().with_default_timeout(Duration::from_secs(120));
+        assert_eq!(tool.default_timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_with_max_output_bytes() {
+        let tool = ExecTool::default().with_max_output_bytes(1024 * 1024);
+        assert_eq!(tool.max_output_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_schema_timeout_reflects_configured_default() {
+        let tool = ExecTool::default().with_default_timeout(Duration::from_secs(300));
+        let schema = tool.parameters_schema();
+        let desc = schema["properties"]["timeout"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            desc.contains("default 300"),
+            "schema should reflect configured timeout, got: {desc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_custom_timeout_causes_timeout() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut tool = ExecTool::default().with_default_timeout(Duration::from_millis(200));
+        tool.working_dir = Some(temp_dir.path().to_path_buf());
+
+        // sleep 60 should be killed well before 60s by the 200ms timeout
+        let result = tool
+            .execute(serde_json::json!({ "command": "sleep 60" }))
+            .await;
+        match result {
+            Err(ref e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("timed out") || msg.contains("timeout"),
+                    "expected timeout error, got: {msg}"
+                );
+            },
+            Ok(ref val) => {
+                // Some platforms return an exit code instead of an error
+                let exit_code = val["exit_code"].as_i64().unwrap_or(0);
+                assert_ne!(
+                    exit_code, 0,
+                    "command should not succeed under short timeout"
+                );
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_max_output_bytes_truncates() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut tool = ExecTool::default().with_max_output_bytes(50);
+        tool.working_dir = Some(temp_dir.path().to_path_buf());
+
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "python3 -c \"print('A' * 500)\" 2>/dev/null || printf '%0.sA' $(seq 1 500)"
+            }))
+            .await
+            .unwrap();
+        let stdout = result["stdout"].as_str().unwrap_or("");
+        assert!(
+            stdout.contains("[truncated") || stdout.len() <= 100,
+            "output should be truncated with 50-byte limit, got {} bytes: {stdout}",
+            stdout.len()
         );
     }
 }
