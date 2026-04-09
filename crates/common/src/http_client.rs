@@ -263,24 +263,4 @@ mod tests {
             "default headers should contain exactly one header (User-Agent)"
         );
     }
-
-    #[test]
-    fn fallback_client_carries_user_agent() {
-        // Trigger the fallback path by using a builder config that will
-        // fail (e.g. a nonsense TLS identity path). The retry path
-        // should produce a client whose default headers include the
-        // Moltis User-Agent.
-        let headers = build_default_headers();
-        let fallback_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .expect("stripped-down builder with only default headers should succeed");
-
-        // Verify the client carries the UA by inspecting its default headers
-        // via a request to a local echo server. Since we can't easily inspect
-        // default_headers on a built client, we instead verify the function
-        // that produces the headers is correct (covered by the two tests
-        // above) and that the fallback code path uses it.
-        drop(fallback_client);
-    }
 }
