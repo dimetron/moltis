@@ -19,6 +19,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260409.02] - 2026-04-09
+### Added
+- [msteams] Comprehensive Teams channel implementation
+- [providers] Add Gemini 3.x models to catalog and update capability detection
+- [providers] Add ModelCapabilities struct to ModelInfo and DiscoveredModel
+- [chat] Use ModelCapabilities in API responses instead of provider lookups
+
+
+### Fixed
+- [web] Integrate Tailscale Funnel into Teams channel setup
+- [web] Remove 'Requires public URL' badge from Teams card
+- [web] Simplify Teams onboarding now that Remote Access step exists
+- [msteams] Address PR review feedback
+- [msteams] Use Graph token for reactions and thread context
+- [msteams] Prevent streaming retry storm and URL injection in search
+- [web] Disambiguate OAuth E2E selector for model picker
+- [web] Keep new chats at top of sidebar
+- Auto-allow direnv in superset worktree setup
+- Load BOOT.md per-session via system prompt instead of broken hook (#594)
+- Remove stale boot-md assertion from discover_hooks test
+- Update model count assertion for gemini-3 reasoning variants
+- [installer] Address PR review feedback
+- [browser] Include Podman in container availability check
+- [browser] Update stale comment to include Podman
+- [gateway] Narrow skill and memory watch roots
+- [gateway] Avoid blocking skill watcher refresh
+- [providers] Extract MiniMax system messages to top-level field
+- [providers] Warn on non-string MiniMax system message content
+- [providers] Add PartialEq/Eq to ModelCapabilities, use infer() in tests
+- [providers] Narrow gemma exclusion to gemma-3n- only
+- [agents] Surface workspace prompt truncation
+- [gateway] Address review feedback
+- [gateway] Match workspace prompt normalization
+- [agents] Make workspace file truncation limit configurable (#593)
+- Replace magic constant with ChatConfig::default() fallback
+- Eliminate double chars().count() and add zero-value validation
+- Report truncation when max_chars is zero
+- Remove duplicate workspace_file_max_chars key in schema map
+- [tools] Wire ExecConfig timeout and max_output_bytes to ExecTool
+- [tools] Make timeout schema description reflect configured default
+- [providers] Resolve 404 when selecting Ollama model in web UI
+- [web] Preserve ollama pull hint in humanizeProbeError
+- [providers] Forward auth header in Ollama native probe fallback
+- Align auth middleware tests with gateway state
+
 ## [20260409.01] - 2026-04-09
 ### Added
 - [matrix] Add slash command support
