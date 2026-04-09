@@ -1805,13 +1805,14 @@ impl ModelService for LiveModelService {
                 }
             })
             .map(|m| {
-                let supports_tools = reg.get(&m.id).is_some_and(|p| p.supports_tools());
                 let preferred = Self::priority_rank(&order, m) != usize::MAX;
                 serde_json::json!({
                     "id": m.id,
                     "provider": m.provider,
                     "displayName": m.display_name,
-                    "supportsTools": supports_tools,
+                    "supportsTools": m.capabilities.tools,
+                    "supportsVision": m.capabilities.vision,
+                    "supportsReasoning": m.capabilities.reasoning,
                     "preferred": preferred,
                     "recommended": m.recommended,
                     "createdAt": m.created_at,
@@ -1841,14 +1842,15 @@ impl ModelService for LiveModelService {
             .iter()
             .copied()
             .map(|m| {
-                let supports_tools = reg.get(&m.id).is_some_and(|p| p.supports_tools());
                 let preferred = Self::priority_rank(&order, m) != usize::MAX;
                 let unsupported = disabled.unsupported_info(&m.id);
                 serde_json::json!({
                     "id": m.id,
                     "provider": m.provider,
                     "displayName": m.display_name,
-                    "supportsTools": supports_tools,
+                    "supportsTools": m.capabilities.tools,
+                    "supportsVision": m.capabilities.vision,
+                    "supportsReasoning": m.capabilities.reasoning,
                     "preferred": preferred,
                     "recommended": m.recommended,
                     "createdAt": m.created_at,
