@@ -363,7 +363,7 @@ impl BrowserPool {
             if !container::is_container_available() {
                 return Err(Error::LaunchFailed(
                     "No container runtime available for sandboxed browser. \
-                     Please install Docker or Apple Container."
+                     Please install Docker, Podman, or Apple Container."
                         .to_string(),
                 ));
             }
