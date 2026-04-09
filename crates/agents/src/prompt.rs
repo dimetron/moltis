@@ -774,8 +774,11 @@ fn format_host_runtime_line(host: &PromptHostRuntimeContext) -> Option<String> {
 /// Truncate `text` to at most `max_chars` characters.
 /// Returns `(output, was_truncated)`.
 fn truncate_prompt_text(text: &str, max_chars: usize) -> (String, bool) {
-    if text.is_empty() || max_chars == 0 {
+    if text.is_empty() {
         return (String::new(), false);
+    }
+    if max_chars == 0 {
+        return (String::new(), true);
     }
     let mut iter = text.chars();
     let taken: String = iter.by_ref().take(max_chars).collect();
