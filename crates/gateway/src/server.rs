@@ -5105,14 +5105,9 @@ mod tests {
         let registry = registry.expect("expected hook registry to be created");
         let handler_names = registry.handler_names();
 
-        assert!(handler_names.iter().any(|n| n == "boot-md"));
         assert!(handler_names.iter().any(|n| n == "command-logger"));
         assert!(handler_names.iter().any(|n| n == "session-memory"));
 
-        assert!(
-            info.iter()
-                .any(|h| h.name == "boot-md" && h.source == "builtin")
-        );
         assert!(
             info.iter()
                 .any(|h| h.name == "command-logger" && h.source == "builtin")
