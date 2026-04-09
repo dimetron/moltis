@@ -623,12 +623,12 @@ impl OpenAiProvider {
 
         debug!(model = %self.model, url = %url, "ollama native probe via /api/show");
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&serde_json::json!({ "name": self.model }))
-            .send()
-            .await?;
+        let mut req = self.client.post(&url).json(&serde_json::json!({ "name": self.model }));
+        let key = self.api_key.expose_secret();
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+        let resp = req.send().await?;
 
         if resp.status().is_success() {
             return Ok(());
