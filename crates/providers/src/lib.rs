@@ -3780,8 +3780,28 @@ mod tests {
     fn qwen3_context_window() {
         assert_eq!(context_window_for_model("qwen3.6-plus"), 128_000);
         assert_eq!(context_window_for_model("qwen3.5-plus"), 128_000);
+        assert_eq!(context_window_for_model("qwen3-max-2026-01-23"), 128_000);
         assert_eq!(context_window_for_model("qwen3-coder-next"), 128_000);
         assert_eq!(context_window_for_model("qwen3-coder-plus"), 128_000);
+    }
+
+    #[test]
+    fn alibaba_coding_registers_with_api_key() {
+        let mut config = ProvidersConfig::default();
+        config.providers.insert(
+            "alibaba-coding".into(),
+            moltis_config::schema::ProviderEntry {
+                api_key: Some(secrecy::Secret::new("sk-sp-test".into())),
+                ..Default::default()
+            },
+        );
+
+        let reg = ProviderRegistry::from_env_with_config(&config);
+        assert!(
+            reg.list_models()
+                .iter()
+                .any(|m| m.provider == "alibaba-coding")
+        );
     }
 
     #[test]
