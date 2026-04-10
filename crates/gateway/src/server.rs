@@ -4150,28 +4150,120 @@ fn seed_example_hook() {
 /// Seed the `dcg-guard` hook into `~/.moltis/hooks/dcg-guard/` on first run.
 ///
 /// Writes both `HOOK.md` and `handler.sh`. The handler gracefully no-ops when
-/// `dcg` is not installed, so the hook is always eligible.
+/// `dcg` is not installed, so the hook is always eligible. After (re)seeding,
+/// probes for `dcg` on the same augmented `PATH` the handler will use and
+/// emits exactly one log line so operators can tell at boot whether the
+/// guard is active or inert.
 fn seed_dcg_guard_hook() {
     let hook_dir = moltis_config::data_dir().join("hooks/dcg-guard");
     let hook_md = hook_dir.join("HOOK.md");
-    if hook_md.exists() {
-        return;
+    if !hook_md.exists() {
+        if let Err(e) = std::fs::create_dir_all(&hook_dir) {
+            tracing::debug!("could not create dcg-guard hook dir: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::write(&hook_md, DCG_GUARD_HOOK_MD) {
+            tracing::debug!("could not write dcg-guard HOOK.md: {e}");
+        }
+        let handler = hook_dir.join("handler.sh");
+        if let Err(e) = std::fs::write(&handler, DCG_GUARD_HANDLER_SH) {
+            tracing::debug!("could not write dcg-guard handler.sh: {e}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&handler, std::fs::Permissions::from_mode(0o755));
+        }
     }
-    if let Err(e) = std::fs::create_dir_all(&hook_dir) {
-        tracing::debug!("could not create dcg-guard hook dir: {e}");
-        return;
+
+    log_dcg_guard_status();
+}
+
+/// PATH augmentation prepended by the dcg-guard handler script. Kept in sync
+/// with `DCG_GUARD_HANDLER_SH` so the startup check resolves `dcg` the same
+/// way the handler will at invocation time.
+const DCG_GUARD_EXTRA_PATH_DIRS: &[&str] = &[".local/bin", "/usr/local/bin", "/opt/homebrew/bin"];
+
+/// Resolve `dcg` using the same augmented `PATH` as the handler script.
+/// Returns the absolute path to the binary if found.
+fn resolve_dcg_binary() -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // `$HOME/.local/bin` and any other `$HOME`-relative entries.
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(&home);
+        for rel in DCG_GUARD_EXTRA_PATH_DIRS {
+            if let Some(stripped) = rel.strip_prefix('/') {
+                dirs.push(PathBuf::from(format!("/{stripped}")));
+            } else {
+                dirs.push(home_path.join(rel));
+            }
+        }
+    } else {
+        for rel in DCG_GUARD_EXTRA_PATH_DIRS {
+            if rel.starts_with('/') {
+                dirs.push(PathBuf::from(rel));
+            }
+        }
     }
-    if let Err(e) = std::fs::write(&hook_md, DCG_GUARD_HOOK_MD) {
-        tracing::debug!("could not write dcg-guard HOOK.md: {e}");
+
+    // Existing `$PATH`, falling back to a sane default matching the handler.
+    let existing = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
+    for entry in existing.split(':').filter(|s| !s.is_empty()) {
+        dirs.push(PathBuf::from(entry));
     }
-    let handler = hook_dir.join("handler.sh");
-    if let Err(e) = std::fs::write(&handler, DCG_GUARD_HANDLER_SH) {
-        tracing::debug!("could not write dcg-guard handler.sh: {e}");
+
+    for dir in dirs {
+        let candidate = dir.join("dcg");
+        if candidate.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&candidate)
+                    && meta.permissions().mode() & 0o111 != 0
+                {
+                    return Some(candidate);
+                }
+                continue;
+            }
+            #[cfg(not(unix))]
+            {
+                return Some(candidate);
+            }
+        }
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&handler, std::fs::Permissions::from_mode(0o755));
+
+    None
+}
+
+/// Emit a single startup log line describing whether the dcg-guard is active.
+fn log_dcg_guard_status() {
+    match resolve_dcg_binary() {
+        Some(path) => {
+            let version = std::process::Command::new(&path)
+                .arg("--version")
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() {
+                        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "unknown version".to_string());
+            tracing::info!(
+                dcg_path = %path.display(),
+                "dcg-guard: dcg {version} detected, guard active"
+            );
+        },
+        None => {
+            tracing::warn!(
+                "dcg-guard: 'dcg' not found on PATH; destructive command guard is INACTIVE. \
+                 Install dcg from https://github.com/Dicklesworthstone/destructive_command_guard"
+            );
+        },
     }
 }
 
@@ -4386,27 +4478,52 @@ tool to scan shell commands before execution. dcg ships 49+ pattern categories
 covering filesystem, git, database, cloud, and infrastructure commands.
 
 This hook is **seeded by default** into `~/.moltis/hooks/dcg-guard/` on first
-run. When `dcg` is not installed the hook is a no-op (all commands pass through).
+run. When `dcg` is not installed the hook fails open (all commands pass
+through) and writes a loud warning to stderr on every invocation — check the
+gateway log if the guard appears inert.
 
 ## Install dcg
 
+See the upstream [installation section](https://github.com/Dicklesworthstone/destructive_command_guard#installation).
+The two supported commands from that README are:
+
 ```bash
-cargo install dcg
+uv tool install destructive-command-guard
+# or
+pipx install destructive-command-guard
 ```
 
-Once installed, the hook will automatically start guarding destructive commands
-on the next Moltis restart.
+> **Important:** this hook runs inside the **Moltis service environment**,
+> not your interactive shell. `dcg` must be resolvable on the service's
+> `PATH`. The handler already prepends `$HOME/.local/bin`, `/usr/local/bin`
+> and `/opt/homebrew/bin`, which covers the default install locations of
+> `uv tool`, `pipx` and Homebrew. If you install `dcg` elsewhere, make sure
+> that directory is on the gateway process `PATH` (e.g. via the systemd
+> unit's `Environment=PATH=...`).
+
+Once installed, restart Moltis. The startup log will print either
+`dcg-guard: dcg <version> detected, guard active` or
+`dcg-guard: 'dcg' not found on PATH; destructive command guard is INACTIVE`.
 "#;
 
 /// Content for the seeded dcg-guard handler script.
 const DCG_GUARD_HANDLER_SH: &str = r#"#!/usr/bin/env bash
 # Hook handler: translates Moltis BeforeToolCall payload to dcg format.
-# When dcg is not installed the hook is a no-op (all commands pass through).
+# When dcg is not installed the hook is a fail-open no-op (all commands pass
+# through) but a loud warning is written to stderr so the gateway log makes
+# it obvious that the guard is inert.
 
 set -euo pipefail
 
-# Gracefully skip when dcg is not installed.
+# Hooks run in the Moltis gateway process environment, which under systemd
+# often strips `$HOME/.local/bin` and friends. Prepend the usual user/local
+# bin directories so `dcg` installed via `uv tool install` / `pipx` / brew is
+# resolvable regardless of how Moltis was launched.
+export PATH="${HOME:-/root}/.local/bin:/usr/local/bin:/opt/homebrew/bin:${PATH:-/usr/bin:/bin}"
+
+# Warn loudly (but do not block) when dcg is not installed.
 if ! command -v dcg >/dev/null 2>&1; then
+    echo "dcg-guard: 'dcg' binary not found on PATH (PATH=$PATH); command NOT scanned. Install dcg to enable the guard." >&2
     cat >/dev/null   # drain stdin
     exit 0
 fi
@@ -5382,5 +5499,112 @@ mod tests {
         assert_eq!(preset.model.as_deref(), Some("haiku"));
         assert_eq!(preset.timeout_secs, Some(30));
         assert_eq!(preset.tools.deny, vec!["exec".to_string()]);
+    }
+
+    #[test]
+    fn dcg_guard_handler_has_path_augmentation() {
+        // The handler must prepend the common user/local bin directories so
+        // that `dcg` installed via `uv tool install` / `pipx` / Homebrew is
+        // resolvable even when the gateway inherits a minimal `PATH`
+        // (notably under systemd).
+        assert!(
+            DCG_GUARD_HANDLER_SH.contains(".local/bin"),
+            "handler must prepend $HOME/.local/bin to PATH"
+        );
+        assert!(
+            DCG_GUARD_HANDLER_SH.contains("/usr/local/bin"),
+            "handler must prepend /usr/local/bin to PATH"
+        );
+        assert!(
+            DCG_GUARD_HANDLER_SH.contains("/opt/homebrew/bin"),
+            "handler must prepend /opt/homebrew/bin to PATH"
+        );
+        assert!(
+            DCG_GUARD_HANDLER_SH.contains("export PATH="),
+            "handler must export an augmented PATH before resolving dcg"
+        );
+    }
+
+    #[test]
+    fn dcg_guard_handler_warns_when_dcg_missing() {
+        // The missing-dcg branch must be loud: write to stderr and include
+        // the phrase "NOT scanned" so gateway logs surface the fact that
+        // the guard is inert.
+        assert!(
+            DCG_GUARD_HANDLER_SH.contains("NOT scanned"),
+            "handler must print a loud warning when dcg is missing"
+        );
+        assert!(
+            DCG_GUARD_HANDLER_SH.contains(">&2"),
+            "handler must write its warning to stderr"
+        );
+        // Regression guard: the warning must be emitted *before* stdin is
+        // drained. The old silent no-op form `cat >/dev/null; exit 0` ran
+        // without any prior stderr write, so the warning echo must precede
+        // the `cat >/dev/null` inside the missing-dcg branch.
+        let warn_idx = DCG_GUARD_HANDLER_SH
+            .find("NOT scanned")
+            .expect("handler must contain the NOT scanned warning");
+        let drain_idx = DCG_GUARD_HANDLER_SH
+            .find("cat >/dev/null")
+            .expect("handler still drains stdin in the missing-dcg branch");
+        assert!(
+            warn_idx < drain_idx,
+            "warning must be printed before stdin is drained"
+        );
+    }
+
+    #[test]
+    fn dcg_guard_hook_md_removes_cargo_install() {
+        // `cargo install dcg` never worked — make sure we don't ship it in
+        // the seeded manifest and that we point users at the upstream
+        // install docs instead.
+        assert!(
+            !DCG_GUARD_HOOK_MD.contains("cargo install dcg"),
+            "seeded HOOK.md must not recommend `cargo install dcg`"
+        );
+        assert!(
+            DCG_GUARD_HOOK_MD.contains("github.com/Dicklesworthstone/destructive_command_guard"),
+            "seeded HOOK.md must link to the upstream install section"
+        );
+        assert!(
+            DCG_GUARD_HOOK_MD.contains("uv tool install destructive-command-guard")
+                || DCG_GUARD_HOOK_MD.contains("pipx install destructive-command-guard"),
+            "seeded HOOK.md must mention a supported install command"
+        );
+    }
+
+    #[test]
+    fn seed_dcg_guard_hook_writes_handler_with_path_fix() {
+        // Seed into a temp directory and verify the on-disk handler carries
+        // the PATH augmentation.
+        let _guard = LocalModelConfigTestGuard::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        moltis_config::set_data_dir(tmp.path().to_path_buf());
+
+        seed_dcg_guard_hook();
+
+        let handler_path = tmp.path().join("hooks/dcg-guard/handler.sh");
+        let written =
+            std::fs::read_to_string(&handler_path).expect("handler.sh should have been written");
+        assert!(
+            written.contains("export PATH="),
+            "written handler must export an augmented PATH"
+        );
+        assert!(
+            written.contains(".local/bin"),
+            "written handler must reference $HOME/.local/bin"
+        );
+        assert!(
+            written.contains("NOT scanned"),
+            "written handler must warn loudly when dcg is missing"
+        );
+
+        let hook_md_path = tmp.path().join("hooks/dcg-guard/HOOK.md");
+        let hook_md = std::fs::read_to_string(&hook_md_path).expect("HOOK.md written");
+        assert!(
+            !hook_md.contains("cargo install dcg"),
+            "written HOOK.md must not recommend cargo install dcg"
+        );
     }
 }
