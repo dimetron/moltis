@@ -19,7 +19,7 @@ run. When `dcg` is not installed the hook is a no-op (all commands pass through)
 ## Install dcg
 
 ```bash
-cargo install dcg
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/main/install.sh?$(date +%s)" | bash
 ```
 
 Once installed, the hook will automatically start guarding destructive commands
