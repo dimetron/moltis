@@ -20,6 +20,12 @@ const MAX_SIDECAR_FILES_PER_CALL: usize = 16;
 const MAX_SIDECAR_FILE_BYTES: usize = 128 * 1024;
 const MAX_SIDECAR_TOTAL_BYTES: usize = 512 * 1024;
 
+/// Cap on the size of a single skill body (SKILL.md or a plugin's `.md` file)
+/// we'll hand back to the model. This is a defensive ceiling — real skills
+/// are typically 5-50 KB — used to prevent a rogue file from filling the
+/// agent's context or eating the sidecar size budget by proxy.
+const MAX_SKILL_BODY_BYTES: usize = 256 * 1024;
+
 /// Tool that creates a new personal skill in `<data_dir>/skills/`.
 pub struct CreateSkillTool {
     data_dir: PathBuf,
@@ -464,6 +470,23 @@ async fn read_primary(
     // Plugin skills can be backed by a single `.md` file rather than a
     // directory containing SKILL.md (see `prompt_gen.rs`). Handle both shapes.
     let (loaded_meta, body, linked_files, effective_dir) = if plugin_as_file {
+        // Size check *before* reading the whole file so we never buffer a
+        // multi-megabyte `.md` into memory only to reject it. Mirrors the
+        // defence-in-depth posture `read_sidecar` uses for sidecar files.
+        let file_meta = tokio::fs::metadata(&meta.path).await.map_err(|e| {
+            Error::message(format!(
+                "failed to stat plugin skill '{name}' at {}: {e}",
+                meta.path.display()
+            ))
+        })?;
+        if file_meta.len() > MAX_SKILL_BODY_BYTES as u64 {
+            return Err(Error::message(format!(
+                "plugin skill '{name}' body exceeds maximum size of \
+                 {MAX_SKILL_BODY_BYTES} bytes ({} bytes on disk)",
+                file_meta.len()
+            ))
+            .into());
+        }
         let raw = tokio::fs::read_to_string(&meta.path).await.map_err(|e| {
             Error::message(format!(
                 "failed to read plugin skill '{name}' at {}: {e}",
@@ -488,6 +511,21 @@ async fn read_primary(
         let canonical_skill_dir = tokio::fs::canonicalize(&meta.path).await.map_err(|e| {
             Error::message(format!("skill directory not accessible for '{name}': {e}"))
         })?;
+
+        // Apply the same defensive ceiling to directory-backed SKILL.md
+        // files so the plugin and directory paths have symmetric limits.
+        let skill_md_path = canonical_skill_dir.join("SKILL.md");
+        if let Ok(m) = tokio::fs::metadata(&skill_md_path).await
+            && m.len() > MAX_SKILL_BODY_BYTES as u64
+        {
+            return Err(Error::message(format!(
+                "skill '{name}' SKILL.md exceeds maximum size of \
+                 {MAX_SKILL_BODY_BYTES} bytes ({} bytes on disk)",
+                m.len()
+            ))
+            .into());
+        }
+
         let content = moltis_skills::registry::load_skill_from_path(&canonical_skill_dir)
             .await
             .map_err(|e| Error::message(format!("failed to load skill '{name}': {e}")))?;
@@ -2572,6 +2610,56 @@ mod tests {
         assert_eq!(
             result["body"].as_str().unwrap(),
             "# Plain plugin body\n\nNo frontmatter.\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_rejects_oversized_skill_md_body() {
+        // Directory-backed: a SKILL.md larger than MAX_SKILL_BODY_BYTES must
+        // be rejected before the full file is buffered into memory.
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills/huge");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let body = "x".repeat(MAX_SKILL_BODY_BYTES + 1);
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: huge\ndescription: big\n---\n{body}"),
+        )
+        .unwrap();
+
+        let tool = read_tool_for(tmp.path());
+        let result = tool.execute(json!({ "name": "huge" })).await;
+        let err = result.expect_err("oversized SKILL.md must be rejected");
+        assert!(
+            format!("{err}").contains("exceeds maximum size"),
+            "error must mention size: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_plugin_md_rejects_oversized_body() {
+        // Plugin-backed: the single .md file must also be bounded.
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_dir = tmp.path().join("plugin-root");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let plugin_md = plugin_dir.join("huge-plugin.md");
+        std::fs::write(&plugin_md, "x".repeat(MAX_SKILL_BODY_BYTES + 1)).unwrap();
+
+        let discoverer: Arc<dyn SkillDiscoverer> = Arc::new(StaticDiscoverer::new(vec![
+            moltis_skills::types::SkillMetadata {
+                name: "huge-plugin".into(),
+                description: "big".into(),
+                path: plugin_md,
+                source: Some(SkillSource::Plugin),
+                ..Default::default()
+            },
+        ]));
+        let tool = ReadSkillTool::new(discoverer);
+        let result = tool.execute(json!({ "name": "huge-plugin" })).await;
+        let err = result.expect_err("oversized plugin body must be rejected");
+        assert!(
+            format!("{err}").contains("exceeds maximum size"),
+            "error must mention size: {err}"
         );
     }
 
