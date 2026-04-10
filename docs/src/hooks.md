@@ -105,7 +105,9 @@ Fires after the LLM response is received but before tool calls execute. For stre
 
 ## Channel Provenance
 
-`BeforeToolCall`, `SessionStart`, `MessageReceived`, and `ToolResultPersist` can include channel provenance in a `channel` or `channel_binding` object. The fields are optional so hooks keep working for sessions that do not originate from a channel integration.
+`BeforeToolCall`, `SessionStart`, and `MessageReceived` currently include channel provenance. The fields are optional so hooks keep working for sessions that do not originate from a channel integration.
+
+`MessageReceived` keeps its legacy `channel` string field and adds the richer object as `channel_binding`. `BeforeToolCall` and `SessionStart` expose the same richer object as `channel`. `ToolResultPersist` has a schema field reserved for the same shape, but that event is not currently dispatched.
 
 | Field | Type | Description |
 |-------|------|-------------|

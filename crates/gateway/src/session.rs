@@ -59,10 +59,17 @@ fn resolve_hook_channel_binding(
     {
         match serde_json::from_str::<moltis_channels::ChannelReplyTarget>(binding_json) {
             Ok(target) => (&target).into(),
-            Err(_) => moltis_common::hooks::ChannelBinding {
-                surface: Some("web".to_string()),
-                session_kind: Some("web".to_string()),
-                ..Default::default()
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    session = %session_key,
+                    "failed to parse channel_binding JSON; falling back to web"
+                );
+                moltis_common::hooks::ChannelBinding {
+                    surface: Some("web".to_string()),
+                    session_kind: Some("web".to_string()),
+                    ..Default::default()
+                }
             },
         }
     } else {
