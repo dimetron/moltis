@@ -1397,7 +1397,7 @@ pub async fn run_agent_loop_with_context(
             if let Some(ref hooks) = hook_registry {
                 let payload = HookPayload::ToolResultPersist {
                     session_key: session_key_for_hooks.clone(),
-                    tool_name: tc.name.clone(),
+                    tool_name: sanitize_tool_name(&tc.name).into_owned(),
                     result: result.clone(),
                 };
                 match hooks.dispatch(&payload).await {
@@ -2144,7 +2144,7 @@ pub async fn run_agent_loop_streaming(
             if let Some(ref hooks) = hook_registry {
                 let payload = HookPayload::ToolResultPersist {
                     session_key: session_key_for_hooks.clone(),
-                    tool_name: tc.name.clone(),
+                    tool_name: sanitize_tool_name(&tc.name).into_owned(),
                     result: result.clone(),
                 };
                 match hooks.dispatch(&payload).await {
@@ -7554,6 +7554,32 @@ mod tests {
             }
         }
 
+        /// Handler that records the tool name seen in the hook payload.
+        struct ToolNameRecordingHandler {
+            tool_names: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl HookHandler for ToolNameRecordingHandler {
+            fn name(&self) -> &str {
+                "tool-name-recorder"
+            }
+
+            fn events(&self) -> &[HE] {
+                &[HE::ToolResultPersist]
+            }
+
+            async fn handle(&self, _event: HE, payload: &HP) -> HookResult<HA> {
+                if let HP::ToolResultPersist { tool_name, .. } = payload {
+                    self.tool_names
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(tool_name.clone());
+                }
+                Ok(HA::Continue)
+            }
+        }
+
         /// Provider that makes one tool call, then on its second invocation
         /// captures the messages it receives (so the test can inspect the
         /// exact tool-message content the hook produced) and returns final
@@ -7798,6 +7824,40 @@ mod tests {
             );
         }
 
+        #[tokio::test]
+        async fn dispatch_uses_sanitized_tool_name_in_payload() {
+            let tool_names = Arc::new(Mutex::new(Vec::new()));
+            let mut registry = HR::new();
+            registry.register(Arc::new(ToolNameRecordingHandler {
+                tool_names: Arc::clone(&tool_names),
+            }));
+
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let provider = Arc::new(MangledCapturingProvider {
+                call_count: AtomicUsize::new(0),
+                captured,
+            });
+            let mut tools = ToolRegistry::new();
+            tools.register(Box::new(EchoTool));
+            let uc = UserContent::text("run the tool");
+            let result = run_agent_loop_with_context(
+                provider,
+                &tools,
+                "You are a test bot.",
+                &uc,
+                None,
+                None,
+                None,
+                Some(Arc::new(registry)),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result.tool_calls_made, 1);
+            let tool_names = tool_names.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(tool_names.as_slice(), ["echo_tool"]);
+        }
+
         // ── Streaming-path coverage ──────────────────────────────────────
 
         /// Streaming equivalent of `CapturingProvider`: first call emits a
@@ -7844,6 +7904,135 @@ mod tests {
                         StreamEvent::ToolCallStart {
                             id: "call_1".into(),
                             name: "echo_tool".into(),
+                            index: 0,
+                        },
+                        StreamEvent::ToolCallArgumentsDelta {
+                            index: 0,
+                            delta: r#"{"text":"unsanitized-original"}"#.into(),
+                        },
+                        StreamEvent::ToolCallComplete { index: 0 },
+                        StreamEvent::Done(Usage {
+                            input_tokens: 10,
+                            output_tokens: 5,
+                            ..Default::default()
+                        }),
+                    ]))
+                } else {
+                    *self.captured.lock().unwrap_or_else(|e| e.into_inner()) = messages;
+                    Box::pin(tokio_stream::iter(vec![
+                        StreamEvent::Delta("done".into()),
+                        StreamEvent::Done(Usage {
+                            input_tokens: 5,
+                            output_tokens: 3,
+                            ..Default::default()
+                        }),
+                    ]))
+                }
+            }
+        }
+
+        struct MangledCapturingProvider {
+            call_count: AtomicUsize,
+            captured: Arc<Mutex<Vec<ChatMessage>>>,
+        }
+
+        #[async_trait]
+        impl LlmProvider for MangledCapturingProvider {
+            fn name(&self) -> &str {
+                "mangled-capture"
+            }
+
+            fn id(&self) -> &str {
+                "mangled-capture-model"
+            }
+
+            fn supports_tools(&self) -> bool {
+                true
+            }
+
+            async fn complete(
+                &self,
+                messages: &[ChatMessage],
+                _tools: &[serde_json::Value],
+            ) -> Result<CompletionResponse> {
+                let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    Ok(CompletionResponse {
+                        text: None,
+                        tool_calls: vec![ToolCall {
+                            id: "call_1".into(),
+                            name: "echo_tool_2".into(),
+                            arguments: serde_json::json!({"text": "unsanitized-original"}),
+                        }],
+                        usage: Usage {
+                            input_tokens: 10,
+                            output_tokens: 5,
+                            ..Default::default()
+                        },
+                    })
+                } else {
+                    *self.captured.lock().unwrap_or_else(|e| e.into_inner()) = messages.to_vec();
+                    Ok(CompletionResponse {
+                        text: Some("done".into()),
+                        tool_calls: vec![],
+                        usage: Usage {
+                            input_tokens: 20,
+                            output_tokens: 10,
+                            ..Default::default()
+                        },
+                    })
+                }
+            }
+
+            fn stream(
+                &self,
+                _messages: Vec<ChatMessage>,
+            ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+                Box::pin(tokio_stream::empty())
+            }
+        }
+
+        struct MangledStreamingCapturingProvider {
+            call_count: AtomicUsize,
+            captured: Arc<Mutex<Vec<ChatMessage>>>,
+        }
+
+        #[async_trait]
+        impl LlmProvider for MangledStreamingCapturingProvider {
+            fn name(&self) -> &str {
+                "mangled-stream-capture"
+            }
+
+            fn id(&self) -> &str {
+                "mangled-stream-capture-model"
+            }
+
+            fn supports_tools(&self) -> bool {
+                true
+            }
+
+            async fn complete(
+                &self,
+                _messages: &[ChatMessage],
+                _tools: &[serde_json::Value],
+            ) -> Result<CompletionResponse> {
+                Ok(CompletionResponse {
+                    text: Some("fallback".into()),
+                    tool_calls: vec![],
+                    usage: Usage::default(),
+                })
+            }
+
+            fn stream(
+                &self,
+                messages: Vec<ChatMessage>,
+            ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+                let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    Box::pin(tokio_stream::iter(vec![
+                        StreamEvent::ToolCallStart {
+                            id: "call_1".into(),
+                            name: "echo_tool_2".into(),
                             index: 0,
                         },
                         StreamEvent::ToolCallArgumentsDelta {
@@ -8032,6 +8221,41 @@ mod tests {
                 tool_msg.contains("unsanitized-original"),
                 "streaming: handler error must leave original result intact, got: {tool_msg}"
             );
+        }
+
+        #[tokio::test]
+        async fn streaming_dispatch_uses_sanitized_tool_name_in_payload() {
+            let tool_names = Arc::new(Mutex::new(Vec::new()));
+            let mut registry = HR::new();
+            registry.register(Arc::new(ToolNameRecordingHandler {
+                tool_names: Arc::clone(&tool_names),
+            }));
+
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let provider = Arc::new(MangledStreamingCapturingProvider {
+                call_count: AtomicUsize::new(0),
+                captured,
+            });
+            let mut tools = ToolRegistry::new();
+            tools.register(Box::new(EchoTool));
+            let uc = UserContent::text("run the tool");
+
+            let result = run_agent_loop_streaming(
+                provider,
+                &tools,
+                "You are a test bot.",
+                &uc,
+                None,
+                None,
+                None,
+                Some(Arc::new(registry)),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result.tool_calls_made, 1);
+            let tool_names = tool_names.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(tool_names.as_slice(), ["echo_tool"]);
         }
     }
 }
