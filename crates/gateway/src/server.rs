@@ -3865,6 +3865,8 @@ pub async fn prepare_gateway_core(
         // Register skill management tools for agent self-extension.
         // Use data_dir so created skills land in the configured workspace root.
         {
+            use moltis_skills::discover::FsSkillDiscoverer;
+
             tool_registry.register(Box::new(moltis_tools::skill_tools::CreateSkillTool::new(
                 data_dir.clone(),
             )));
@@ -3873,6 +3875,15 @@ pub async fn prepare_gateway_core(
             )));
             tool_registry.register(Box::new(moltis_tools::skill_tools::DeleteSkillTool::new(
                 data_dir.clone(),
+            )));
+            // Read-side tool: resolves skill names against the same filesystem
+            // layout the prompt builder uses, so names listed in
+            // <available_skills> always resolve without an external filesystem
+            // MCP server.
+            let read_discoverer =
+                Arc::new(FsSkillDiscoverer::new(FsSkillDiscoverer::default_paths()));
+            tool_registry.register(Box::new(moltis_tools::skill_tools::ReadSkillTool::new(
+                read_discoverer,
             )));
             if config.skills.enable_agent_sidecar_files {
                 tool_registry.register(Box::new(
