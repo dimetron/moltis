@@ -433,9 +433,37 @@ async fn read_primary(
 ) -> anyhow::Result<Value> {
     let is_plugin = meta.source.as_ref() == Some(&SkillSource::Plugin);
 
+    // Reject a symlinked skill root the same way `read_sidecar` and
+    // `write_sidecar_files` do. Without this guard, a symlink like
+    // `~/.moltis/skills/malicious -> /etc` would canonicalise silently
+    // and the rest of the read path would serve whatever the target
+    // resolves to. Defence in depth: the discoverer should not hand us a
+    // symlinked root, but the tool enforces the invariant regardless.
+    match tokio::fs::symlink_metadata(&meta.path).await {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(
+                Error::message(format!("skill '{name}' directory must not be a symlink")).into(),
+            );
+        },
+        Ok(_) => {},
+        Err(e) => {
+            return Err(Error::message(format!("skill '{name}' path not accessible: {e}")).into());
+        },
+    }
+
+    // Detect whether a plugin-backed skill is a single `.md` file (rather
+    // than a SKILL.md-in-a-directory) via async metadata so the read path
+    // stays fully non-blocking — no synchronous `Path::is_file` inside an
+    // async function.
+    let plugin_as_file = is_plugin
+        && tokio::fs::metadata(&meta.path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+
     // Plugin skills can be backed by a single `.md` file rather than a
     // directory containing SKILL.md (see `prompt_gen.rs`). Handle both shapes.
-    let (loaded_meta, body, linked_files, effective_dir) = if is_plugin && meta.path.is_file() {
+    let (loaded_meta, body, linked_files, effective_dir) = if plugin_as_file {
         let raw = tokio::fs::read_to_string(&meta.path).await.map_err(|e| {
             Error::message(format!(
                 "failed to read plugin skill '{name}' at {}: {e}",
@@ -721,9 +749,9 @@ async fn collect_sidecar_entries(skill_dir: &Path) -> crate::Result<Vec<SidecarE
             break;
         }
         let dir = skill_dir.join(sub);
-        if !dir.is_dir() {
-            continue;
-        }
+        // Use `tokio::fs::read_dir` directly and treat a missing or
+        // unreadable subdirectory as "no entries" — avoids a synchronous
+        // `Path::is_dir()` stat inside this async function.
         let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(e) => e,
             Err(_) => continue,
@@ -2544,6 +2572,52 @@ mod tests {
         assert_eq!(
             result["body"].as_str().unwrap(),
             "# Plain plugin body\n\nNo frontmatter.\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_read_skill_primary_rejects_symlinked_skill_directory() {
+        // Parity with `read_sidecar` and `write_sidecar_files`: the primary
+        // (body) read must also reject a symlinked skill root so the
+        // canonicalise step can't silently follow it to a file outside the
+        // skills tree. Covers the `read_primary` symlink guard.
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(outside.path().join("real-skill")).unwrap();
+        std::fs::write(
+            outside.path().join("real-skill/SKILL.md"),
+            "---\nname: evil\ndescription: trap\n---\n# evil body\n",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(tmp.path().join("skills")).unwrap();
+        symlink(
+            outside.path().join("real-skill"),
+            tmp.path().join("skills/evil"),
+        )
+        .unwrap();
+
+        let discoverer: Arc<dyn SkillDiscoverer> = Arc::new(StaticDiscoverer::new(vec![
+            moltis_skills::types::SkillMetadata {
+                name: "evil".into(),
+                description: "trap".into(),
+                path: tmp.path().join("skills/evil"),
+                source: Some(SkillSource::Personal),
+                ..Default::default()
+            },
+        ]));
+        let tool = ReadSkillTool::new(discoverer);
+
+        let result = tool.execute(json!({ "name": "evil" })).await;
+        let err = result.expect_err("symlinked skill directory must be rejected on primary read");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symlink"),
+            "error must mention symlink rejection: {msg}"
         );
     }
 
