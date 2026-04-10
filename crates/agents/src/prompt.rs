@@ -1081,6 +1081,17 @@ mod tests {
         );
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("commit"));
+        // The activation instruction must name the read_skill tool so the
+        // model doesn't try to use an external filesystem MCP server.
+        assert!(
+            prompt.contains("read_skill"),
+            "skills prompt must mention the read_skill tool: {prompt}"
+        );
+        // It must not leak the absolute path of the skill on disk.
+        assert!(
+            !prompt.contains("/skills/commit"),
+            "skills prompt must not include absolute skill paths: {prompt}"
+        );
     }
 
     #[test]
