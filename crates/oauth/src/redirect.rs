@@ -5,7 +5,7 @@
 //! authorization-server-compatible URIs regardless of the scheme the
 //! browser started on.
 
-use url::Url;
+use url::{Host, Url};
 
 /// Rewrite `https://` → `http://` for loopback redirect URIs.
 ///
@@ -35,18 +35,22 @@ pub fn normalize_loopback_redirect(uri: &str) -> String {
     if parsed.scheme() != "https" {
         return uri.to_string();
     }
-    let is_loopback = match parsed.host() {
-        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        None => false,
-    };
+    // `https` is a "special" scheme in the WHATWG URL spec, so any Url
+    // with `scheme() == "https"` is guaranteed to have a host. Using
+    // `is_some_and` keeps the `None` branch in the std library rather
+    // than introducing an unreachable arm in our own code.
+    let is_loopback = parsed.host().is_some_and(|host| match host {
+        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(ip) => ip.is_loopback(),
+        Host::Ipv6(ip) => ip.is_loopback(),
+    });
     if !is_loopback {
         return uri.to_string();
     }
-    if parsed.set_scheme("http").is_err() {
-        return uri.to_string();
-    }
+    // `set_scheme` only fails when changing between "special" and
+    // non-"special" schemes; `https`→`http` are both special and share
+    // the same structure, so this never fails in practice.
+    let _ = parsed.set_scheme("http");
     parsed.to_string()
 }
 
