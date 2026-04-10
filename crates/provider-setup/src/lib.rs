@@ -81,6 +81,30 @@ where
     Ok(normalize_model_list(normalized))
 }
 
+/// Normalize the `redirect_uri` on a provider `OAuthConfig` loaded via
+/// `load_oauth_config` so that loopback values always use the `http`
+/// scheme, per RFC 8252 §7.3/§8.3.
+///
+/// Built-in defaults (e.g. `openai-codex`) already use
+/// `http://localhost:1455/auth/callback`, but `load_oauth_config` also
+/// reads from `~/.config/moltis/oauth_providers.json` and
+/// `MOLTIS_OAUTH_{PROVIDER}_REDIRECT_URI`, either of which could
+/// accidentally specify `https://localhost`. Without normalization:
+///
+/// * `callback_port` would parse the port from the HTTPS form and the
+///   spawned `CallbackServer` would try to bind on Moltis's main TLS
+///   port, which is already in use by the gateway.
+/// * Strict authorization servers would reject the authorization
+///   request with `invalid_redirect_uri`.
+///
+/// No-op for empty or non-loopback URIs.
+fn normalize_loaded_redirect_uri(config: &mut moltis_oauth::OAuthConfig) {
+    if config.redirect_uri.is_empty() {
+        return;
+    }
+    config.redirect_uri = normalize_loopback_redirect(&config.redirect_uri);
+}
+
 fn normalize_model_list(models: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut out = Vec::new();
     for model in models {
@@ -1958,18 +1982,11 @@ impl ProviderSetupService for LiveProviderSetupService {
         let mut oauth_config = load_oauth_config(&provider_name)
             .ok_or_else(|| format!("no OAuth config for provider: {provider_name}"))?;
 
-        // Also normalize any loopback `redirect_uri` loaded from the
-        // user config file (`~/.config/moltis/oauth_providers.json`) or
-        // `MOLTIS_OAUTH_{PROVIDER}_REDIRECT_URI`. Built-in defaults
-        // already use `http://localhost:1455/auth/callback`, but a
-        // custom config could accidentally specify `https://localhost`.
-        // Without normalization here, `callback_port` would parse from
-        // the wrong scheme and the `CallbackServer` would attempt to
-        // bind on Moltis's main TLS port, or a strict AS would reject
-        // the pre-registered redirect during authorization.
-        if !oauth_config.redirect_uri.is_empty() {
-            oauth_config.redirect_uri = normalize_loopback_redirect(&oauth_config.redirect_uri);
-        }
+        // Normalize any loopback `redirect_uri` loaded from the user
+        // config file (`~/.config/moltis/oauth_providers.json`) or
+        // `MOLTIS_OAUTH_{PROVIDER}_REDIRECT_URI`. See
+        // `normalize_loaded_redirect_uri` for the full rationale.
+        normalize_loaded_redirect_uri(&mut oauth_config);
 
         // User explicitly initiated OAuth for this provider; ensure it is enabled.
         set_provider_enabled_in_config(&provider_name, true)?;
@@ -3040,6 +3057,76 @@ mod tests {
     use {
         super::*, moltis_config::schema::ProviderEntry, moltis_oauth::OAuthTokens, secrecy::Secret,
     };
+
+    fn make_oauth_config(redirect_uri: &str) -> moltis_oauth::OAuthConfig {
+        moltis_oauth::OAuthConfig {
+            client_id: "client".into(),
+            auth_url: "https://example.com/authorize".into(),
+            token_url: "https://example.com/token".into(),
+            redirect_uri: redirect_uri.into(),
+            resource: None,
+            scopes: Vec::new(),
+            extra_auth_params: Vec::new(),
+            device_flow: false,
+        }
+    }
+
+    #[test]
+    fn normalize_loaded_redirect_uri_rewrites_https_localhost() {
+        let mut config = make_oauth_config("https://localhost:1455/auth/callback");
+        normalize_loaded_redirect_uri(&mut config);
+        assert_eq!(config.redirect_uri, "http://localhost:1455/auth/callback");
+    }
+
+    #[test]
+    fn normalize_loaded_redirect_uri_rewrites_https_ipv4_loopback() {
+        let mut config = make_oauth_config("https://127.0.0.1:1455/auth/callback");
+        normalize_loaded_redirect_uri(&mut config);
+        assert_eq!(config.redirect_uri, "http://127.0.0.1:1455/auth/callback");
+    }
+
+    #[test]
+    fn normalize_loaded_redirect_uri_rewrites_https_ipv6_loopback() {
+        let mut config = make_oauth_config("https://[::1]:1455/auth/callback");
+        normalize_loaded_redirect_uri(&mut config);
+        assert_eq!(config.redirect_uri, "http://[::1]:1455/auth/callback");
+    }
+
+    #[test]
+    fn normalize_loaded_redirect_uri_preserves_http_scheme() {
+        let mut config = make_oauth_config("http://localhost:1455/auth/callback");
+        normalize_loaded_redirect_uri(&mut config);
+        assert_eq!(config.redirect_uri, "http://localhost:1455/auth/callback");
+    }
+
+    #[test]
+    fn normalize_loaded_redirect_uri_preserves_real_hostname() {
+        let mut config = make_oauth_config("https://moltis.lan/auth/callback");
+        normalize_loaded_redirect_uri(&mut config);
+        assert_eq!(config.redirect_uri, "https://moltis.lan/auth/callback");
+    }
+
+    #[test]
+    fn normalize_loaded_redirect_uri_no_op_on_empty_string() {
+        let mut config = make_oauth_config("");
+        normalize_loaded_redirect_uri(&mut config);
+        assert_eq!(config.redirect_uri, "");
+    }
+
+    /// Regression guard for the full integration path: load `openai-codex`
+    /// through `load_oauth_config` and confirm that, after passing the
+    /// result through `normalize_loaded_redirect_uri`, `callback_port`
+    /// parses a non-conflicting value. This is the safety net that would
+    /// have caught the original bug report if the built-in default had
+    /// been wrong.
+    #[test]
+    fn loaded_openai_codex_redirect_parses_to_http_loopback() {
+        let mut config = load_oauth_config("openai-codex").expect("openai-codex should exist");
+        normalize_loaded_redirect_uri(&mut config);
+        let parsed = url::Url::parse(&config.redirect_uri).expect("parsable URL");
+        assert_eq!(parsed.scheme(), "http");
+        assert_eq!(parsed.host_str(), Some("localhost"));
+    }
 
     #[test]
     fn known_providers_have_valid_auth_types() {
