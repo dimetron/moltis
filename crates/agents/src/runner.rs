@@ -7872,6 +7872,52 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn streaming_dispatch_fires_exactly_once_per_tool_result() {
+            let count = Arc::new(AtomicUsize::new(0));
+            let mut registry = HR::new();
+            registry.register(Arc::new(CountingHandler {
+                count: Arc::clone(&count),
+            }));
+
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let provider = Arc::new(StreamingCapturingProvider {
+                call_count: AtomicUsize::new(0),
+                captured: Arc::clone(&captured),
+            });
+            let mut tools = ToolRegistry::new();
+            tools.register(Box::new(EchoTool));
+            let uc = UserContent::text("run the tool");
+
+            let result = run_agent_loop_streaming(
+                provider,
+                &tools,
+                "You are a test bot.",
+                &uc,
+                None,
+                None,
+                None,
+                Some(Arc::new(registry)),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result.tool_calls_made, 1);
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "streaming: ToolResultPersist must fire once per tool result"
+            );
+
+            let messages = captured.lock().unwrap_or_else(|e| e.into_inner());
+            let tool_msg = tool_message_content(&messages)
+                .expect("tool message must reach the next LLM iteration");
+            assert!(
+                tool_msg.contains("unsanitized-original"),
+                "streaming: Continue must leave the result unchanged, got: {tool_msg}"
+            );
+        }
+
+        #[tokio::test]
         async fn streaming_modify_payload_replaces_tool_message_content() {
             let mut registry = HR::new();
             registry.register(Arc::new(ReplacingHandler));
@@ -7948,6 +7994,43 @@ mod tests {
             assert!(
                 tool_msg.contains("blocked by hook: injection detected"),
                 "streaming: Block must substitute an error marker, got: {tool_msg}"
+            );
+        }
+
+        #[tokio::test]
+        async fn streaming_handler_error_is_non_fatal_and_preserves_original_result() {
+            let mut registry = HR::new();
+            registry.register(Arc::new(ErroringHandler));
+
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let provider = Arc::new(StreamingCapturingProvider {
+                call_count: AtomicUsize::new(0),
+                captured: Arc::clone(&captured),
+            });
+            let mut tools = ToolRegistry::new();
+            tools.register(Box::new(EchoTool));
+            let uc = UserContent::text("run the tool");
+
+            let result = run_agent_loop_streaming(
+                provider,
+                &tools,
+                "You are a test bot.",
+                &uc,
+                None,
+                None,
+                None,
+                Some(Arc::new(registry)),
+            )
+            .await
+            .expect("streaming: handler error must not kill the agent run");
+
+            assert_eq!(result.tool_calls_made, 1);
+            let messages = captured.lock().unwrap_or_else(|e| e.into_inner());
+            let tool_msg = tool_message_content(&messages)
+                .expect("tool message must be present in streaming path");
+            assert!(
+                tool_msg.contains("unsanitized-original"),
+                "streaming: handler error must leave original result intact, got: {tool_msg}"
             );
         }
     }
