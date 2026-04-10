@@ -51,6 +51,18 @@ pub fn required_intents() -> GatewayIntents {
 pub struct Handler {
     pub account_id: String,
     pub accounts: AccountStateMap,
+    downloader: DiscordInboundMediaDownloader,
+}
+
+impl Handler {
+    #[must_use]
+    pub fn new(account_id: String, accounts: AccountStateMap) -> Self {
+        Self {
+            account_id,
+            accounts,
+            downloader: DiscordInboundMediaDownloader::new(),
+        }
+    }
 }
 
 fn unix_now() -> i64 {
@@ -854,14 +866,13 @@ impl EventHandler for Handler {
         // Resolve inbound media attachments (voice transcription, image
         // optimization) before further processing. This mirrors the Telegram
         // flow in `crates/telegram/src/handlers.rs`.
-        let downloader = DiscordInboundMediaDownloader::new();
         let (body, attachments, voice_audio, mut inferred_kind) =
             match resolve_discord_inbound_media(
                 &msg.attachments,
                 &text,
                 sink.as_ref(),
                 &self.account_id,
-                &downloader,
+                &self.downloader,
             )
             .await
             {
