@@ -735,6 +735,15 @@ function handleChatFinal(p, isActive, isChatPage, eventSession) {
 var COMPACT_CARD_DEBOUNCE_MS = 500;
 var lastCompactCardAt = new Map();
 
+// Per-session reference to the "Compacting conversation…" status message
+// appended on `auto_compact start`. Tracked explicitly (not via
+// `lastChild`) because `send()`'s pre-emptive auto-compact path
+// interleaves `chat.compact done` between `auto_compact start` and
+// `auto_compact done`, which means the old "remove lastChild" pattern
+// would remove the compact card instead of the status message.
+// Greptile P1 on commit 0531913b.
+var compactingStatusElements = new Map();
+
 function shouldRenderCompactCard(p) {
 	var key = p.sessionKey || "__active__";
 	var now = Date.now();
@@ -746,6 +755,19 @@ function shouldRenderCompactCard(p) {
 	return true;
 }
 
+// Drop the "Compacting conversation…" status message the auto-compact
+// start phase appended for this session, if one exists. Called by both
+// compact-done handlers before rendering the card so the status message
+// never outlives its purpose, regardless of which event arrives first.
+function removeCompactingStatus(p) {
+	var key = p.sessionKey || "__active__";
+	var el = compactingStatusElements.get(key);
+	compactingStatusElements.delete(key);
+	if (el && el.parentNode === S.chatMsgBox) {
+		S.chatMsgBox.removeChild(el);
+	}
+}
+
 function resetTokensAfterCompaction() {
 	S.setSessionTokens({ input: 0, output: 0 });
 	S.setSessionCurrentInputTokens(0);
@@ -755,15 +777,21 @@ function resetTokensAfterCompaction() {
 function handleChatAutoCompact(p, isActive, isChatPage) {
 	if (!(isActive && isChatPage)) return;
 	if (p.phase === "start") {
-		chatAddMsg("system", "Compacting conversation (context limit reached)\u2026");
+		var statusEl = chatAddMsg("system", "Compacting conversation (context limit reached)\u2026");
+		var key = p.sessionKey || "__active__";
+		if (statusEl) {
+			compactingStatusElements.set(key, statusEl);
+		}
 	} else if (p.phase === "done") {
-		if (S.chatMsgBox?.lastChild) S.chatMsgBox.removeChild(S.chatMsgBox.lastChild);
+		// Always drop the status message — even when the card was
+		// already rendered by an earlier `chat.compact done` event.
+		removeCompactingStatus(p);
 		if (shouldRenderCompactCard(p)) {
 			renderCompactCard(p);
 		}
 		resetTokensAfterCompaction();
 	} else if (p.phase === "error") {
-		if (S.chatMsgBox?.lastChild) S.chatMsgBox.removeChild(S.chatMsgBox.lastChild);
+		removeCompactingStatus(p);
 		chatAddMsg("error", `Auto-compact failed: ${p.error || "unknown error"}`);
 	}
 }
@@ -775,6 +803,13 @@ function handleChatAutoCompact(p, isActive, isChatPage) {
 function handleChatCompact(p, isActive, isChatPage) {
 	if (!(isActive && isChatPage)) return;
 	if (p.phase !== "done") return;
+	// Drop the auto-compact status message if one exists. For the
+	// manual `/compact` RPC path there is no status message, so this
+	// is a no-op. For `send()`'s pre-emptive auto-compact path,
+	// `chat.compact done` arrives BEFORE `auto_compact done`, so we
+	// clear the status message here; the subsequent `auto_compact done`
+	// handler will find the slot already empty.
+	removeCompactingStatus(p);
 	if (!shouldRenderCompactCard(p)) return;
 	renderCompactCard(p);
 	resetTokensAfterCompaction();
