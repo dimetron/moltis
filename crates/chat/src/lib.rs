@@ -3844,6 +3844,18 @@ impl ChatService for LiveChatService {
                         .read(&session_key)
                         .await
                         .unwrap_or_default();
+                    // This `auto_compact done` event is a lifecycle
+                    // signal for subscribers that pre-emptive
+                    // auto-compact finished. The mode/token metadata
+                    // lives on the `chat.compact done` event that
+                    // `self.compact()` broadcasts from the inside —
+                    // the `compactBroadcastPath: "inner"` marker below
+                    // lets hook / webhook consumers detect that and
+                    // subscribe to that event instead. The parallel
+                    // `run_with_tools` context-overflow path emits a
+                    // self-contained `auto_compact done` (with
+                    // `compactBroadcastPath: "wrapper"`) that carries
+                    // the metadata directly.
                     broadcast(
                         &self.state,
                         "chat",
@@ -3854,6 +3866,7 @@ impl ChatService for LiveChatService {
                             "messageCount": pre_compact_msg_count,
                             "totalTokens": pre_compact_total,
                             "contextWindow": context_window,
+                            "compactBroadcastPath": "inner",
                         }),
                         BroadcastOpts::default(),
                     )
@@ -4704,6 +4717,19 @@ impl ChatService for LiveChatService {
             "chat.compact: strategy dispatched"
         );
 
+        // Replace the session history BEFORE broadcasting or notifying
+        // channels. If we did it the other way around, a concurrent
+        // `send()` RPC that landed between the broadcast and the store
+        // update would see the stale history and the client UI would
+        // already believe compaction had finished — a narrow but real
+        // race window flagged by Greptile on commit 0714de07.
+        self.session_store
+            .replace_history(&session_key, compacted.clone())
+            .await
+            .map_err(ServiceError::message)?;
+
+        self.session_metadata.touch(&session_key, 1).await;
+
         // Broadcast a chat.compact-scoped "done" event so UI consumers see
         // the effective mode and token usage even when compaction is
         // triggered manually via the RPC (the auto-compact path broadcasts
@@ -4735,13 +4761,6 @@ impl ChatService for LiveChatService {
         // users see "Conversation compacted (mode, tokens, hint)"
         // alongside the web UI's compact card.
         notify_channels_of_compaction(&self.state, &session_key, &outcome, show_hint).await;
-
-        self.session_store
-            .replace_history(&session_key, compacted.clone())
-            .await
-            .map_err(ServiceError::message)?;
-
-        self.session_metadata.touch(&session_key, 1).await;
 
         // Save compaction summary to memory file and trigger sync.
         if let Some(mm) = self.state.memory_manager() {
@@ -6975,6 +6994,16 @@ async fn run_with_tools(
                     // like "Compacted via Structured mode (1,234 tokens)".
                     // Respect chat.compaction.show_settings_hint so the
                     // hint is omitted when the user has opted out.
+                    //
+                    // `compactBroadcastPath: "wrapper"` marks this as
+                    // the self-contained auto_compact event with the
+                    // metadata inline. The parallel pre-emptive path
+                    // in `send()` emits `compactBroadcastPath: "inner"`
+                    // instead, where the metadata lives on the separate
+                    // `chat.compact done` event fired from within
+                    // `self.compact()`. Hook consumers that only care
+                    // about metadata can subscribe to whichever path
+                    // matches their use case.
                     let show_hint = persona.config.chat.compaction.show_settings_hint;
                     let mut payload = serde_json::json!({
                         "runId": run_id,
@@ -6982,6 +7011,7 @@ async fn run_with_tools(
                         "state": "auto_compact",
                         "phase": "done",
                         "reason": "context_window_exceeded",
+                        "compactBroadcastPath": "wrapper",
                     });
                     if let (Some(obj), Some(meta)) = (
                         payload.as_object_mut(),
