@@ -397,6 +397,20 @@ fn estimate_text_tokens(text: &str) -> u64 {
     bytes.div_ceil(4).max(1)
 }
 
+/// Compute the auto-compact trigger threshold for a given context window
+/// and user-configured `chat.compaction.threshold_percent`.
+///
+/// The returned value is the number of estimated next-request input
+/// tokens at or above which `send()` fires a pre-emptive compaction.
+/// The fraction is clamped to `[0.1, 0.95]` so a typo'd config can't
+/// disable auto-compact or spam it on every message, and the result is
+/// floored at `1` so zero-context windows still get a non-zero check.
+#[must_use]
+fn compute_auto_compact_threshold(context_window_tokens: u64, threshold_percent: f32) -> u64 {
+    let fraction = f64::from(threshold_percent.clamp(0.1, 0.95));
+    ((context_window_tokens as f64) * fraction).round().max(1.0) as u64
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3769,14 +3783,22 @@ impl ChatService for LiveChatService {
             .get("_accept_language")
             .and_then(|v| v.as_str())
             .map(String::from);
-        // Auto-compact when the next request is likely to exceed 95% of the
-        // model context window.
+        // Auto-compact when the next request is likely to exceed
+        // `chat.compaction.threshold_percent` of the model context window.
+        // The value is clamped to the 0.1–0.95 range in case config
+        // validation missed a typo; the default (0.75) is loaded via
+        // load_prompt_persona_for_agent for the session's agent.
+        let compaction_cfg = &load_prompt_persona_for_agent(&session_agent_id)
+            .config
+            .chat
+            .compaction;
         let context_window = provider.context_window() as u64;
         let token_usage = session_token_usage_from_messages(&history);
         let estimated_next_input = token_usage
             .current_request_input_tokens
             .saturating_add(estimate_text_tokens(&text));
-        let compact_threshold = (context_window * 95) / 100;
+        let compact_threshold =
+            compute_auto_compact_threshold(context_window, compaction_cfg.threshold_percent);
 
         if estimated_next_input >= compact_threshold {
             let pre_compact_msg_count = history.len();
@@ -3788,7 +3810,9 @@ impl ChatService for LiveChatService {
                 session = %session_key,
                 estimated_next_input,
                 context_window,
-                "auto-compact triggered (estimated next request over 95% threshold)"
+                threshold_percent = compaction_cfg.threshold_percent,
+                compact_threshold,
+                "auto-compact triggered (estimated next request over chat.compaction.threshold_percent)"
             );
             broadcast(
                 &self.state,
@@ -11191,6 +11215,32 @@ mod tests {
         });
         let msg = format_channel_error_message(&error_obj);
         assert_eq!(msg, "⚠️ Rate limited: Please wait and try again.");
+    }
+
+    #[test]
+    fn compute_auto_compact_threshold_honors_configured_fraction() {
+        // Default: 0.75 × 200K = 150K.
+        assert_eq!(compute_auto_compact_threshold(200_000, 0.75), 150_000);
+        // Aggressive: 0.5 × 200K = 100K, catching auto-compact earlier.
+        assert_eq!(compute_auto_compact_threshold(200_000, 0.5), 100_000);
+    }
+
+    #[test]
+    fn compute_auto_compact_threshold_clamps_out_of_range_values() {
+        // Below 0.1 clamps to 0.1 so a typo like 0.01 doesn't drown the
+        // session in compactions on every single message.
+        assert_eq!(compute_auto_compact_threshold(100_000, 0.01), 10_000);
+        // Above 0.95 clamps to 0.95 so auto-compact can never be silently
+        // disabled by `threshold_percent = 1.0`.
+        assert_eq!(compute_auto_compact_threshold(100_000, 1.0), 95_000);
+    }
+
+    #[test]
+    fn compute_auto_compact_threshold_floors_at_one_for_zero_context_window() {
+        // A zero-token context window (shouldn't happen in practice) must
+        // still produce a non-zero threshold so the `>=` check in send()
+        // doesn't trigger on every message, or on none.
+        assert_eq!(compute_auto_compact_threshold(0, 0.75), 1);
     }
 
     #[test]

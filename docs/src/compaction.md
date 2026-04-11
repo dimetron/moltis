@@ -162,7 +162,7 @@ All compaction settings live under `[chat.compaction]` in `moltis.toml`:
 ```toml
 [chat.compaction]
 mode = "deterministic"              # "deterministic" | "recency_preserving" | "structured" | "llm_replace"
-threshold_percent = 0.75            # Auto-compact at this fraction of context window.
+threshold_percent = 0.75            # Auto-compact trigger AND tail-budget multiplier. See below.
 protect_head = 3                    # Head messages kept verbatim (recency/structured).
 protect_tail_min = 20               # Minimum tail messages kept verbatim (recency/structured).
 tail_budget_ratio = 0.20            # Tail size as fraction of threshold_percent × context_window.
@@ -196,17 +196,31 @@ used. `deterministic` mode ignores every field except `mode` and
 
 ### Picking a threshold
 
-`threshold_percent` controls when *automatic* compaction fires. On a 200 K
-model with the default `0.75`, compaction starts when the session reaches
-150 K tokens.
+`threshold_percent` serves two related purposes:
+
+1. **Auto-compact trigger.** When the estimated next request would
+   exceed `threshold_percent × context_window` tokens, `send()` fires a
+   compaction pre-emptively. On a 200 K model with the default `0.75`,
+   compaction starts when the session reaches 150 K tokens.
+2. **Tail-budget multiplier.** For `recency_preserving` and `structured`
+   modes, the size of the verbatim tail is
+   `threshold_percent × tail_budget_ratio × context_window`. With the
+   defaults that's 200 K × 0.75 × 0.20 = 30 K tokens of tail preserved.
+
+Both uses move together: lowering `threshold_percent` compacts earlier
+**and** shrinks the preserved tail, which is usually what you want on a
+tight context window.
 
 - Lower values (≈ 0.5) compact more aggressively and leave more headroom for
   a new burst of tool calls.
 - Higher values (≈ 0.9) delay compaction as long as possible but risk
-  blowing through the window on a single large tool result.
+  blowing through the window on a single large tool result. The config
+  validator clamps the effective value to `0.95` as an upper bound so
+  auto-compact can't be accidentally disabled.
 
-Manual `chat.compact` RPC calls ignore `threshold_percent` and compact
-whatever's there.
+Manual `chat.compact` RPC calls ignore `threshold_percent` for the
+trigger check and compact whatever's there, but still use it for the
+tail-budget math inside recency-preserving and structured modes.
 
 ### Picking a summary model
 

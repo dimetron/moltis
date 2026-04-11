@@ -247,7 +247,9 @@ message_queue_mode = "followup"   # Default: process queued messages one-by-one 
 #
 [chat.compaction]
 mode = "deterministic"              # "deterministic" | "recency_preserving" | "structured" | "llm_replace"
-# threshold_percent = 0.75          # Auto-compact when the session reaches this fraction of the model context window.
+# threshold_percent = 0.75          # Fires auto-compaction when the next request is estimated to exceed
+                                    # this fraction of the model context window. Also multiplied into
+                                    # the verbatim tail budget for recency_preserving / structured modes.
                                     # Range: 0.10–0.95. Lower = more aggressive compaction.
 # protect_head = 3                  # Number of leading messages kept verbatim by recency/structured modes.
 # protect_tail_min = 20             # Floor for tail messages kept verbatim (recency/structured modes).

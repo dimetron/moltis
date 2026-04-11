@@ -1624,9 +1624,17 @@ pub struct CompactionConfig {
     #[serde(default)]
     pub mode: CompactionMode,
 
-    /// Fraction of the session model's context window at which to trigger
-    /// automatic compaction. Ignored for manual `chat.compact` RPC calls.
-    /// Valid range: `0.1` – `0.95`. Default: `0.75`.
+    /// Fraction of the session model's context window at which automatic
+    /// compaction fires in `send()`. Also used as the first multiplier for
+    /// the verbatim tail budget in `recency_preserving` / `structured`
+    /// modes: `tail_tokens = threshold_percent × tail_budget_ratio ×
+    /// context_window`.
+    ///
+    /// Ignored for manual `chat.compact` RPC calls (those always compact
+    /// whatever's there).
+    ///
+    /// The clamp range is `0.1` – `0.95`; out-of-range values log a
+    /// validation warning and fall back to the default. Default: `0.75`.
     #[serde(default = "default_compaction_threshold")]
     pub threshold_percent: f32,
 
