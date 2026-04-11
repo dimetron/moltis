@@ -50,12 +50,15 @@ as a single user message.
 or you're running without network access. This is the default so new
 installs don't silently spend tokens on compaction.
 
-### `recency_preserving` *(not yet implemented — moltis-h0c)*
+### `recency_preserving`
 
 **Zero LLM calls, higher fidelity.** Keeps the first few messages (system
 prompt + first exchange) and the most recent ~20 % of the context window
-verbatim. In the middle, only bulky tool-result content is replaced with a
-placeholder string — user and assistant messages survive.
+verbatim. The middle region is collapsed into a short marker message
+(`"N earlier messages were elided… Recent messages are preserved verbatim
+below."`) and any bulky tool-result content in the retained slice is
+replaced with a placeholder so a single multi-KB tool output can't blow
+through the context window on its own.
 
 **Strengths**
 - No LLM cost, still offline-safe.
@@ -150,7 +153,7 @@ behaviour).
 | Fallback on LLM failure | N/A | N/A | → `recency_preserving` | abort |
 | Works offline | ✓ | ✓ | ✗ | ✗ |
 | Deterministic | ✓ | ✓ | ✗ | ✗ |
-| Status | shipped | **not yet implemented** | **not yet implemented** | shipped |
+| Status | shipped | shipped | **not yet implemented** | shipped |
 
 ## Configuration
 
@@ -215,9 +218,9 @@ just like the pre-PR behaviour did.
 ## Tracking issues
 
 - Epic: **moltis-dxw** — pluggable compaction modes
-- **moltis-g37** — config scaffolding, docs, `llm_replace` mode *(this page)*
-- **moltis-h0c** — implement `recency_preserving` mode
-- **moltis-aff** — implement `structured` mode
+- **moltis-g37** — config scaffolding, docs, `llm_replace` mode ✓
+- **moltis-h0c** — `recency_preserving` mode ✓
+- **moltis-aff** — `structured` mode (in progress)
 - **moltis-8me** — auxiliary-model subsystem for cheap summary models
 
 ## Further reading

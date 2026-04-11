@@ -219,10 +219,14 @@ message_queue_mode = "followup"   # Default: process queued messages one-by-one 
 #                          low fidelity. Best for short chat channels and
 #                          cost-sensitive deployments.
 #
-#   "recency_preserving"   NOT YET IMPLEMENTED (moltis-h0c). Zero LLM calls.
-#                          Keeps head (system prompt + first exchange) and
-#                          recent tail verbatim; prunes only bulky tool-result
-#                          content in the middle region. Mid fidelity, free.
+#   "recency_preserving"   Zero LLM calls. Keeps head (system prompt +
+#                          first exchange) and recent tail verbatim (sized
+#                          by token budget). Collapses the middle into a
+#                          short marker message and replaces any bulky
+#                          tool-result content in the retained slice with a
+#                          placeholder. Repairs orphaned tool_use /
+#                          tool_result pairs so strict providers accept the
+#                          retry. Mid fidelity, free.
 #
 #   "structured"           NOT YET IMPLEMENTED (moltis-aff). Head + LLM
 #                          structured summary + tail. Uses a

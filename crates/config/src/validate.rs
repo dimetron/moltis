@@ -1189,23 +1189,16 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
         });
     }
     match compaction.mode {
-        crate::schema::CompactionMode::RecencyPreserving => {
-            diagnostics.push(Diagnostic {
-                severity: Severity::Warning,
-                category: "not-implemented",
-                path: "chat.compaction.mode".into(),
-                message: "chat.compaction.mode = \"recency_preserving\" is not yet implemented (tracked by beads issue moltis-h0c); compaction will error until the strategy lands. Use \"deterministic\" or \"llm_replace\" in the meantime.".into(),
-            });
-        },
         crate::schema::CompactionMode::Structured => {
             diagnostics.push(Diagnostic {
                 severity: Severity::Warning,
                 category: "not-implemented",
                 path: "chat.compaction.mode".into(),
-                message: "chat.compaction.mode = \"structured\" is not yet implemented (tracked by beads issue moltis-aff); compaction will error until the strategy lands. Use \"deterministic\" or \"llm_replace\" in the meantime.".into(),
+                message: "chat.compaction.mode = \"structured\" is not yet implemented (tracked by beads issue moltis-aff); compaction will error until the strategy lands. Use \"deterministic\", \"recency_preserving\", or \"llm_replace\" in the meantime.".into(),
             });
         },
         crate::schema::CompactionMode::Deterministic
+        | crate::schema::CompactionMode::RecencyPreserving
         | crate::schema::CompactionMode::LlmReplace => {},
     }
 

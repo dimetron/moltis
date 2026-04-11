@@ -48,6 +48,21 @@ pub(crate) enum CompactionRunError {
         mode: &'static str,
         issue: &'static str,
     },
+    /// `recency_preserving` couldn't make meaningful progress: the history is
+    /// already smaller than `protect_head + protect_tail_min + 1`, and there
+    /// was no bulky tool-result content to prune. The caller should fall
+    /// back to a different mode (e.g. `deterministic`) rather than loop.
+    #[error(
+        "history has {messages} messages — too small for recency_preserving with \
+         protect_head={head} and protect_tail_min={tail}; no tool-result pruning \
+         was possible either. Try chat.compaction.mode = \"deterministic\" for \
+         tiny sessions."
+    )]
+    TooSmallToCompact {
+        messages: usize,
+        head: usize,
+        tail: usize,
+    },
     /// The user selected a mode that requires a cargo feature that isn't enabled.
     #[cfg(not(feature = "llm-compaction"))]
     #[error("compaction mode '{mode}' requires the 'llm-compaction' cargo feature to be enabled")]
@@ -93,10 +108,10 @@ pub(crate) async fn run_compaction(
                 })
             }
         },
-        CompactionMode::RecencyPreserving => Err(CompactionRunError::NotYetImplemented {
-            mode: "recency_preserving",
-            issue: "moltis-h0c",
-        }),
+        CompactionMode::RecencyPreserving => {
+            let context_window = provider.map_or(200_000, LlmProvider::context_window);
+            recency_preserving_strategy(history, config, context_window)
+        },
         CompactionMode::Structured => Err(CompactionRunError::NotYetImplemented {
             mode: "structured",
             issue: "moltis-aff",
@@ -124,6 +139,117 @@ fn deterministic_strategy(history: &[Value]) -> Result<Vec<Value>, CompactionRun
     Ok(vec![build_summary_message(
         &crate::compaction::get_compact_continuation_message(&summary, false),
     )])
+}
+
+/// `CompactionMode::RecencyPreserving` strategy — head + middle-prune + tail.
+///
+/// Keeps the first `config.protect_head` messages and a token-budget tail
+/// verbatim. The middle is collapsed into a single marker message; any bulky
+/// tool-result content that survives in the head or tail is replaced with a
+/// placeholder so the retry fits inside the model's context window. After the
+/// splice, orphaned tool_use / tool_result pairs are repaired so strict
+/// providers don't reject the retry.
+///
+/// No LLM calls. Inspired by `hermes-agent`'s `ContextCompressor` tool-output
+/// pruning phase and openclaw's `repairToolUseResultPairing`.
+fn recency_preserving_strategy(
+    history: &[Value],
+    config: &CompactionConfig,
+    context_window: u32,
+) -> Result<Vec<Value>, CompactionRunError> {
+    // Phase 1 — compute boundaries.
+    let n = history.len();
+    let protect_head = (config.protect_head as usize).min(n);
+    let protect_tail_min = (config.protect_tail_min as usize).min(n.saturating_sub(protect_head));
+
+    // Convert fractional budgets to a concrete token count. Clamp everything
+    // into a sane range so wildly misconfigured ratios don't divide by zero.
+    let threshold = config.threshold_percent.clamp(0.1, 0.95);
+    let tail_ratio = config.tail_budget_ratio.clamp(0.05, 0.80);
+    let tail_budget_tokens =
+        ((f64::from(context_window) * f64::from(threshold) * f64::from(tail_ratio)).round() as u64)
+            .max(1);
+
+    // Walk backward from the end until either the budget is consumed or the
+    // floor (protect_tail_min) is satisfied. Whichever covers more messages
+    // wins, so small sessions still keep the floor even when their tail is
+    // tiny and large sessions honour the token budget when the floor is too
+    // small.
+    let head_end = protect_head;
+    let mut accumulated: u64 = 0;
+    let mut tail_start = n;
+    for idx in (head_end..n).rev() {
+        let msg_tokens = message_tokens(&history[idx]);
+        let keep_for_budget = accumulated + msg_tokens <= tail_budget_tokens;
+        let keep_for_floor = (n - idx) <= protect_tail_min;
+        if keep_for_budget || keep_for_floor {
+            accumulated += msg_tokens;
+            tail_start = idx;
+        } else {
+            break;
+        }
+    }
+
+    // Never split a tool_use / tool_result group: if the boundary falls on a
+    // tool-result message, walk forward past the whole group (the parent
+    // assistant message and any siblings).
+    tail_start = align_boundary_forward_past_tool_group(history, tail_start);
+
+    // Phase 2 — if head and tail already cover (or overlap) the whole
+    // history there's no middle to cut. Prune any bulky tool-result content
+    // in place; if nothing actually changed, surface a clear error so the
+    // caller can fall back to a different mode instead of retrying forever.
+    if head_end >= tail_start {
+        let mut kept: Vec<Value> = history.to_vec();
+        let kept_len = kept.len();
+        let pruned =
+            prune_tool_results_before(&mut kept, kept_len, config.tool_prune_char_threshold);
+        if pruned == 0 {
+            return Err(CompactionRunError::TooSmallToCompact {
+                messages: n,
+                head: protect_head,
+                tail: protect_tail_min,
+            });
+        }
+        return sanitize_tool_pairs(kept);
+    }
+
+    // Phase 3 — assemble head + marker + tail.
+    let mut kept: Vec<Value> = Vec::with_capacity(head_end + 1 + (n - tail_start));
+    kept.extend(history[..head_end].iter().cloned());
+
+    let middle = &history[head_end..tail_start];
+    if !middle.is_empty() {
+        kept.push(build_middle_marker(middle));
+    }
+
+    kept.extend(history[tail_start..].iter().cloned());
+
+    // Phase 4 — prune bulky tool-result content in anything older than the
+    // last `protect_tail_min * 3` messages (same heuristic as hermes). This
+    // catches cases where the tail extends deep into the session and still
+    // contains outdated tool output that isn't worth keeping verbatim.
+    let tool_prune_frontier = kept.len().saturating_sub(protect_tail_min * 3);
+    prune_tool_results_before(
+        &mut kept,
+        tool_prune_frontier,
+        config.tool_prune_char_threshold,
+    );
+
+    // Phase 5 — repair any orphaned tool_call / tool_result pairs so strict
+    // providers accept the retry.
+    let kept = sanitize_tool_pairs(kept)?;
+
+    info!(
+        input_messages = n,
+        output_messages = kept.len(),
+        head = head_end,
+        middle = tail_start - head_end,
+        tail = n - tail_start,
+        "chat.compact: recency_preserving"
+    );
+
+    Ok(kept)
 }
 
 /// `CompactionMode::LlmReplace` strategy — pre-PR #653 behaviour.
@@ -192,6 +318,315 @@ async fn llm_replace_strategy(
     Ok(vec![build_summary_message(&summary)])
 }
 
+// ── Recency-preserving helpers ────────────────────────────────────────────
+
+/// Placeholder text injected when a bulky tool-result is pruned in place.
+const PRUNED_TOOL_PLACEHOLDER: &str = "[Old tool output cleared to save context space]";
+
+/// Rough token count for a persisted message.
+///
+/// Uses the same bytes/4 heuristic as the chat crate's existing estimator
+/// plus a 10-token overhead for role/metadata framing. Covers the common
+/// shapes without pulling in a tokenizer dependency.
+fn message_tokens(message: &Value) -> u64 {
+    const META_OVERHEAD: u64 = 10;
+    let mut bytes: usize = 0;
+
+    // Top-level content: string or array of content blocks.
+    if let Some(text) = message.get("content").and_then(Value::as_str) {
+        bytes += text.len();
+    } else if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+        for block in blocks {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                bytes += text.len();
+            } else if let Some(url) = block
+                .get("image_url")
+                .and_then(|iu| iu.get("url"))
+                .and_then(Value::as_str)
+            {
+                bytes += url.len();
+            }
+        }
+    }
+
+    // Tool call arguments on assistant messages.
+    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+        for call in calls {
+            if let Some(args) = call
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(Value::as_str)
+            {
+                bytes += args.len();
+            }
+        }
+    }
+
+    // Tool-result structured fields.
+    if let Some(result) = message.get("result") {
+        bytes += serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
+    }
+    if let Some(error) = message.get("error").and_then(Value::as_str) {
+        bytes += error.len();
+    }
+
+    ((bytes as u64) / 4) + META_OVERHEAD
+}
+
+/// True if the message is a tool/tool_result shape.
+fn is_tool_role_value(message: &Value) -> bool {
+    matches!(
+        message.get("role").and_then(Value::as_str),
+        Some("tool" | "tool_result")
+    )
+}
+
+/// Extract tool-call IDs from an assistant message's `tool_calls` array.
+fn assistant_tool_call_ids(message: &Value) -> Vec<String> {
+    let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    calls
+        .iter()
+        .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+/// Extract `tool_call_id` from a tool/tool_result message.
+fn tool_result_call_id(message: &Value) -> Option<&str> {
+    message.get("tool_call_id").and_then(Value::as_str)
+}
+
+/// Walk forward past a consecutive run of tool/tool_result messages so the
+/// tail boundary never starts mid-group.
+fn align_boundary_forward_past_tool_group(history: &[Value], mut idx: usize) -> usize {
+    while idx < history.len() && is_tool_role_value(&history[idx]) {
+        idx += 1;
+    }
+    idx
+}
+
+/// Replace oversized tool-result content with [`PRUNED_TOOL_PLACEHOLDER`] in
+/// messages before `end_exclusive`, returning the number of messages pruned.
+///
+/// Preserves lightweight tool results (under the threshold) and everything
+/// at or after the protected tail region. Handles both the `role = "tool"`
+/// shape (string `content`) and the `role = "tool_result"` shape
+/// (`result` JSON + optional `error` string).
+fn prune_tool_results_before(
+    messages: &mut [Value],
+    end_exclusive: usize,
+    threshold_chars: u32,
+) -> usize {
+    let threshold = threshold_chars as usize;
+    let mut pruned = 0;
+
+    for msg in messages.iter_mut().take(end_exclusive) {
+        if !is_tool_role_value(msg) {
+            continue;
+        }
+        if prune_single_tool_result(msg, threshold) {
+            pruned += 1;
+        }
+    }
+
+    pruned
+}
+
+/// Replace oversized content on a single tool/tool_result message.
+/// Returns `true` if anything was rewritten.
+fn prune_single_tool_result(message: &mut Value, threshold: usize) -> bool {
+    let mut changed = false;
+
+    // `role = "tool"`: plain string content. Skip if already pruned or
+    // under the threshold.
+    if let Some(content) = message.get("content").and_then(Value::as_str) {
+        if content == PRUNED_TOOL_PLACEHOLDER {
+            return false;
+        }
+        if content.len() > threshold
+            && let Some(obj) = message.as_object_mut()
+        {
+            obj.insert(
+                "content".to_string(),
+                Value::String(PRUNED_TOOL_PLACEHOLDER.to_string()),
+            );
+            changed = true;
+        }
+    }
+
+    // `role = "tool_result"`: structured `result` + optional `error`.
+    let result_too_big = message
+        .get("result")
+        .is_some_and(|r| serde_json::to_string(r).map(|s| s.len()).unwrap_or(0) > threshold);
+    let error_too_big = message
+        .get("error")
+        .and_then(Value::as_str)
+        .is_some_and(|e| e.len() > threshold);
+
+    if (result_too_big || error_too_big)
+        && let Some(obj) = message.as_object_mut()
+    {
+        if result_too_big {
+            obj.insert(
+                "result".to_string(),
+                Value::String(PRUNED_TOOL_PLACEHOLDER.to_string()),
+            );
+            changed = true;
+        }
+        if error_too_big {
+            obj.insert(
+                "error".to_string(),
+                Value::String(PRUNED_TOOL_PLACEHOLDER.to_string()),
+            );
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+/// Repair orphaned tool_call / tool_result pairs after compaction.
+///
+/// Two failure modes, both rejected by strict providers (Anthropic,
+/// OpenAI strict mode):
+///
+/// 1. A tool result references a `tool_call_id` whose parent assistant
+///    `tool_call` was dropped during pruning. → removed.
+/// 2. An assistant `tool_call` has no matching tool result (the result was
+///    dropped). → a stub tool result is inserted after the assistant
+///    message so the pairing is well-formed.
+///
+/// Adapted from hermes-agent's `_sanitize_tool_pairs` and openclaw's
+/// `repairToolUseResultPairing`.
+fn sanitize_tool_pairs(messages: Vec<Value>) -> Result<Vec<Value>, CompactionRunError> {
+    use std::collections::HashSet;
+
+    // Pass 1: collect surviving tool_call IDs from assistant messages.
+    let mut surviving_call_ids: HashSet<String> = HashSet::new();
+    for msg in &messages {
+        if msg.get("role").and_then(Value::as_str) == Some("assistant") {
+            for id in assistant_tool_call_ids(msg) {
+                surviving_call_ids.insert(id);
+            }
+        }
+    }
+
+    // Pass 2: collect the call IDs referenced by tool results.
+    let mut result_call_ids: HashSet<String> = HashSet::new();
+    for msg in &messages {
+        if is_tool_role_value(msg)
+            && let Some(id) = tool_result_call_id(msg)
+        {
+            result_call_ids.insert(id.to_string());
+        }
+    }
+
+    // Pass 3: drop tool results whose call_id is no longer in the history.
+    let orphaned: HashSet<String> = result_call_ids
+        .difference(&surviving_call_ids)
+        .cloned()
+        .collect();
+    let filtered: Vec<Value> = if orphaned.is_empty() {
+        messages
+    } else {
+        messages
+            .into_iter()
+            .filter(|m| {
+                if !is_tool_role_value(m) {
+                    return true;
+                }
+                tool_result_call_id(m).is_none_or(|id| !orphaned.contains(id))
+            })
+            .collect()
+    };
+
+    // Pass 4: for every surviving assistant tool_call missing a matching
+    // tool result, insert a stub tool message immediately after the parent.
+    // We rebuild a new vec so we can splice stubs in the right positions.
+    let mut patched: Vec<Value> = Vec::with_capacity(filtered.len());
+    let mut satisfied: HashSet<String> = HashSet::new();
+
+    // First pass to record which call IDs already have results further down
+    // the history. We only need the count of surviving results here.
+    for msg in &filtered {
+        if is_tool_role_value(msg)
+            && let Some(id) = tool_result_call_id(msg)
+        {
+            satisfied.insert(id.to_string());
+        }
+    }
+
+    for msg in filtered {
+        let is_assistant = msg.get("role").and_then(Value::as_str) == Some("assistant");
+        let tool_calls = if is_assistant {
+            assistant_tool_call_ids(&msg)
+        } else {
+            Vec::new()
+        };
+        patched.push(msg);
+        for call_id in tool_calls {
+            if !satisfied.contains(&call_id) {
+                patched.push(stub_tool_result(&call_id));
+                satisfied.insert(call_id);
+            }
+        }
+    }
+
+    Ok(patched)
+}
+
+/// Build a `role: tool` stub message for an orphaned assistant tool_call.
+fn stub_tool_result(tool_call_id: &str) -> Value {
+    let msg = PersistedMessage::Tool {
+        tool_call_id: tool_call_id.to_string(),
+        content: "[Result from earlier conversation — see context summary above]".to_string(),
+        created_at: Some(crate::now_ms()),
+    };
+    msg.to_value()
+}
+
+/// Build a single user message that replaces the dropped middle region.
+///
+/// Counts each message by role so the LLM retry has a quick sense of what
+/// was elided, then notes that recent turns are preserved verbatim below.
+fn build_middle_marker(middle: &[Value]) -> Value {
+    let mut users = 0usize;
+    let mut assistants = 0usize;
+    let mut tools = 0usize;
+    for msg in middle {
+        match msg.get("role").and_then(Value::as_str) {
+            Some("user") => users += 1,
+            Some("assistant") => assistants += 1,
+            Some("tool") | Some("tool_result") => tools += 1,
+            _ => {},
+        }
+    }
+
+    let body = format!(
+        "[Conversation Compacted]\n\n\
+         {total} earlier messages were elided to save context space \
+         ({users} user, {assistants} assistant, {tools} tool). \
+         Recent messages are preserved verbatim below. \
+         Use chat.compaction.mode = \"structured\" (when available) for a \
+         full semantic summary of the omitted middle region.",
+        total = middle.len(),
+        users = users,
+        assistants = assistants,
+        tools = tools,
+    );
+
+    let msg = PersistedMessage::User {
+        content: MessageContent::Text(body),
+        created_at: Some(crate::now_ms()),
+        audio: None,
+        channel: None,
+        seq: None,
+        run_id: None,
+    };
+    msg.to_value()
+}
+
 /// Wrap a summary string in a `PersistedMessage::User` ready for `replace_history`.
 ///
 /// Using the `user` role (not `assistant`) avoids breaking strict providers
@@ -252,8 +687,51 @@ mod tests {
         );
     }
 
+    // ── RecencyPreserving strategy ────────────────────────────────────
+
+    fn mk_user(text: &str) -> Value {
+        json!({"role": "user", "content": text})
+    }
+
+    fn mk_assistant(text: &str) -> Value {
+        json!({"role": "assistant", "content": text})
+    }
+
+    fn mk_assistant_with_tool_call(text: &str, call_id: &str, tool: &str) -> Value {
+        json!({
+            "role": "assistant",
+            "content": text,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": { "name": tool, "arguments": "{}" }
+            }]
+        })
+    }
+
+    fn mk_tool_result(call_id: &str, content: &str) -> Value {
+        json!({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": content,
+        })
+    }
+
+    fn config_with_small_boundaries() -> CompactionConfig {
+        CompactionConfig {
+            mode: CompactionMode::RecencyPreserving,
+            protect_head: 2,
+            protect_tail_min: 2,
+            tool_prune_char_threshold: 20,
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
-    async fn recency_preserving_mode_is_not_yet_implemented() {
+    async fn recency_preserving_tiny_history_returns_too_small_error() {
+        // A 4-message sample with no tool-result content is below the
+        // 3+20 default floor and has nothing to prune — expect a clear
+        // error pointing the user at a different mode.
         let history = sample_history();
         let config = CompactionConfig {
             mode: CompactionMode::RecencyPreserving,
@@ -261,12 +739,178 @@ mod tests {
         };
         let err = run_compaction(&history, &config, None).await.unwrap_err();
         match err {
-            CompactionRunError::NotYetImplemented { mode, issue } => {
-                assert_eq!(mode, "recency_preserving");
-                assert_eq!(issue, "moltis-h0c");
+            CompactionRunError::TooSmallToCompact { messages, .. } => {
+                assert_eq!(messages, history.len());
             },
-            other => panic!("expected NotYetImplemented, got {other:?}"),
+            other => panic!("expected TooSmallToCompact, got {other:?}"),
         }
+    }
+
+    /// Context window small enough to force the tail budget to consume only
+    /// a handful of messages in tests. With default `threshold_percent=0.75`
+    /// and `tail_budget_ratio=0.20`, 200 tokens of budget means
+    /// `200 × 0.75 × 0.20 = 30` tokens — roughly two small messages after
+    /// the 10-token metadata overhead per message.
+    const TEST_CONTEXT_WINDOW_TINY: u32 = 200;
+
+    #[test]
+    fn recency_preserving_splices_marker_between_head_and_tail() {
+        // 10 messages: head=2, tail=2 → middle=6 collapsed into 1 marker.
+        let mut history = Vec::new();
+        for i in 0..5 {
+            history.push(mk_user(&format!("user {i}")));
+            history.push(mk_assistant(&format!("assistant {i}")));
+        }
+
+        let config = config_with_small_boundaries();
+        let result =
+            recency_preserving_strategy(&history, &config, TEST_CONTEXT_WINDOW_TINY).unwrap();
+
+        // 2 head + 1 marker + 2 tail = 5 messages.
+        assert_eq!(result.len(), 5, "result: {result:#?}");
+
+        // Head is verbatim.
+        assert_eq!(
+            result[0].get("content").and_then(Value::as_str),
+            Some("user 0")
+        );
+        assert_eq!(
+            result[1].get("content").and_then(Value::as_str),
+            Some("assistant 0")
+        );
+
+        // Marker has the right shape.
+        let marker = result[2]
+            .get("content")
+            .and_then(Value::as_str)
+            .expect("marker content");
+        assert!(
+            marker.starts_with("[Conversation Compacted]"),
+            "got: {marker}"
+        );
+        assert!(marker.contains("6 earlier messages"), "got: {marker}");
+
+        // Tail is verbatim — the LAST two source messages.
+        assert_eq!(
+            result[3].get("content").and_then(Value::as_str),
+            Some("user 4")
+        );
+        assert_eq!(
+            result[4].get("content").and_then(Value::as_str),
+            Some("assistant 4")
+        );
+    }
+
+    #[tokio::test]
+    async fn recency_preserving_prunes_oversized_tool_results_in_head_only_session() {
+        // Only 3 messages total — head+tail cover everything, but the
+        // middle tool output is bulky enough to be worth pruning in place.
+        let oversized = "x".repeat(500);
+        let history = vec![
+            mk_user("first user"),
+            mk_assistant_with_tool_call("calling tool", "call_1", "read_file"),
+            mk_tool_result("call_1", &oversized),
+        ];
+
+        let config = CompactionConfig {
+            mode: CompactionMode::RecencyPreserving,
+            protect_head: 3,
+            protect_tail_min: 3,
+            tool_prune_char_threshold: 20,
+            ..Default::default()
+        };
+        let result = run_compaction(&history, &config, None).await.unwrap();
+
+        // Same number of messages, but the tool content is now a placeholder.
+        assert_eq!(result.len(), 3);
+        let tool_content = result[2]
+            .get("content")
+            .and_then(Value::as_str)
+            .expect("tool content");
+        assert_eq!(tool_content, PRUNED_TOOL_PLACEHOLDER);
+    }
+
+    #[test]
+    fn recency_preserving_drops_orphaned_tool_results() {
+        // Head keeps first 2 messages. A later tool result references a
+        // parent that lives in the dropped middle — it must be removed so
+        // strict providers don't reject the retry. Use an explicit small
+        // context window so the middle cut actually happens.
+        let history = vec![
+            mk_user("u0"),
+            mk_assistant("a0"),
+            // Middle starts here — these will be collapsed into the marker.
+            mk_user("u1"),
+            mk_assistant_with_tool_call("mid-a", "orphan_call", "exec"),
+            mk_tool_result("orphan_call", "mid tool out"),
+            mk_user("u2"),
+            mk_assistant("mid-a2"),
+            // Another orphan result that appears in the tail but whose
+            // parent assistant was in the middle and got dropped.
+            mk_tool_result("orphan_call", "late tail out"),
+            mk_user("u3"),
+        ];
+
+        let config = CompactionConfig {
+            mode: CompactionMode::RecencyPreserving,
+            protect_head: 2,
+            protect_tail_min: 2,
+            // High enough that nothing in the kept slice gets pruned in place.
+            tool_prune_char_threshold: 10_000,
+            ..Default::default()
+        };
+        let result =
+            recency_preserving_strategy(&history, &config, TEST_CONTEXT_WINDOW_TINY).unwrap();
+
+        // The orphaned tool result must not survive anywhere.
+        for msg in &result {
+            if is_tool_role_value(msg) {
+                assert_ne!(
+                    tool_result_call_id(msg),
+                    Some("orphan_call"),
+                    "orphaned tool result should be dropped, got: {msg:#?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recency_preserving_stubs_missing_tool_results_for_surviving_assistant_calls() {
+        // Assistant with tool_call survives in the head; its tool result is
+        // in the middle and gets dropped. Sanitizer must insert a stub so
+        // the call_id is satisfied.
+        let history = vec![
+            mk_user("start"),
+            mk_assistant_with_tool_call("running", "head_call", "exec"),
+            // Middle: tool result for head_call is here and will be elided.
+            mk_tool_result("head_call", "result body"),
+            mk_user("filler 1"),
+            mk_assistant("filler reply 1"),
+            mk_user("filler 2"),
+            mk_assistant("filler reply 2"),
+            // Tail: unrelated messages.
+            mk_user("tail user"),
+            mk_assistant("tail assistant"),
+        ];
+
+        let config = CompactionConfig {
+            mode: CompactionMode::RecencyPreserving,
+            protect_head: 2,
+            protect_tail_min: 2,
+            tool_prune_char_threshold: 10_000,
+            ..Default::default()
+        };
+        let result =
+            recency_preserving_strategy(&history, &config, TEST_CONTEXT_WINDOW_TINY).unwrap();
+
+        // The head assistant's tool_call must have a matching result somewhere.
+        let stub = result
+            .iter()
+            .find(|m| is_tool_role_value(m) && tool_result_call_id(m) == Some("head_call"));
+        assert!(
+            stub.is_some(),
+            "expected a stub tool result for head_call, got: {result:#?}"
+        );
     }
 
     #[tokio::test]

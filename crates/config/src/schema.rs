@@ -1559,19 +1559,19 @@ pub enum CompactionMode {
 
     /// Head + middle-prune + tail, with no LLM calls.
     ///
-    /// Keeps the first few messages (system prompt + first exchange) verbatim,
-    /// keeps the most recent ~20% of the context window verbatim, and in the
-    /// middle replaces only bulky tool-result content with a placeholder
-    /// string. User and assistant messages survive. No LLM needed.
+    /// Keeps the first `protect_head` messages verbatim (system prompt +
+    /// first exchange), keeps a token-budget tail (default: 20 % of the
+    /// context-window threshold) verbatim, and collapses the middle into a
+    /// single marker message. Any bulky tool-result content that survives
+    /// in the retained slice is replaced with a placeholder. After splicing,
+    /// orphaned tool_use / tool_result pairs are repaired so strict
+    /// providers accept the retry.
     ///
-    /// **Best for:** most agentic coding sessions where recency matters more
-    /// than middle history and you want zero token cost.
+    /// **Best for:** most agentic coding sessions where recency matters
+    /// more than middle history and you want zero token cost.
     ///
     /// **Weaknesses:** cannot merge redundant discussions or preserve
-    /// reasoning from the pruned middle region.
-    ///
-    /// **Status:** scaffolding only — tracked by beads issue `moltis-h0c`.
-    /// Selecting this mode today returns a configuration error.
+    /// reasoning from the collapsed middle region.
     RecencyPreserving,
 
     /// Head + LLM-summarised middle + tail using a structured template.
