@@ -5075,3 +5075,185 @@ async fn persist_disabled_hooks(state: &Arc<crate::state::GatewayState>) {
         warn!("failed to persist disabled hooks: {e}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        crate::{
+            auth::{AuthMode, ResolvedAuth},
+            services::GatewayServices,
+            state::GatewayState,
+        },
+        std::sync::{Mutex, OnceLock},
+        tempfile::TempDir,
+    };
+
+    fn memory_config_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    struct MemoryConfigTestGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _config_dir: TempDir,
+        _data_dir: TempDir,
+    }
+
+    impl MemoryConfigTestGuard {
+        fn new() -> Self {
+            let lock = memory_config_test_lock();
+            let config_dir = tempfile::tempdir()
+                .unwrap_or_else(|error| panic!("config tempdir should be created: {error}"));
+            let data_dir = tempfile::tempdir()
+                .unwrap_or_else(|error| panic!("data tempdir should be created: {error}"));
+            moltis_config::set_config_dir(config_dir.path().to_path_buf());
+            moltis_config::set_data_dir(data_dir.path().to_path_buf());
+            Self {
+                _lock: lock,
+                _config_dir: config_dir,
+                _data_dir: data_dir,
+            }
+        }
+    }
+
+    impl Drop for MemoryConfigTestGuard {
+        fn drop(&mut self) {
+            moltis_config::clear_config_dir();
+            moltis_config::clear_data_dir();
+        }
+    }
+
+    async fn dispatch_memory_method(method: &str, params: serde_json::Value) -> serde_json::Value {
+        let mut reg = MethodRegistry::default();
+        register(&mut reg);
+        let response = reg
+            .dispatch(MethodContext {
+                request_id: "test".into(),
+                method: method.to_string(),
+                params,
+                client_conn_id: "conn-1".into(),
+                client_role: "operator".into(),
+                client_scopes: vec!["operator.write".into(), "operator.read".into()],
+                state: GatewayState::new(
+                    ResolvedAuth {
+                        mode: AuthMode::Token,
+                        token: None,
+                        password: None,
+                    },
+                    GatewayServices::noop(),
+                ),
+                channel: None,
+            })
+            .await;
+
+        assert!(response.ok, "method failed: {:?}", response.error);
+        match response.payload {
+            Some(payload) => payload,
+            None => panic!("method {method} returned no payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_config_get_reports_typed_memory_fields() {
+        let _guard = MemoryConfigTestGuard::new();
+        let update_result = moltis_config::update_config(|cfg| {
+            cfg.memory.style = moltis_config::MemoryStyle::SearchOnly;
+            cfg.memory.agent_write_mode = moltis_config::AgentMemoryWriteMode::PromptOnly;
+            cfg.memory.user_profile_write_mode = moltis_config::UserProfileWriteMode::ExplicitOnly;
+            cfg.memory.backend = moltis_config::MemoryBackend::Qmd;
+            cfg.memory.provider = Some(moltis_config::MemoryProvider::OpenAi);
+            cfg.memory.citations = moltis_config::MemoryCitationsMode::Off;
+            cfg.memory.disable_rag = true;
+            cfg.memory.llm_reranking = true;
+            cfg.memory.search_merge_strategy = moltis_config::MemorySearchMergeStrategy::Linear;
+            cfg.memory.session_export = moltis_config::SessionExportMode::Off;
+            cfg.chat.prompt_memory_mode = moltis_config::PromptMemoryMode::FrozenAtSessionStart;
+        });
+        assert!(update_result.is_ok(), "config update should succeed");
+
+        let payload = dispatch_memory_method("memory.config.get", serde_json::json!({})).await;
+        assert_eq!(payload["style"], "search-only");
+        assert_eq!(payload["agent_write_mode"], "prompt-only");
+        assert_eq!(payload["user_profile_write_mode"], "explicit-only");
+        assert_eq!(payload["backend"], "qmd");
+        assert_eq!(payload["provider"], "openai");
+        assert_eq!(payload["citations"], "off");
+        assert_eq!(payload["disable_rag"], true);
+        assert_eq!(payload["llm_reranking"], true);
+        assert_eq!(payload["search_merge_strategy"], "linear");
+        assert_eq!(payload["session_export"], "off");
+        assert_eq!(payload["prompt_memory_mode"], "frozen-at-session-start");
+    }
+
+    #[tokio::test]
+    async fn memory_config_update_persists_typed_memory_fields() {
+        let _guard = MemoryConfigTestGuard::new();
+
+        let payload = dispatch_memory_method(
+            "memory.config.update",
+            serde_json::json!({
+                "style": "prompt-only",
+                "agent_write_mode": "search-only",
+                "user_profile_write_mode": "off",
+                "backend": "qmd",
+                "provider": "custom",
+                "citations": "on",
+                "disable_rag": true,
+                "llm_reranking": true,
+                "search_merge_strategy": "linear",
+                "session_export": false,
+                "prompt_memory_mode": "frozen-at-session-start",
+            }),
+        )
+        .await;
+
+        assert_eq!(payload["style"], "prompt-only");
+        assert_eq!(payload["agent_write_mode"], "search-only");
+        assert_eq!(payload["user_profile_write_mode"], "off");
+        assert_eq!(payload["backend"], "qmd");
+        assert_eq!(payload["provider"], "custom");
+        assert_eq!(payload["citations"], "on");
+        assert_eq!(payload["disable_rag"], true);
+        assert_eq!(payload["llm_reranking"], true);
+        assert_eq!(payload["search_merge_strategy"], "linear");
+        assert_eq!(payload["session_export"], "off");
+        assert_eq!(payload["prompt_memory_mode"], "frozen-at-session-start");
+
+        let config = moltis_config::discover_and_load();
+        assert_eq!(config.memory.style, moltis_config::MemoryStyle::PromptOnly);
+        assert_eq!(
+            config.memory.agent_write_mode,
+            moltis_config::AgentMemoryWriteMode::SearchOnly
+        );
+        assert_eq!(
+            config.memory.user_profile_write_mode,
+            moltis_config::UserProfileWriteMode::Off
+        );
+        assert_eq!(config.memory.backend, moltis_config::MemoryBackend::Qmd);
+        assert_eq!(
+            config.memory.provider,
+            Some(moltis_config::MemoryProvider::Custom)
+        );
+        assert_eq!(
+            config.memory.citations,
+            moltis_config::MemoryCitationsMode::On
+        );
+        assert!(config.memory.disable_rag);
+        assert!(config.memory.llm_reranking);
+        assert_eq!(
+            config.memory.search_merge_strategy,
+            moltis_config::MemorySearchMergeStrategy::Linear
+        );
+        assert_eq!(
+            config.memory.session_export,
+            moltis_config::SessionExportMode::Off
+        );
+        assert_eq!(
+            config.chat.prompt_memory_mode,
+            moltis_config::PromptMemoryMode::FrozenAtSessionStart
+        );
+    }
+}

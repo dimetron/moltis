@@ -1418,9 +1418,54 @@ impl Default for Services {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, serde_json::json};
 
     struct SlowShutdownBrowserService;
+
+    struct DefaultRefreshChatService;
+
+    #[async_trait::async_trait]
+    impl ChatService for DefaultRefreshChatService {
+        async fn send(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn abort(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn cancel_queued(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn history(&self, _params: Value) -> ServiceResult {
+            Ok(json!([]))
+        }
+
+        async fn inject(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn clear(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn compact(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn context(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn raw_prompt(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+
+        async fn full_context(&self, _params: Value) -> ServiceResult {
+            Ok(json!({}))
+        }
+    }
 
     #[async_trait::async_trait]
     impl BrowserService for SlowShutdownBrowserService {
@@ -1466,5 +1511,18 @@ mod tests {
     fn model_service_not_configured_error_returns_expected_message() {
         let error = model_service_not_configured_error("models.test");
         assert_eq!(error.to_string(), "model service not configured");
+    }
+
+    #[tokio::test]
+    async fn chat_service_default_refresh_prompt_memory_returns_not_configured() {
+        let svc = DefaultRefreshChatService;
+        let error = match svc
+            .refresh_prompt_memory(json!({ "sessionKey": "session-a" }))
+            .await
+        {
+            Ok(value) => panic!("default refresh should be unavailable, got {value:?}"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "chat not configured");
     }
 }
