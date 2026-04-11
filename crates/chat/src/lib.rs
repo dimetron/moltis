@@ -4517,17 +4517,11 @@ impl ChatService for LiveChatService {
                 .map_err(|e| ServiceError::message(e.to_string()))?;
 
         // Keep a plain-text copy of the summary so the memory-file snapshot
-        // below can still record what we compacted to.
-        let summary_for_memory = compacted
-            .first()
-            .and_then(|msg| msg.get("content"))
-            .and_then(Value::as_str)
-            .map(|raw| {
-                raw.strip_prefix("[Conversation Summary]\n\n")
-                    .unwrap_or(raw)
-                    .to_string()
-            })
-            .unwrap_or_default();
+        // below can still record what we compacted to. The helper walks the
+        // compacted history because recency_preserving / structured modes
+        // splice head and tail messages around the summary — it isn't
+        // necessarily compacted[0].
+        let summary_for_memory = compaction_run::extract_summary_body(&compacted);
 
         info!(
             session = %session_key,

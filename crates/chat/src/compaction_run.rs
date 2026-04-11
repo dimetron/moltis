@@ -64,6 +64,30 @@ pub(crate) enum CompactionRunError {
     LlmFailed(String),
 }
 
+/// Best-effort extraction of a human-readable summary body from a
+/// compacted history, for use in memory-file snapshots and hook payloads.
+///
+/// Walks the compacted messages looking for the first one whose text
+/// content begins with either `[Conversation Summary]` (produced by the
+/// `deterministic`, `structured`, and `llm_replace` modes) or
+/// `[Conversation Compacted]` (produced by the `recency_preserving`
+/// middle marker), and returns the stripped body. Returns an empty string
+/// when no summary-shaped message is found, which is fine for hook
+/// `summary_len` reporting and falls through gracefully.
+#[must_use]
+pub(crate) fn extract_summary_body(compacted: &[Value]) -> String {
+    compacted
+        .iter()
+        .filter_map(|msg| msg.get("content").and_then(Value::as_str))
+        .find_map(|content| {
+            content
+                .strip_prefix("[Conversation Summary]\n\n")
+                .or_else(|| content.strip_prefix("[Conversation Compacted]\n\n"))
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
 /// Run the compaction strategy selected by `config` against `history`.
 ///
 /// Returns the replacement history vec. Call sites are responsible for
@@ -1260,18 +1284,27 @@ mod tests {
             anyhow::Result,
             async_trait::async_trait,
             futures::Stream,
-            moltis_agents::model::{CompletionResponse, Usage},
-            std::pin::Pin,
+            moltis_agents::model::{CompletionResponse, Usage, UserContent},
+            std::{
+                pin::Pin,
+                sync::{Arc, Mutex},
+            },
         };
 
         /// Stub provider that emits a canned sequence of stream events.
         ///
         /// `context_window` lets the caller force the tail-budget math into
         /// the cutting regime; `events` is the full sequence returned by
-        /// `stream()` on every call.
+        /// `stream()` on every call. When `needle` is set, the provider
+        /// records whether any text field in the received `messages`
+        /// contains the needle — used to assert that iterative
+        /// re-compaction forwards the previous summary body into the
+        /// prompt.
         pub(super) struct StubProvider {
             pub events: Vec<StreamEvent>,
             pub context_window: u32,
+            pub needle: Option<String>,
+            pub saw_needle: Arc<Mutex<bool>>,
         }
 
         impl StubProvider {
@@ -1282,6 +1315,8 @@ mod tests {
                         StreamEvent::Done(Usage::default()),
                     ],
                     context_window: 200,
+                    needle: None,
+                    saw_needle: Arc::new(Mutex::new(false)),
                 }
             }
 
@@ -1289,7 +1324,41 @@ mod tests {
                 Self {
                     events: vec![StreamEvent::Error(msg.to_string())],
                     context_window: 200,
+                    needle: None,
+                    saw_needle: Arc::new(Mutex::new(false)),
                 }
+            }
+
+            pub fn with_needle(mut self, needle: impl Into<String>) -> Self {
+                self.needle = Some(needle.into());
+                self
+            }
+
+            pub fn saw_needle(&self) -> bool {
+                *self
+                    .saw_needle
+                    .lock()
+                    .expect("stub provider mutex poisoned")
+            }
+        }
+
+        fn message_contains(msg: &ChatMessage, needle: &str) -> bool {
+            match msg {
+                ChatMessage::System { content } => content.contains(needle),
+                ChatMessage::User {
+                    content: UserContent::Text(t),
+                } => t.contains(needle),
+                ChatMessage::User {
+                    content: UserContent::Multimodal(parts),
+                } => parts.iter().any(|p| {
+                    matches!(p, moltis_agents::model::ContentPart::Text(t) if t.contains(needle))
+                }),
+                ChatMessage::Assistant {
+                    content: Some(text),
+                    ..
+                } => text.contains(needle),
+                ChatMessage::Tool { content, .. } => content.contains(needle),
+                _ => false,
             }
         }
 
@@ -1317,8 +1386,16 @@ mod tests {
 
             fn stream(
                 &self,
-                _messages: Vec<ChatMessage>,
+                messages: Vec<ChatMessage>,
             ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+                if let Some(needle) = &self.needle
+                    && messages.iter().any(|m| message_contains(m, needle))
+                {
+                    *self
+                        .saw_needle
+                        .lock()
+                        .expect("stub provider mutex poisoned") = true;
+                }
                 let events = self.events.clone();
                 Box::pin(tokio_stream::iter(events))
             }
@@ -1440,6 +1517,42 @@ mod tests {
 
     #[cfg(feature = "llm-compaction")]
     #[tokio::test]
+    async fn structured_mode_forwards_previous_summary_on_recompaction() {
+        // First head message is a previous compaction summary. The stub
+        // provider captures whether any forwarded message contains the
+        // unique needle from that prior body, verifying that the
+        // iterative-compaction prompt actually reaches the provider.
+        const NEEDLE: &str = "previous-compaction-needle-a1b2c3";
+        let prior = format!("[Conversation Summary]\n\n## Goal\n{NEEDLE}");
+        let mut history = vec![
+            json!({"role": "user", "content": prior}),
+            mk_assistant("ok got it"),
+        ];
+        for i in 0..5 {
+            history.push(mk_user(&format!("user {i}")));
+            history.push(mk_assistant(&format!("assistant {i}")));
+        }
+
+        let config = CompactionConfig {
+            mode: CompactionMode::Structured,
+            protect_head: 2,
+            protect_tail_min: 2,
+            ..Default::default()
+        };
+        let provider =
+            stub_provider::StubProvider::new_ok("## Goal\nstub output").with_needle(NEEDLE);
+        let _ = run_compaction(&history, &config, Some(&provider))
+            .await
+            .expect("structured succeeds with stub provider");
+
+        assert!(
+            provider.saw_needle(),
+            "structured mode must forward the previous summary body into the iterative-compaction prompt"
+        );
+    }
+
+    #[cfg(feature = "llm-compaction")]
+    #[tokio::test]
     async fn structured_mode_falls_back_when_summary_is_empty() {
         // A stream that yields Done with no Delta should surface as an
         // empty summary and trigger the same fallback path as an error.
@@ -1459,6 +1572,8 @@ mod tests {
         let provider = stub_provider::StubProvider {
             events: vec![StreamEvent::Done(Usage::default())],
             context_window: 200,
+            needle: None,
+            saw_needle: std::sync::Arc::new(std::sync::Mutex::new(false)),
         };
         let result = run_compaction(&history, &config, Some(&provider))
             .await
@@ -1491,5 +1606,50 @@ mod tests {
 
         let empty: Vec<Value> = Vec::new();
         assert_eq!(extract_previous_summary(&empty), None);
+    }
+
+    // ── extract_summary_body (memory-file / hook helper) ──────────────
+
+    #[test]
+    fn extract_summary_body_finds_conversation_summary_prefix() {
+        // deterministic / structured / llm_replace shape: single summary
+        // message at index 0.
+        let compacted = vec![json!({
+            "role": "user",
+            "content": "[Conversation Summary]\n\nBody text here",
+        })];
+        assert_eq!(extract_summary_body(&compacted), "Body text here");
+    }
+
+    #[test]
+    fn extract_summary_body_finds_conversation_compacted_marker() {
+        // recency_preserving shape: head verbatim, then middle marker,
+        // then tail verbatim. The marker is NOT at index 0.
+        let compacted = vec![
+            json!({"role": "user", "content": "first user"}),
+            json!({"role": "assistant", "content": "first reply"}),
+            json!({
+                "role": "user",
+                "content": "[Conversation Compacted]\n\n6 earlier messages were elided …",
+            }),
+            json!({"role": "user", "content": "recent user"}),
+            json!({"role": "assistant", "content": "recent reply"}),
+        ];
+        let body = extract_summary_body(&compacted);
+        assert!(
+            body.starts_with("6 earlier messages were elided"),
+            "got: {body}"
+        );
+    }
+
+    #[test]
+    fn extract_summary_body_returns_empty_when_no_summary_shaped_message_present() {
+        // Pathological: history with no summary-shaped message. Helper
+        // should return "" rather than picking up unrelated content.
+        let compacted = vec![
+            json!({"role": "user", "content": "just a regular user turn"}),
+            json!({"role": "assistant", "content": "just a regular reply"}),
+        ];
+        assert_eq!(extract_summary_body(&compacted), "");
     }
 }
