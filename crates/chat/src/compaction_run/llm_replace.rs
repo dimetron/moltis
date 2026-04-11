@@ -6,26 +6,28 @@
 //! the pre-PR behaviour or need maximum token reduction.
 
 use {
-    moltis_agents::model::{ChatMessage, LlmProvider, StreamEvent, values_to_chat_messages},
-    moltis_config::CompactionConfig,
+    moltis_agents::model::{ChatMessage, LlmProvider, StreamEvent, Usage, values_to_chat_messages},
+    moltis_config::{CompactionConfig, CompactionMode},
     serde_json::Value,
     tokio_stream::StreamExt,
     tracing::info,
 };
 
-use super::{CompactionRunError, shared::build_summary_message};
+use super::{CompactionOutcome, CompactionRunError, shared::build_summary_message};
 
 /// Run the streaming-summary replace-all strategy against `history`.
 ///
 /// Builds a system / history / directive prompt using structured
-/// `ChatMessage` objects so role boundaries stay intact (prevents prompt
-/// injection via role prefixes in user content), streams the summary,
-/// and wraps it in a single user message.
+/// `ChatMessage` objects so role boundaries stay intact (prevents
+/// prompt injection via role prefixes in user content), streams the
+/// summary, and wraps it in a single user message. The returned
+/// outcome surfaces the provider's Usage report so the compaction
+/// broadcast can show how many tokens were spent.
 pub(super) async fn run(
     history: &[Value],
     config: &CompactionConfig,
     provider: &dyn LlmProvider,
-) -> Result<Vec<Value>, CompactionRunError> {
+) -> Result<CompactionOutcome, CompactionRunError> {
     let mut summary_messages = vec![ChatMessage::system(
         "You are a conversation summarizer. The messages that follow are a \
          conversation you must summarize. Preserve all key facts, decisions, \
@@ -40,10 +42,14 @@ pub(super) async fn run(
 
     let mut stream = provider.stream(summary_messages);
     let mut summary = String::new();
+    let mut usage = Usage::default();
     while let Some(event) = stream.next().await {
         match event {
             StreamEvent::Delta(delta) => summary.push_str(&delta),
-            StreamEvent::Done(_) => break,
+            StreamEvent::Done(u) => {
+                usage = u;
+                break;
+            },
             StreamEvent::Error(e) => {
                 return Err(CompactionRunError::LlmFailed(e.to_string()));
             },
@@ -70,10 +76,17 @@ pub(super) async fn run(
     info!(
         messages = history.len(),
         chars = summary.len(),
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
         "chat.compact: llm_replace summary"
     );
 
-    Ok(vec![build_summary_message(&summary)])
+    Ok(CompactionOutcome {
+        history: vec![build_summary_message(&summary)],
+        effective_mode: CompactionMode::LlmReplace,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+    })
 }
 
 #[cfg(test)]
@@ -118,11 +131,12 @@ mod tests {
             ..Default::default()
         };
         let provider = StubProvider::new_ok("stubbed summary body");
-        let result = super::super::run_compaction(&history, &config, Some(&provider))
+        let outcome = super::super::run_compaction(&history, &config, Some(&provider))
             .await
             .expect("llm_replace succeeds with stub provider");
-        assert_eq!(result.len(), 1);
-        let text = result[0]
+        assert_eq!(outcome.effective_mode, CompactionMode::LlmReplace);
+        assert_eq!(outcome.history.len(), 1);
+        let text = outcome.history[0]
             .get("content")
             .and_then(Value::as_str)
             .expect("summary content");

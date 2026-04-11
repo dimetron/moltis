@@ -14,15 +14,15 @@
 //! `safeguard` compaction.
 
 use {
-    moltis_agents::model::{ChatMessage, LlmProvider, StreamEvent, values_to_chat_messages},
-    moltis_config::CompactionConfig,
+    moltis_agents::model::{ChatMessage, LlmProvider, StreamEvent, Usage, values_to_chat_messages},
+    moltis_config::{CompactionConfig, CompactionMode},
     serde_json::Value,
     tokio_stream::StreamExt,
     tracing::info,
 };
 
 use super::{
-    CompactionRunError, recency_preserving,
+    CompactionOutcome, CompactionRunError, recency_preserving,
     shared::{
         HeadTailBounds, build_summary_message, compute_boundaries, finalize_kept,
         in_place_prune_or_err,
@@ -120,14 +120,17 @@ fn extract_previous_summary(history: &[Value]) -> Option<&str> {
 
 /// Run the structured LLM-summary strategy against `history`.
 ///
-/// Falls back to [`recency_preserving::run`] on LLM stream error or empty
-/// summary, so compaction never silently drops information.
+/// Falls back to [`recency_preserving::run`] on LLM stream error or
+/// empty summary, so compaction never silently drops information. When
+/// the fallback fires, the returned outcome reports
+/// `effective_mode = CompactionMode::RecencyPreserving` so the UI can
+/// accurately show what actually ran.
 pub(super) async fn run(
     history: &[Value],
     config: &CompactionConfig,
     context_window: u32,
     provider: &dyn LlmProvider,
-) -> Result<Vec<Value>, CompactionRunError> {
+) -> Result<CompactionOutcome, CompactionRunError> {
     let bounds = compute_boundaries(history, config, context_window);
     let HeadTailBounds {
         head_end,
@@ -139,12 +142,24 @@ pub(super) async fn run(
 
     // Head and tail already cover everything — no middle to summarise.
     if head_end >= tail_start {
-        return in_place_prune_or_err(history, config, &bounds);
+        let kept = in_place_prune_or_err(history, config, &bounds)?;
+        return Ok(CompactionOutcome {
+            history: kept,
+            effective_mode: CompactionMode::Structured,
+            input_tokens: 0,
+            output_tokens: 0,
+        });
     }
 
     let middle = &history[head_end..tail_start];
     if middle.is_empty() {
-        return in_place_prune_or_err(history, config, &bounds);
+        let kept = in_place_prune_or_err(history, config, &bounds)?;
+        return Ok(CompactionOutcome {
+            history: kept,
+            effective_mode: CompactionMode::Structured,
+            input_tokens: 0,
+            output_tokens: 0,
+        });
     }
 
     // Detect re-compaction: if the first head message is a previous
@@ -163,14 +178,20 @@ pub(super) async fn run(
         None => ChatMessage::user(first_compaction_instructions()),
     });
 
-    // Stream the summary.
+    // Stream the summary, capturing both the text body and the final
+    // Usage report from the provider so we can surface token counts in
+    // the compaction broadcast.
     let mut stream = provider.stream(summary_messages);
     let mut summary = String::new();
+    let mut usage = Usage::default();
     let mut stream_error: Option<String> = None;
     while let Some(event) = stream.next().await {
         match event {
             StreamEvent::Delta(delta) => summary.push_str(&delta),
-            StreamEvent::Done(_) => break,
+            StreamEvent::Done(u) => {
+                usage = u;
+                break;
+            },
             StreamEvent::Error(e) => {
                 stream_error = Some(e.to_string());
                 break;
@@ -221,11 +242,18 @@ pub(super) async fn run(
         middle = tail_start - head_end,
         tail = n - tail_start,
         summary_chars = summary.len(),
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
         iterative = previous_summary.is_some(),
         "chat.compact: structured"
     );
 
-    Ok(kept)
+    Ok(CompactionOutcome {
+        history: kept,
+        effective_mode: CompactionMode::Structured,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+    })
 }
 
 #[cfg(test)]
@@ -286,9 +314,12 @@ mod tests {
         };
         let provider =
             StubProvider::new_ok("## Goal\nTest compaction\n## Progress\n### Done\nAll the things");
-        let result = super::super::run_compaction(&history, &config, Some(&provider))
+        let outcome = super::super::run_compaction(&history, &config, Some(&provider))
             .await
             .expect("structured succeeds with stub provider");
+
+        assert_eq!(outcome.effective_mode, CompactionMode::Structured);
+        let result = outcome.history;
 
         // Head (2) + structured summary (1) + tail (2) = 5 messages.
         assert_eq!(result.len(), 5, "result: {result:#?}");
@@ -371,9 +402,15 @@ mod tests {
             ..Default::default()
         };
         let provider = StubProvider::new_error("simulated provider outage");
-        let result = super::super::run_compaction(&history, &config, Some(&provider))
+        let outcome = super::super::run_compaction(&history, &config, Some(&provider))
             .await
             .expect("structured falls back to recency_preserving on llm error");
+
+        // The outcome reports the effective mode — the UI can use this to
+        // tell the user that the requested structured mode fell back to
+        // recency_preserving.
+        assert_eq!(outcome.effective_mode, CompactionMode::RecencyPreserving);
+        let result = outcome.history;
 
         // Fallback produces a recency_preserving-shaped history: head (2) +
         // middle marker (1) + tail (2) = 5 messages, and the middle message
@@ -407,9 +444,11 @@ mod tests {
             ..Default::default()
         };
         let provider = StubProvider::new_empty_summary();
-        let result = super::super::run_compaction(&history, &config, Some(&provider))
+        let outcome = super::super::run_compaction(&history, &config, Some(&provider))
             .await
             .expect("structured falls back on empty summary");
+        assert_eq!(outcome.effective_mode, CompactionMode::RecencyPreserving);
+        let result = outcome.history;
         assert_eq!(result.len(), 5);
         let middle = result[2]
             .get("content")

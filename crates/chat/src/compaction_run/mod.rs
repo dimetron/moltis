@@ -80,6 +80,75 @@ pub(crate) enum CompactionRunError {
     },
 }
 
+/// Outcome of a successful compaction run.
+///
+/// Surfaces the effective mode and any token usage so callers can
+/// broadcast human-readable metadata to the chat UI ("Compacted via
+/// Structured mode, used 1,234 tokens"). `effective_mode` may differ
+/// from the user-selected `config.mode` when the `Structured` strategy
+/// falls back to `RecencyPreserving` on LLM failure.
+#[derive(Debug, Clone)]
+pub(crate) struct CompactionOutcome {
+    /// Replacement history to write back to the session store.
+    pub history: Vec<Value>,
+    /// The strategy that actually ran (post-fallback).
+    pub effective_mode: CompactionMode,
+    /// Input tokens consumed by the summary LLM call, if any. Zero for
+    /// the no-LLM strategies and for LLM strategies that fell back.
+    pub input_tokens: u32,
+    /// Output tokens produced by the summary LLM call, if any. Zero for
+    /// the no-LLM strategies and for LLM strategies that fell back.
+    pub output_tokens: u32,
+}
+
+impl CompactionOutcome {
+    /// Total tokens consumed by the compaction call (sum of input + output).
+    #[must_use]
+    pub(crate) fn total_tokens(&self) -> u32 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+
+    /// Build a JSON metadata fragment suitable for splicing into a
+    /// broadcast event payload alongside `state` / `phase`.
+    ///
+    /// Includes the settings hint so UI consumers don't have to know
+    /// the wording themselves.
+    #[must_use]
+    pub(crate) fn broadcast_metadata(&self) -> Value {
+        serde_json::json!({
+            "mode": compaction_mode_key(self.effective_mode),
+            "compactionInputTokens": self.input_tokens,
+            "compactionOutputTokens": self.output_tokens,
+            "compactionTotalTokens": self.total_tokens(),
+            "settingsHint": SETTINGS_HINT,
+        })
+    }
+}
+
+/// Short, UI-friendly snake_case name for a compaction mode. Matches the
+/// config-file serialisation so consumers can display the exact value a
+/// user would paste into `chat.compaction.mode`.
+#[must_use]
+pub(crate) fn compaction_mode_key(mode: CompactionMode) -> &'static str {
+    match mode {
+        CompactionMode::Deterministic => "deterministic",
+        CompactionMode::RecencyPreserving => "recency_preserving",
+        CompactionMode::Structured => "structured",
+        CompactionMode::LlmReplace => "llm_replace",
+    }
+}
+
+/// Human-readable hint pointing users at the configuration surface so
+/// they can change the compaction strategy.
+///
+/// Kept as a single constant so UI, broadcast events, and any future
+/// doc links share the same wording. The reference to
+/// `chat.compaction.mode` matches the TOML key so users can paste it
+/// straight into `moltis.toml`.
+pub(crate) const SETTINGS_HINT: &str = "Change chat.compaction.mode in moltis.toml (or the web UI settings panel) \
+     to pick a different compaction strategy. See \
+     https://docs.moltis.org/compaction for a comparison of the four modes.";
+
 /// Best-effort extraction of a human-readable summary body from a
 /// compacted history, for use in memory-file snapshots and hook payloads.
 ///
@@ -106,11 +175,15 @@ pub(crate) fn extract_summary_body(compacted: &[Value]) -> String {
 
 /// Run the compaction strategy selected by `config` against `history`.
 ///
-/// Returns the replacement history vec. Call sites are responsible for
-/// writing the result back to the session store.
+/// Returns a [`CompactionOutcome`] containing the replacement history
+/// plus the effective mode and any LLM token usage. Call sites are
+/// responsible for writing `outcome.history` back to the session store
+/// and for splicing `outcome.broadcast_metadata()` into any
+/// `auto_compact` / `compact` broadcast events so users can see what
+/// ran and how to change it.
 ///
-/// `provider` is only consulted by LLM-backed modes; pass `None` when no
-/// provider has been resolved for the session. LLM modes return
+/// `provider` is only consulted by LLM-backed modes; pass `None` when
+/// no provider has been resolved for the session. LLM modes return
 /// [`CompactionRunError::ProviderRequired`] when called without one (or
 /// [`CompactionRunError::FeatureDisabled`] when the `llm-compaction`
 /// cargo feature is off).
@@ -118,7 +191,7 @@ pub(crate) async fn run_compaction(
     history: &[Value],
     config: &CompactionConfig,
     provider: Option<&dyn LlmProvider>,
-) -> Result<Vec<Value>, CompactionRunError> {
+) -> Result<CompactionOutcome, CompactionRunError> {
     if history.is_empty() {
         return Err(CompactionRunError::EmptyHistory);
     }
@@ -217,6 +290,52 @@ mod tests {
             CompactionRunError::FeatureDisabled { mode } => assert_eq!(mode, "structured"),
             other => panic!("expected FeatureDisabled, got {other:?}"),
         }
+    }
+
+    // ── CompactionOutcome broadcast metadata ──────────────────────────
+
+    #[test]
+    fn broadcast_metadata_exposes_mode_and_tokens() {
+        let outcome = CompactionOutcome {
+            history: vec![json!({"role": "user", "content": "ok"})],
+            effective_mode: CompactionMode::Structured,
+            input_tokens: 1_234,
+            output_tokens: 567,
+        };
+        let meta = outcome.broadcast_metadata();
+        assert_eq!(meta["mode"], "structured");
+        assert_eq!(meta["compactionInputTokens"], 1_234);
+        assert_eq!(meta["compactionOutputTokens"], 567);
+        assert_eq!(meta["compactionTotalTokens"], 1_801);
+        assert!(
+            !meta["settingsHint"]
+                .as_str()
+                .expect("settingsHint is string")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn compaction_mode_key_matches_toml_serialization() {
+        // The keys must match exactly what users would paste into
+        // `chat.compaction.mode` in moltis.toml, so UI consumers can
+        // display them and offer a "copy to clipboard" action.
+        assert_eq!(
+            compaction_mode_key(CompactionMode::Deterministic),
+            "deterministic"
+        );
+        assert_eq!(
+            compaction_mode_key(CompactionMode::RecencyPreserving),
+            "recency_preserving"
+        );
+        assert_eq!(
+            compaction_mode_key(CompactionMode::Structured),
+            "structured"
+        );
+        assert_eq!(
+            compaction_mode_key(CompactionMode::LlmReplace),
+            "llm_replace"
+        );
     }
 
     // ── extract_summary_body (memory-file / hook helper) ──────────────

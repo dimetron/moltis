@@ -7,10 +7,14 @@
 //! repair orphaned tool_use / tool_result pairs so strict providers
 //! accept the retry.
 
-use {moltis_config::CompactionConfig, serde_json::Value, tracing::info};
+use {
+    moltis_config::{CompactionConfig, CompactionMode},
+    serde_json::Value,
+    tracing::info,
+};
 
 use super::{
-    CompactionRunError,
+    CompactionOutcome, CompactionRunError,
     shared::{
         HeadTailBounds, build_middle_marker, compute_boundaries, finalize_kept,
         in_place_prune_or_err,
@@ -19,15 +23,16 @@ use super::{
 
 /// Run the recency-preserving strategy against `history`.
 ///
-/// `context_window` is the provider's model-window size, used to size the
-/// token-budget tail cut. Strategy callers resolve it from the session
-/// provider and fall back to a sensible default when no provider is
-/// available.
+/// `context_window` is the provider's model-window size, used to size
+/// the token-budget tail cut. Strategy callers resolve it from the
+/// session provider and fall back to a sensible default when no
+/// provider is available. Token counts on the returned outcome are
+/// always zero — no LLM calls are made.
 pub(super) fn run(
     history: &[Value],
     config: &CompactionConfig,
     context_window: u32,
-) -> Result<Vec<Value>, CompactionRunError> {
+) -> Result<CompactionOutcome, CompactionRunError> {
     let bounds = compute_boundaries(history, config, context_window);
     let HeadTailBounds {
         head_end,
@@ -37,21 +42,21 @@ pub(super) fn run(
     } = bounds;
     let n = history.len();
 
-    if head_end >= tail_start {
-        return in_place_prune_or_err(history, config, &bounds);
-    }
+    let kept = if head_end >= tail_start {
+        in_place_prune_or_err(history, config, &bounds)?
+    } else {
+        let mut kept: Vec<Value> = Vec::with_capacity(head_end + 1 + (n - tail_start));
+        kept.extend(history[..head_end].iter().cloned());
 
-    let mut kept: Vec<Value> = Vec::with_capacity(head_end + 1 + (n - tail_start));
-    kept.extend(history[..head_end].iter().cloned());
+        let middle = &history[head_end..tail_start];
+        if !middle.is_empty() {
+            kept.push(build_middle_marker(middle));
+        }
 
-    let middle = &history[head_end..tail_start];
-    if !middle.is_empty() {
-        kept.push(build_middle_marker(middle));
-    }
+        kept.extend(history[tail_start..].iter().cloned());
 
-    kept.extend(history[tail_start..].iter().cloned());
-
-    let kept = finalize_kept(kept, config, protect_tail_min)?;
+        finalize_kept(kept, config, protect_tail_min)?
+    };
 
     info!(
         input_messages = n,
@@ -62,7 +67,12 @@ pub(super) fn run(
         "chat.compact: recency_preserving"
     );
 
-    Ok(kept)
+    Ok(CompactionOutcome {
+        history: kept,
+        effective_mode: CompactionMode::RecencyPreserving,
+        input_tokens: 0,
+        output_tokens: 0,
+    })
 }
 
 #[cfg(test)]
@@ -158,7 +168,11 @@ mod tests {
             tool_prune_char_threshold: 20,
             ..Default::default()
         };
-        let result = run(&history, &config, TEST_CONTEXT_WINDOW_TINY).unwrap();
+        let outcome = run(&history, &config, TEST_CONTEXT_WINDOW_TINY).unwrap();
+        assert_eq!(outcome.effective_mode, CompactionMode::RecencyPreserving);
+        assert_eq!(outcome.input_tokens, 0);
+        assert_eq!(outcome.output_tokens, 0);
+        let result = outcome.history;
 
         // 2 head + 1 marker + 2 tail = 5 messages.
         assert_eq!(result.len(), 5, "result: {result:#?}");
@@ -213,9 +227,10 @@ mod tests {
             tool_prune_char_threshold: 20,
             ..Default::default()
         };
-        let result = super::super::run_compaction(&history, &config, None)
+        let outcome = super::super::run_compaction(&history, &config, None)
             .await
             .unwrap();
+        let result = outcome.history;
 
         // Same number of messages, but the tool content is now a placeholder.
         assert_eq!(result.len(), 3);
@@ -250,7 +265,9 @@ mod tests {
             tool_prune_char_threshold: 10_000,
             ..Default::default()
         };
-        let result = run(&history, &config, TEST_CONTEXT_WINDOW_TINY).unwrap();
+        let result = run(&history, &config, TEST_CONTEXT_WINDOW_TINY)
+            .unwrap()
+            .history;
 
         for msg in &result {
             if is_tool_role_value(msg) {
@@ -287,7 +304,9 @@ mod tests {
             tool_prune_char_threshold: 10_000,
             ..Default::default()
         };
-        let result = run(&history, &config, TEST_CONTEXT_WINDOW_TINY).unwrap();
+        let result = run(&history, &config, TEST_CONTEXT_WINDOW_TINY)
+            .unwrap()
+            .history;
 
         let stub = result
             .iter()

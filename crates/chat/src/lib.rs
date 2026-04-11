@@ -4511,10 +4511,12 @@ impl ChatService for LiveChatService {
         // error in that case.
         let provider_arc = self.resolve_provider(&session_key, &history).await.ok();
 
-        let compacted =
+        let outcome =
             compaction_run::run_compaction(&history, compaction_config, provider_arc.as_deref())
                 .await
                 .map_err(|e| ServiceError::message(e.to_string()))?;
+
+        let compacted = outcome.history.clone();
 
         // Keep a plain-text copy of the summary so the memory-file snapshot
         // below can still record what we compacted to. The helper walks the
@@ -4525,10 +4527,37 @@ impl ChatService for LiveChatService {
 
         info!(
             session = %session_key,
-            mode = ?compaction_config.mode,
+            requested_mode = ?compaction_config.mode,
+            effective_mode = ?outcome.effective_mode,
+            input_tokens = outcome.input_tokens,
+            output_tokens = outcome.output_tokens,
             messages = history.len(),
             "chat.compact: strategy dispatched"
         );
+
+        // Broadcast a chat.compact-scoped "done" event so UI consumers see
+        // the effective mode and token usage even when compaction is
+        // triggered manually via the RPC (the auto-compact path broadcasts
+        // separately around `send()`).
+        let mut compact_payload = serde_json::json!({
+            "sessionKey": session_key,
+            "state": "compact",
+            "phase": "done",
+            "messageCount": history.len(),
+        });
+        if let (Some(obj), Some(meta)) = (
+            compact_payload.as_object_mut(),
+            outcome.broadcast_metadata().as_object().cloned(),
+        ) {
+            obj.extend(meta);
+        }
+        broadcast(
+            &self.state,
+            "chat",
+            compact_payload,
+            BroadcastOpts::default(),
+        )
+        .await;
 
         self.session_store
             .replace_history(&session_key, compacted.clone())
@@ -6766,20 +6795,24 @@ async fn run_with_tools(
             )
             .await
             {
-                Ok(()) => {
-                    broadcast(
-                        state,
-                        "chat",
-                        serde_json::json!({
-                            "runId": run_id,
-                            "sessionKey": session_key,
-                            "state": "auto_compact",
-                            "phase": "done",
-                            "reason": "context_window_exceeded",
-                        }),
-                        BroadcastOpts::default(),
-                    )
-                    .await;
+                Ok(outcome) => {
+                    // Merge the compaction metadata (mode, tokens, settings
+                    // hint) into the broadcast so the UI can show a toast
+                    // like "Compacted via Structured mode (1,234 tokens)".
+                    let mut payload = serde_json::json!({
+                        "runId": run_id,
+                        "sessionKey": session_key,
+                        "state": "auto_compact",
+                        "phase": "done",
+                        "reason": "context_window_exceeded",
+                    });
+                    if let (Some(obj), Some(meta)) = (
+                        payload.as_object_mut(),
+                        outcome.broadcast_metadata().as_object().cloned(),
+                    ) {
+                        obj.extend(meta);
+                    }
+                    broadcast(state, "chat", payload, BroadcastOpts::default()).await;
 
                     // Reload compacted history and retry.
                     let compacted_history_raw = store.read(session_key).await.unwrap_or_default();
@@ -7026,8 +7059,10 @@ async fn run_with_tools(
 /// modes; `None` is accepted for deterministic compaction but causes
 /// `llm_replace` / `structured` to return a [`ProviderRequired`] error.
 ///
-/// This is a standalone helper so `run_with_tools` can call it without
-/// requiring `&self` on `LiveChatService`.
+/// Returns the full [`compaction_run::CompactionOutcome`] so the caller
+/// can surface the effective mode and token usage in its broadcast
+/// event. This is a standalone helper so `run_with_tools` can call it
+/// without requiring `&self` on `LiveChatService`.
 ///
 /// [`ProviderRequired`]: compaction_run::CompactionRunError::ProviderRequired
 async fn compact_session(
@@ -7035,22 +7070,22 @@ async fn compact_session(
     session_key: &str,
     config: &moltis_config::CompactionConfig,
     provider: Option<&dyn moltis_agents::model::LlmProvider>,
-) -> error::Result<()> {
+) -> error::Result<compaction_run::CompactionOutcome> {
     let history = store
         .read(session_key)
         .await
         .map_err(|source| error::Error::external("failed to read session history", source))?;
 
-    let compacted = compaction_run::run_compaction(&history, config, provider)
+    let outcome = compaction_run::run_compaction(&history, config, provider)
         .await
         .map_err(|e| error::Error::message(e.to_string()))?;
 
     store
-        .replace_history(session_key, compacted)
+        .replace_history(session_key, outcome.history.clone())
         .await
         .map_err(|source| error::Error::external("failed to replace compacted history", source))?;
 
-    Ok(())
+    Ok(outcome)
 }
 // ── Streaming mode (no tools) ───────────────────────────────────────────────
 
