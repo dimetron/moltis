@@ -393,6 +393,7 @@ fn build_schema_map() -> KnownKeys {
             "chat",
             Struct(HashMap::from([
                 ("message_queue_mode", Leaf),
+                ("prompt_memory_mode", Leaf),
                 ("workspace_file_max_chars", Leaf),
                 ("priority_models", Leaf),
                 ("allowed_models", Leaf),
@@ -478,6 +479,7 @@ fn build_schema_map() -> KnownKeys {
         (
             "memory",
             Struct(HashMap::from([
+                ("style", Leaf),
                 ("backend", Leaf),
                 ("provider", Leaf),
                 ("embedding_provider", Leaf),
@@ -2022,6 +2024,23 @@ disable_rag = true
         assert!(
             unknown.is_none(),
             "memory.disable_rag should be accepted as a known field"
+        );
+    }
+
+    #[test]
+    fn memory_style_is_valid_field() {
+        let toml = r#"
+[memory]
+style = "search-only"
+"#;
+        let result = validate_toml_str(toml);
+        let unknown = result
+            .diagnostics
+            .iter()
+            .find(|d| d.category == "unknown-field" && d.path == "memory.style");
+        assert!(
+            unknown.is_none(),
+            "memory.style should be accepted as a known field"
         );
     }
 

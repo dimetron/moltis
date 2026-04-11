@@ -2259,6 +2259,22 @@ pub(super) fn register(reg: &mut MethodRegistry) {
         }),
     );
 
+    reg.register(
+        "chat.prompt_memory.refresh",
+        Box::new(|ctx| {
+            Box::pin(async move {
+                let mut params = ctx.params.clone();
+                params["_conn_id"] = serde_json::json!(ctx.client_conn_id);
+                ctx.state
+                    .chat()
+                    .await
+                    .refresh_prompt_memory(params)
+                    .await
+                    .map_err(ErrorShape::from)
+            })
+        }),
+    );
+
     // Session switching
     reg.register(
         "sessions.switch",

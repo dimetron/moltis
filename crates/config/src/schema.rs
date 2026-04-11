@@ -1113,6 +1113,8 @@ impl Default for TailscaleConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryEmbeddingConfig {
+    /// High-level memory orchestration style.
+    pub style: MemoryStyle,
     /// Memory backend: "builtin" (default) or "qmd" for QMD sidecar.
     pub backend: Option<String>,
     /// Embedding provider: "local", "ollama", "openai", "custom", or None for auto-detect.
@@ -1149,6 +1151,21 @@ pub struct MemoryEmbeddingConfig {
     /// QMD-specific configuration (only used when backend = "qmd").
     #[serde(default)]
     pub qmd: QmdConfig,
+}
+
+/// High-level orchestration style for prompt memory and memory tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MemoryStyle {
+    /// Current behavior: inject `MEMORY.md` into the prompt and expose memory tools.
+    #[default]
+    Hybrid,
+    /// Inject `MEMORY.md` into the prompt, but hide memory tools.
+    PromptOnly,
+    /// Skip prompt injection and rely on memory tools for recall.
+    SearchOnly,
+    /// Disable both prompt memory injection and memory tools.
+    Off,
 }
 
 /// QMD backend configuration.
@@ -1496,6 +1513,9 @@ pub struct ChatConfig {
     /// How to handle messages that arrive while an agent run is active.
     #[serde(default = "default_message_queue_mode")]
     pub message_queue_mode: MessageQueueMode,
+    /// How `MEMORY.md` is loaded into the prompt for an ongoing session.
+    #[serde(default = "default_prompt_memory_mode")]
+    pub prompt_memory_mode: PromptMemoryMode,
     /// Maximum characters from each workspace prompt file (`AGENTS.md`, `TOOLS.md`).
     #[serde(default = "default_workspace_file_max_chars")]
     pub workspace_file_max_chars: usize,
@@ -1512,6 +1532,10 @@ fn default_message_queue_mode() -> MessageQueueMode {
     MessageQueueMode::Followup
 }
 
+fn default_prompt_memory_mode() -> PromptMemoryMode {
+    PromptMemoryMode::LiveReload
+}
+
 fn default_workspace_file_max_chars() -> usize {
     32_000
 }
@@ -1520,6 +1544,7 @@ impl Default for ChatConfig {
     fn default() -> Self {
         Self {
             message_queue_mode: default_message_queue_mode(),
+            prompt_memory_mode: default_prompt_memory_mode(),
             workspace_file_max_chars: default_workspace_file_max_chars(),
             priority_models: Vec::new(),
             allowed_models: Vec::new(),
@@ -1536,6 +1561,17 @@ pub enum MessageQueueMode {
     Followup,
     /// Buffer messages; concatenate and process as a single message after the current run.
     Collect,
+}
+
+/// How prompt memory is loaded across turns in the same session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PromptMemoryMode {
+    /// Reload `MEMORY.md` from disk before each turn.
+    #[default]
+    LiveReload,
+    /// Freeze the initial `MEMORY.md` content for the lifetime of the session.
+    FrozenAtSessionStart,
 }
 
 /// How tool schemas are presented to the model.
@@ -2735,6 +2771,34 @@ deny = ["exec"]
     fn chat_config_toml_missing_queue_mode_defaults_to_followup() {
         let cfg: ChatConfig = toml::from_str("").unwrap();
         assert_eq!(cfg.message_queue_mode, MessageQueueMode::Followup);
+    }
+
+    #[test]
+    fn chat_config_default_prompt_memory_mode_is_live_reload() {
+        let cfg = ChatConfig::default();
+        assert_eq!(cfg.prompt_memory_mode, PromptMemoryMode::LiveReload);
+    }
+
+    #[test]
+    fn memory_config_default_style_is_hybrid() {
+        let cfg = MemoryEmbeddingConfig::default();
+        assert_eq!(cfg.style, MemoryStyle::Hybrid);
+    }
+
+    #[test]
+    fn memory_config_toml_parses_style() {
+        let cfg: MemoryEmbeddingConfig = toml::from_str("style = \"search-only\"").unwrap();
+        assert_eq!(cfg.style, MemoryStyle::SearchOnly);
+    }
+
+    #[test]
+    fn chat_config_toml_parses_prompt_memory_mode() {
+        let cfg: ChatConfig =
+            toml::from_str("prompt_memory_mode = \"frozen-at-session-start\"").unwrap();
+        assert_eq!(
+            cfg.prompt_memory_mode,
+            PromptMemoryMode::FrozenAtSessionStart
+        );
     }
 
     #[test]

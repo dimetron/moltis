@@ -2,6 +2,10 @@
 
 Moltis provides a powerful memory system that enables the agent to recall past conversations, notes, and context across sessions. This document explains the available backends, features, and configuration options.
 
+If you are trying to understand the difference between short-term session
+state, long-term memory files, and sandbox persistence, start with
+[Memory Surfaces](memory-surfaces.md).
+
 ## Backends
 
 Moltis supports two memory backends:
@@ -85,6 +89,9 @@ Memory settings can be configured in `moltis.toml`:
 
 ```toml
 [memory]
+# Orchestration style: "hybrid", "prompt-only", "search-only", or "off"
+style = "hybrid"
+
 # Backend: "builtin" (default) or "qmd"
 backend = "builtin"
 
@@ -113,6 +120,11 @@ max_results = 10
 timeout_ms = 30000
 ```
 
+`style` is separate from `[chat].prompt_memory_mode`. Style controls whether
+`MEMORY.md` is injected and whether memory tools are exposed. Prompt memory
+mode controls whether prompt-visible `MEMORY.md` is live-reloaded or frozen
+per session.
+
 Or via the web UI: **Settings > Memory**
 
 ## Embedding Providers
@@ -138,6 +150,11 @@ By default, moltis indexes markdown files from:
 - `~/.moltis/MEMORY.md` - Main long-term memory file
 - `~/.moltis/memory/*.md` - Additional memory files
 - `~/.moltis/memory/sessions/*.md` - Exported session transcripts
+
+Prompt injection from `MEMORY.md` is controlled separately via
+`[chat].prompt_memory_mode`. Use `live-reload` to reread `MEMORY.md` before
+each turn, or `frozen-at-session-start` to keep a stable prompt-memory
+snapshot for the lifetime of a session.
 
 ## Tools
 

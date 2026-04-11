@@ -201,6 +201,9 @@ message_queue_mode = "followup"   # Default: process queued messages one-by-one 
                                   # How to handle messages during an active agent run:
                                   #   "followup" - Queue messages, replay one-by-one after run
                                   #   "collect"  - Buffer messages, concatenate as single message
+# prompt_memory_mode = "live-reload"  # How MEMORY.md reaches the prompt:
+                                      #   "live-reload"            - Re-read MEMORY.md before each turn
+                                      #   "frozen-at-session-start" - Freeze the first MEMORY.md snapshot per session
 # workspace_file_max_chars = 32000  # Optional: per-file prompt cap for AGENTS.md / TOOLS.md before truncation.
 # priority_models = ["claude-opus-4-5", "gpt-5.2", "gemini-3-flash"]  # Optional: models to pin first in selectors
 # allowed_models = ["gpt 5.2"]  # Legacy field (currently ignored).
@@ -642,6 +645,11 @@ reset_on_exit = true              # Reset serve/funnel when gateway shuts down
 # Configure the embedding provider for memory/RAG features.
 
 [memory]
+# style = "hybrid"               # High-level memory behavior:
+                                  #   "hybrid"      - Prompt MEMORY.md + memory_search/memory_get/memory_save
+                                  #   "prompt-only" - Prompt MEMORY.md only, no memory tools
+                                  #   "search-only" - Memory tools only, no prompt MEMORY.md injection
+                                  #   "off"         - Disable prompt memory injection and memory tools
 # provider = "local"              # Embedding provider:
                                   #   "local"   - Built-in local embeddings
                                   #   "ollama"  - Ollama server

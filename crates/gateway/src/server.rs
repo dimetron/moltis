@@ -3985,6 +3985,7 @@ pub async fn prepare_gateway_core(
             Arc::clone(&session_store),
             Arc::clone(&session_metadata),
         )
+        .with_session_state_store(Arc::clone(&session_state_store))
         .with_tools(Arc::clone(&shared_tool_registry))
         .with_failover(config.failover.clone());
 

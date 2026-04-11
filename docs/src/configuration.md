@@ -185,10 +185,13 @@ replay queued messages one-by-one or merge them into a single follow-up message.
 ```toml
 [chat]
 message_queue_mode = "followup"  # Default: one-by-one replay
+prompt_memory_mode = "live-reload"
 
 # Options:
 #   "followup" - Queue each message and run them sequentially
 #   "collect"  - Merge queued text and run once after the active run
+#   "live-reload" - Re-read MEMORY.md before each turn
+#   "frozen-at-session-start" - Keep the first MEMORY.md snapshot for the session
 ```
 
 ## Memory System
@@ -197,6 +200,7 @@ Long-term memory uses embeddings for semantic search:
 
 ```toml
 [memory]
+style = "hybrid"              # Or "prompt-only", "search-only", "off"
 backend = "builtin"             # Or "qmd"
 provider = "openai"             # Or "local", "ollama", "custom"
 model = "text-embedding-3-small"
@@ -204,6 +208,11 @@ citations = "auto"              # "on", "off", or "auto"
 llm_reranking = false
 session_export = false
 ```
+
+See [Memory Surfaces](memory-surfaces.md) for the boundary between
+`session_state`, prompt memory, searchable memory, and sandbox persistence.
+`memory.style` chooses the high-level behavior, while
+`chat.prompt_memory_mode` only affects prompt-visible `MEMORY.md`.
 
 ## Authentication
 
