@@ -1188,17 +1188,13 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
             message: "chat.compaction.protect_head > 32 will leave little room for the compacted middle region on typical sessions".into(),
         });
     }
+    // All four CompactionMode variants are now implemented. Any future
+    // "not-implemented" markers would go here; leave the match explicit so
+    // adding a new variant forces a decision at compile time.
     match compaction.mode {
-        crate::schema::CompactionMode::Structured => {
-            diagnostics.push(Diagnostic {
-                severity: Severity::Warning,
-                category: "not-implemented",
-                path: "chat.compaction.mode".into(),
-                message: "chat.compaction.mode = \"structured\" is not yet implemented (tracked by beads issue moltis-aff); compaction will error until the strategy lands. Use \"deterministic\", \"recency_preserving\", or \"llm_replace\" in the meantime.".into(),
-            });
-        },
         crate::schema::CompactionMode::Deterministic
         | crate::schema::CompactionMode::RecencyPreserving
+        | crate::schema::CompactionMode::Structured
         | crate::schema::CompactionMode::LlmReplace => {},
     }
 

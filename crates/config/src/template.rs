@@ -228,13 +228,16 @@ message_queue_mode = "followup"   # Default: process queued messages one-by-one 
 #                          tool_result pairs so strict providers accept the
 #                          retry. Mid fidelity, free.
 #
-#   "structured"           NOT YET IMPLEMENTED (moltis-aff). Head + LLM
-#                          structured summary + tail. Uses a
-#                          Goal / Progress / Decisions / Files / Next Steps
-#                          template (same convention as hermes-agent and
-#                          openclaw safeguard). Highest fidelity, costs
-#                          a summary LLM call per compaction. Falls back to
-#                          recency_preserving on LLM failure.
+#   "structured"           Head + LLM structured summary + tail. Same
+#                          boundary logic as recency_preserving, but the
+#                          middle is summarised with a single LLM call
+#                          using a Goal / Progress / Decisions / Files /
+#                          Next Steps template (same convention as
+#                          hermes-agent and openclaw safeguard). Iterative
+#                          re-compaction preserves prior summary sections.
+#                          Highest fidelity, costs a summary LLM call per
+#                          compaction. Falls back to recency_preserving on
+#                          LLM failure or empty summary.
 #
 #   "llm_replace"          Replaces the entire history with a single
 #                          LLM-generated summary. Pre-PR-#653 behaviour.

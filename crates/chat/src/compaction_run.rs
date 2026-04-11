@@ -39,15 +39,6 @@ pub(crate) enum CompactionRunError {
     #[cfg(feature = "llm-compaction")]
     #[error("compaction mode '{mode}' requires an LLM provider to be available for the session")]
     ProviderRequired { mode: &'static str },
-    /// The user selected a mode whose strategy isn't implemented yet.
-    #[error(
-        "compaction mode '{mode}' is not yet implemented (tracked by beads issue {issue}); \
-         set chat.compaction.mode to 'deterministic' or 'llm_replace' in the meantime"
-    )]
-    NotYetImplemented {
-        mode: &'static str,
-        issue: &'static str,
-    },
     /// `recency_preserving` couldn't make meaningful progress: the history is
     /// already smaller than `protect_head + protect_tail_min + 1`, and there
     /// was no bulky tool-result content to prune. The caller should fall
@@ -112,10 +103,20 @@ pub(crate) async fn run_compaction(
             let context_window = provider.map_or(200_000, LlmProvider::context_window);
             recency_preserving_strategy(history, config, context_window)
         },
-        CompactionMode::Structured => Err(CompactionRunError::NotYetImplemented {
-            mode: "structured",
-            issue: "moltis-aff",
-        }),
+        CompactionMode::Structured => {
+            #[cfg(feature = "llm-compaction")]
+            {
+                let provider =
+                    provider.ok_or(CompactionRunError::ProviderRequired { mode: "structured" })?;
+                let context_window = provider.context_window();
+                structured_strategy(history, config, context_window, provider).await
+            }
+            #[cfg(not(feature = "llm-compaction"))]
+            {
+                let _ = (config, provider);
+                Err(CompactionRunError::FeatureDisabled { mode: "structured" })
+            }
+        },
     }
 }
 
@@ -141,23 +142,30 @@ fn deterministic_strategy(history: &[Value]) -> Result<Vec<Value>, CompactionRun
     )])
 }
 
-/// `CompactionMode::RecencyPreserving` strategy — head + middle-prune + tail.
+/// Head/tail boundaries computed by `compute_boundaries`.
 ///
-/// Keeps the first `config.protect_head` messages and a token-budget tail
-/// verbatim. The middle is collapsed into a single marker message; any bulky
-/// tool-result content that survives in the head or tail is replaced with a
-/// placeholder so the retry fits inside the model's context window. After the
-/// splice, orphaned tool_use / tool_result pairs are repaired so strict
-/// providers don't reject the retry.
+/// `head_end` is the exclusive index marking the end of the verbatim head
+/// region; `tail_start` is the inclusive index marking the beginning of the
+/// verbatim tail. The middle slice is `history[head_end..tail_start]` and
+/// may be empty when the session is already small enough to fit in the
+/// retained budget.
+struct HeadTailBounds {
+    head_end: usize,
+    tail_start: usize,
+    protect_head: usize,
+    protect_tail_min: usize,
+}
+
+/// Compute the head / middle / tail boundaries for a recency-aware strategy.
 ///
-/// No LLM calls. Inspired by `hermes-agent`'s `ContextCompressor` tool-output
-/// pruning phase and openclaw's `repairToolUseResultPairing`.
-fn recency_preserving_strategy(
+/// Never splits a tool_use / tool_result group — the tail boundary slides
+/// forward past any consecutive tool-result run so the kept slice always
+/// starts on a non-tool message (or the end of the history).
+fn compute_boundaries(
     history: &[Value],
     config: &CompactionConfig,
     context_window: u32,
-) -> Result<Vec<Value>, CompactionRunError> {
-    // Phase 1 — compute boundaries.
+) -> HeadTailBounds {
     let n = history.len();
     let protect_head = (config.protect_head as usize).min(n);
     let protect_tail_min = (config.protect_tail_min as usize).min(n.saturating_sub(protect_head));
@@ -193,28 +201,85 @@ fn recency_preserving_strategy(
     // Never split a tool_use / tool_result group: if the boundary falls on a
     // tool-result message, walk forward past the whole group (the parent
     // assistant message and any siblings).
-    tail_start = align_boundary_forward_past_tool_group(history, tail_start);
+    let tail_start = align_boundary_forward_past_tool_group(history, tail_start);
 
-    // Phase 2 — if head and tail already cover (or overlap) the whole
-    // history there's no middle to cut. Prune any bulky tool-result content
-    // in place; if nothing actually changed, surface a clear error so the
-    // caller can fall back to a different mode instead of retrying forever.
+    HeadTailBounds {
+        head_end,
+        tail_start,
+        protect_head,
+        protect_tail_min,
+    }
+}
+
+/// Prune bulky tool-result content in anything older than the last
+/// `protect_tail_min * 3` messages, then repair orphaned tool_call /
+/// tool_result pairs so strict providers accept the retry.
+fn finalize_kept(
+    mut kept: Vec<Value>,
+    config: &CompactionConfig,
+    protect_tail_min: usize,
+) -> Result<Vec<Value>, CompactionRunError> {
+    let tool_prune_frontier = kept.len().saturating_sub(protect_tail_min * 3);
+    prune_tool_results_before(
+        &mut kept,
+        tool_prune_frontier,
+        config.tool_prune_char_threshold,
+    );
+    sanitize_tool_pairs(kept)
+}
+
+/// Handle the "head and tail already cover everything" fallback.
+///
+/// Prune bulky tool-result content in place; if nothing actually changed,
+/// return `TooSmallToCompact` so the caller can fall back to a different
+/// mode instead of retrying forever.
+fn in_place_prune_or_err(
+    history: &[Value],
+    config: &CompactionConfig,
+    bounds: &HeadTailBounds,
+) -> Result<Vec<Value>, CompactionRunError> {
+    let mut kept: Vec<Value> = history.to_vec();
+    let kept_len = kept.len();
+    let pruned = prune_tool_results_before(&mut kept, kept_len, config.tool_prune_char_threshold);
+    if pruned == 0 {
+        return Err(CompactionRunError::TooSmallToCompact {
+            messages: history.len(),
+            head: bounds.protect_head,
+            tail: bounds.protect_tail_min,
+        });
+    }
+    sanitize_tool_pairs(kept)
+}
+
+/// `CompactionMode::RecencyPreserving` strategy — head + middle-prune + tail.
+///
+/// Keeps the first `config.protect_head` messages and a token-budget tail
+/// verbatim. The middle is collapsed into a single marker message; any bulky
+/// tool-result content that survives in the head or tail is replaced with a
+/// placeholder so the retry fits inside the model's context window. After the
+/// splice, orphaned tool_use / tool_result pairs are repaired so strict
+/// providers don't reject the retry.
+///
+/// No LLM calls. Inspired by `hermes-agent`'s `ContextCompressor` tool-output
+/// pruning phase and openclaw's `repairToolUseResultPairing`.
+fn recency_preserving_strategy(
+    history: &[Value],
+    config: &CompactionConfig,
+    context_window: u32,
+) -> Result<Vec<Value>, CompactionRunError> {
+    let bounds = compute_boundaries(history, config, context_window);
+    let HeadTailBounds {
+        head_end,
+        tail_start,
+        protect_tail_min,
+        ..
+    } = bounds;
+    let n = history.len();
+
     if head_end >= tail_start {
-        let mut kept: Vec<Value> = history.to_vec();
-        let kept_len = kept.len();
-        let pruned =
-            prune_tool_results_before(&mut kept, kept_len, config.tool_prune_char_threshold);
-        if pruned == 0 {
-            return Err(CompactionRunError::TooSmallToCompact {
-                messages: n,
-                head: protect_head,
-                tail: protect_tail_min,
-            });
-        }
-        return sanitize_tool_pairs(kept);
+        return in_place_prune_or_err(history, config, &bounds);
     }
 
-    // Phase 3 — assemble head + marker + tail.
     let mut kept: Vec<Value> = Vec::with_capacity(head_end + 1 + (n - tail_start));
     kept.extend(history[..head_end].iter().cloned());
 
@@ -225,20 +290,7 @@ fn recency_preserving_strategy(
 
     kept.extend(history[tail_start..].iter().cloned());
 
-    // Phase 4 — prune bulky tool-result content in anything older than the
-    // last `protect_tail_min * 3` messages (same heuristic as hermes). This
-    // catches cases where the tail extends deep into the session and still
-    // contains outdated tool output that isn't worth keeping verbatim.
-    let tool_prune_frontier = kept.len().saturating_sub(protect_tail_min * 3);
-    prune_tool_results_before(
-        &mut kept,
-        tool_prune_frontier,
-        config.tool_prune_char_threshold,
-    );
-
-    // Phase 5 — repair any orphaned tool_call / tool_result pairs so strict
-    // providers accept the retry.
-    let kept = sanitize_tool_pairs(kept)?;
+    let kept = finalize_kept(kept, config, protect_tail_min)?;
 
     info!(
         input_messages = n,
@@ -247,6 +299,228 @@ fn recency_preserving_strategy(
         middle = tail_start - head_end,
         tail = n - tail_start,
         "chat.compact: recency_preserving"
+    );
+
+    Ok(kept)
+}
+
+/// Structured-summary template used by `CompactionMode::Structured`.
+///
+/// Mirrors the convention used by `hermes-agent`'s `ContextCompressor` and
+/// `openclaw`'s `safeguard` compaction — Goal / Progress / Decisions /
+/// Files / Next Steps. Kept verbatim here so future edits are easy to
+/// diff and so test fixtures can match against the literal template.
+#[cfg(feature = "llm-compaction")]
+const STRUCTURED_TEMPLATE: &str = "\
+## Goal
+[What the user is trying to accomplish]
+
+## Constraints & Preferences
+[User preferences, coding style, constraints, important decisions]
+
+## Progress
+### Done
+[Completed work — include specific file paths, commands run, results obtained]
+### In Progress
+[Work currently underway]
+### Blocked
+[Any blockers or issues encountered]
+
+## Key Decisions
+[Important technical decisions and why they were made]
+
+## Relevant Files
+[Files read, modified, or created — with brief note on each]
+
+## Next Steps
+[What needs to happen next to continue the work]
+
+## Critical Context
+[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]";
+
+/// System-message instructions that frame the structured summary call.
+#[cfg(feature = "llm-compaction")]
+const STRUCTURED_SYSTEM_INSTRUCTIONS: &str = "\
+You are a conversation summarizer. The messages that follow are an agentic \
+coding session you must summarize. Your summary must capture: active tasks \
+and their current status (in-progress, blocked, pending); batch operation \
+progress; the last thing the user asked for and what was being done about \
+it; decisions made and their rationale; TODOs, open questions, and \
+constraints; any commitments or follow-ups promised. Prioritize recent \
+context over older history. Preserve all opaque identifiers exactly as \
+written (no shortening or reconstruction): UUIDs, hashes, tokens, API \
+keys, hostnames, IPs, ports, URLs, and file names. After the conversation, \
+you will receive a final instruction telling you which template to fill in.";
+
+/// User-message instructions for the first compaction of a session.
+#[cfg(feature = "llm-compaction")]
+fn structured_first_compaction_instructions() -> String {
+    format!(
+        "Produce a structured handoff summary for a later assistant that will \
+         continue this conversation after the earlier turns above are compacted. \
+         Use this exact structure, filling every section (write \"(none)\" if a \
+         section has nothing to report):\n\n{STRUCTURED_TEMPLATE}\n\n\
+         Target roughly 800 tokens. Be specific — include file paths, command \
+         outputs, error messages, and concrete values rather than vague \
+         descriptions. Write only the summary body. Do not include any preamble \
+         or prefix."
+    )
+}
+
+/// User-message instructions for iterative re-compaction (a previous
+/// summary exists in the first message of the history).
+#[cfg(feature = "llm-compaction")]
+fn structured_iterative_instructions(previous_summary: &str) -> String {
+    format!(
+        "You are updating a previous compaction summary. The first message in \
+         the conversation above is a previous compaction's structured summary; \
+         the remaining messages are new turns that need to be incorporated.\n\n\
+         PREVIOUS SUMMARY:\n{previous_summary}\n\n\
+         Update the summary using this exact structure. PRESERVE all existing \
+         information that is still relevant. ADD new progress. Move items from \
+         \"In Progress\" to \"Done\" when completed. Remove information only \
+         if it is clearly obsolete.\n\n{STRUCTURED_TEMPLATE}\n\n\
+         Target roughly 800 tokens. Be specific — include file paths, command \
+         outputs, error messages, and concrete values. Write only the summary \
+         body. Do not include any preamble or prefix."
+    )
+}
+
+/// Extract a previous-compaction summary body from the first message of a
+/// history slice, if it looks like one.
+///
+/// Only called by `structured_strategy`, which is feature-gated behind
+/// `llm-compaction`. The `cfg_attr` keeps `--no-default-features` builds
+/// from warning about the helper being unused.
+#[cfg_attr(not(feature = "llm-compaction"), allow(dead_code))]
+fn extract_previous_summary(history: &[Value]) -> Option<&str> {
+    let first = history.first()?;
+    if first.get("role").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    let content = first.get("content").and_then(Value::as_str)?;
+    content.strip_prefix("[Conversation Summary]\n\n")
+}
+
+/// `CompactionMode::Structured` strategy — head + LLM summary + tail.
+///
+/// Same boundary logic as `recency_preserving_strategy`. The middle region
+/// is summarised with a single LLM call using the Goal / Progress /
+/// Decisions / Files / Next Steps template (see [`STRUCTURED_TEMPLATE`]).
+/// Iterative re-compaction is supported: when the first head message is
+/// already a compacted summary, the previous summary body is passed into
+/// the prompt so the model can preserve and update its sections instead of
+/// summarising from scratch.
+///
+/// On LLM failure, automatically falls back to
+/// [`recency_preserving_strategy`] so compaction never silently drops
+/// information — the retry history still has a middle marker and repaired
+/// tool pairs even if the summary call failed.
+///
+/// Inspired by `hermes-agent`'s `ContextCompressor` and `openclaw`'s
+/// `safeguard` compaction mode.
+#[cfg(feature = "llm-compaction")]
+async fn structured_strategy(
+    history: &[Value],
+    config: &CompactionConfig,
+    context_window: u32,
+    provider: &dyn LlmProvider,
+) -> Result<Vec<Value>, CompactionRunError> {
+    let bounds = compute_boundaries(history, config, context_window);
+    let HeadTailBounds {
+        head_end,
+        tail_start,
+        protect_tail_min,
+        ..
+    } = bounds;
+    let n = history.len();
+
+    // Head and tail already cover everything — no middle to summarise.
+    if head_end >= tail_start {
+        return in_place_prune_or_err(history, config, &bounds);
+    }
+
+    let middle = &history[head_end..tail_start];
+    if middle.is_empty() {
+        return in_place_prune_or_err(history, config, &bounds);
+    }
+
+    // Detect re-compaction: if the first head message is a previous
+    // compaction summary, include it in the prompt so the model can update
+    // sections instead of re-summarising from scratch.
+    let previous_summary = extract_previous_summary(&history[..head_end]);
+
+    // Build the structured prompt. System message frames the task, middle
+    // messages are passed via ChatMessage so role boundaries are preserved
+    // (prevents prompt injection via role prefixes in user content), and a
+    // final user directive selects the template.
+    let mut summary_messages = vec![ChatMessage::system(STRUCTURED_SYSTEM_INSTRUCTIONS)];
+    summary_messages.extend(values_to_chat_messages(middle));
+    summary_messages.push(match previous_summary {
+        Some(prev) => ChatMessage::user(structured_iterative_instructions(prev)),
+        None => ChatMessage::user(structured_first_compaction_instructions()),
+    });
+
+    // Stream the summary.
+    let mut stream = provider.stream(summary_messages);
+    let mut summary = String::new();
+    let mut stream_error: Option<String> = None;
+    while let Some(event) = stream.next().await {
+        match event {
+            StreamEvent::Delta(delta) => summary.push_str(&delta),
+            StreamEvent::Done(_) => break,
+            StreamEvent::Error(e) => {
+                stream_error = Some(e.to_string());
+                break;
+            },
+            // Tool events aren't expected on a summary stream; drop them.
+            StreamEvent::ToolCallStart { .. }
+            | StreamEvent::ToolCallArgumentsDelta { .. }
+            | StreamEvent::ToolCallComplete { .. }
+            // Provider raw payloads are debug metadata, not summary text.
+            | StreamEvent::ProviderRaw(_)
+            // Ignore reasoning blocks; the summary body is the final answer only.
+            | StreamEvent::ReasoningDelta(_) => {},
+        }
+    }
+
+    // `config.max_summary_tokens` / `config.summary_model` aren't wired
+    // into the provider stream yet — tracked by beads issue moltis-8me.
+    let _ = config.max_summary_tokens;
+    let _ = config.summary_model.as_deref();
+
+    if let Some(err) = stream_error {
+        tracing::warn!(
+            error = %err,
+            "chat.compact: structured summary stream failed, falling back to recency_preserving"
+        );
+        return recency_preserving_strategy(history, config, context_window);
+    }
+    let summary = summary.trim();
+    if summary.is_empty() {
+        tracing::warn!(
+            "chat.compact: structured summary was empty, falling back to recency_preserving"
+        );
+        return recency_preserving_strategy(history, config, context_window);
+    }
+
+    // Assemble head + structured-summary + tail.
+    let mut kept: Vec<Value> = Vec::with_capacity(head_end + 1 + (n - tail_start));
+    kept.extend(history[..head_end].iter().cloned());
+    kept.push(build_summary_message(summary));
+    kept.extend(history[tail_start..].iter().cloned());
+
+    let kept = finalize_kept(kept, config, protect_tail_min)?;
+
+    info!(
+        input_messages = n,
+        output_messages = kept.len(),
+        head = head_end,
+        middle = tail_start - head_end,
+        tail = n - tail_start,
+        summary_chars = summary.len(),
+        iterative = previous_summary.is_some(),
+        "chat.compact: structured"
     );
 
     Ok(kept)
@@ -913,8 +1187,9 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "llm-compaction")]
     #[tokio::test]
-    async fn structured_mode_is_not_yet_implemented() {
+    async fn structured_mode_without_provider_returns_provider_required() {
         let history = sample_history();
         let config = CompactionConfig {
             mode: CompactionMode::Structured,
@@ -922,11 +1197,23 @@ mod tests {
         };
         let err = run_compaction(&history, &config, None).await.unwrap_err();
         match err {
-            CompactionRunError::NotYetImplemented { mode, issue } => {
-                assert_eq!(mode, "structured");
-                assert_eq!(issue, "moltis-aff");
-            },
-            other => panic!("expected NotYetImplemented, got {other:?}"),
+            CompactionRunError::ProviderRequired { mode } => assert_eq!(mode, "structured"),
+            other => panic!("expected ProviderRequired, got {other:?}"),
+        }
+    }
+
+    #[cfg(not(feature = "llm-compaction"))]
+    #[tokio::test]
+    async fn structured_mode_returns_feature_disabled_when_feature_off() {
+        let history = sample_history();
+        let config = CompactionConfig {
+            mode: CompactionMode::Structured,
+            ..Default::default()
+        };
+        let err = run_compaction(&history, &config, None).await.unwrap_err();
+        match err {
+            CompactionRunError::FeatureDisabled { mode } => assert_eq!(mode, "structured"),
+            other => panic!("expected FeatureDisabled, got {other:?}"),
         }
     }
 
@@ -964,10 +1251,12 @@ mod tests {
         }
     }
 
+    // ── LLM-backed modes with stub providers ──────────────────────────
+
     #[cfg(feature = "llm-compaction")]
-    #[tokio::test]
-    async fn llm_replace_mode_with_stub_provider_returns_single_message() {
+    mod stub_provider {
         use {
+            super::*,
             anyhow::Result,
             async_trait::async_trait,
             futures::Stream,
@@ -975,7 +1264,34 @@ mod tests {
             std::pin::Pin,
         };
 
-        struct StubProvider;
+        /// Stub provider that emits a canned sequence of stream events.
+        ///
+        /// `context_window` lets the caller force the tail-budget math into
+        /// the cutting regime; `events` is the full sequence returned by
+        /// `stream()` on every call.
+        pub(super) struct StubProvider {
+            pub events: Vec<StreamEvent>,
+            pub context_window: u32,
+        }
+
+        impl StubProvider {
+            pub fn new_ok(body: &str) -> Self {
+                Self {
+                    events: vec![
+                        StreamEvent::Delta(body.to_string()),
+                        StreamEvent::Done(Usage::default()),
+                    ],
+                    context_window: 200,
+                }
+            }
+
+            pub fn new_error(msg: &str) -> Self {
+                Self {
+                    events: vec![StreamEvent::Error(msg.to_string())],
+                    context_window: 200,
+                }
+            }
+        }
 
         #[async_trait]
         impl LlmProvider for StubProvider {
@@ -985,6 +1301,10 @@ mod tests {
 
             fn id(&self) -> &str {
                 "stub::compaction"
+            }
+
+            fn context_window(&self) -> u32 {
+                self.context_window
             }
 
             async fn complete(
@@ -999,19 +1319,21 @@ mod tests {
                 &self,
                 _messages: Vec<ChatMessage>,
             ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
-                Box::pin(tokio_stream::iter(vec![
-                    StreamEvent::Delta("stubbed summary body".into()),
-                    StreamEvent::Done(Usage::default()),
-                ]))
+                let events = self.events.clone();
+                Box::pin(tokio_stream::iter(events))
             }
         }
+    }
 
+    #[cfg(feature = "llm-compaction")]
+    #[tokio::test]
+    async fn llm_replace_mode_with_stub_provider_returns_single_message() {
         let history = sample_history();
         let config = CompactionConfig {
             mode: CompactionMode::LlmReplace,
             ..Default::default()
         };
-        let provider = StubProvider;
+        let provider = stub_provider::StubProvider::new_ok("stubbed summary body");
         let result = run_compaction(&history, &config, Some(&provider))
             .await
             .expect("llm_replace succeeds with stub provider");
@@ -1021,5 +1343,153 @@ mod tests {
             .and_then(Value::as_str)
             .expect("summary content");
         assert!(text.contains("stubbed summary body"), "got: {text}");
+    }
+
+    #[cfg(feature = "llm-compaction")]
+    #[tokio::test]
+    async fn structured_mode_splices_summary_between_head_and_tail() {
+        // 10 messages so the boundaries cut in the middle with a tiny
+        // context window. Stub provider returns a well-formed structured
+        // summary body and the strategy should preserve head/tail verbatim
+        // around it.
+        let mut history = Vec::new();
+        for i in 0..5 {
+            history.push(mk_user(&format!("user {i}")));
+            history.push(mk_assistant(&format!("assistant {i}")));
+        }
+
+        let config = CompactionConfig {
+            mode: CompactionMode::Structured,
+            protect_head: 2,
+            protect_tail_min: 2,
+            ..Default::default()
+        };
+        let provider = stub_provider::StubProvider::new_ok(
+            "## Goal\nTest compaction\n## Progress\n### Done\nAll the things",
+        );
+        let result = run_compaction(&history, &config, Some(&provider))
+            .await
+            .expect("structured succeeds with stub provider");
+
+        // Head (2) + structured summary (1) + tail (2) = 5 messages.
+        assert_eq!(result.len(), 5, "result: {result:#?}");
+
+        assert_eq!(
+            result[0].get("content").and_then(Value::as_str),
+            Some("user 0")
+        );
+        assert_eq!(
+            result[1].get("content").and_then(Value::as_str),
+            Some("assistant 0")
+        );
+
+        let summary = result[2]
+            .get("content")
+            .and_then(Value::as_str)
+            .expect("summary");
+        assert!(
+            summary.starts_with("[Conversation Summary]\n\n"),
+            "got: {summary}"
+        );
+        assert!(summary.contains("## Goal"), "got: {summary}");
+
+        assert_eq!(
+            result[3].get("content").and_then(Value::as_str),
+            Some("user 4")
+        );
+        assert_eq!(
+            result[4].get("content").and_then(Value::as_str),
+            Some("assistant 4")
+        );
+    }
+
+    #[cfg(feature = "llm-compaction")]
+    #[tokio::test]
+    async fn structured_mode_falls_back_to_recency_preserving_on_llm_error() {
+        let mut history = Vec::new();
+        for i in 0..5 {
+            history.push(mk_user(&format!("user {i}")));
+            history.push(mk_assistant(&format!("assistant {i}")));
+        }
+
+        let config = CompactionConfig {
+            mode: CompactionMode::Structured,
+            protect_head: 2,
+            protect_tail_min: 2,
+            ..Default::default()
+        };
+        let provider = stub_provider::StubProvider::new_error("simulated provider outage");
+        let result = run_compaction(&history, &config, Some(&provider))
+            .await
+            .expect("structured falls back to recency_preserving on llm error");
+
+        // Fallback produces a recency_preserving-shaped history: head (2) +
+        // middle marker (1) + tail (2) = 5 messages, and the middle message
+        // is the plain "[Conversation Compacted]" marker, not a structured
+        // summary.
+        assert_eq!(result.len(), 5, "result: {result:#?}");
+        let middle = result[2]
+            .get("content")
+            .and_then(Value::as_str)
+            .expect("middle content");
+        assert!(
+            middle.starts_with("[Conversation Compacted]"),
+            "fallback should produce the recency_preserving marker, got: {middle}"
+        );
+    }
+
+    #[cfg(feature = "llm-compaction")]
+    #[tokio::test]
+    async fn structured_mode_falls_back_when_summary_is_empty() {
+        // A stream that yields Done with no Delta should surface as an
+        // empty summary and trigger the same fallback path as an error.
+        use moltis_agents::model::Usage;
+        let mut history = Vec::new();
+        for i in 0..5 {
+            history.push(mk_user(&format!("user {i}")));
+            history.push(mk_assistant(&format!("assistant {i}")));
+        }
+
+        let config = CompactionConfig {
+            mode: CompactionMode::Structured,
+            protect_head: 2,
+            protect_tail_min: 2,
+            ..Default::default()
+        };
+        let provider = stub_provider::StubProvider {
+            events: vec![StreamEvent::Done(Usage::default())],
+            context_window: 200,
+        };
+        let result = run_compaction(&history, &config, Some(&provider))
+            .await
+            .expect("structured falls back on empty summary");
+        assert_eq!(result.len(), 5);
+        let middle = result[2]
+            .get("content")
+            .and_then(Value::as_str)
+            .expect("middle content");
+        assert!(
+            middle.starts_with("[Conversation Compacted]"),
+            "expected fallback marker, got: {middle}"
+        );
+    }
+
+    #[cfg(feature = "llm-compaction")]
+    #[test]
+    fn extract_previous_summary_detects_compacted_head() {
+        let history = vec![json!({
+            "role": "user",
+            "content": "[Conversation Summary]\n\n## Goal\nprior goal",
+        })];
+        assert_eq!(
+            extract_previous_summary(&history),
+            Some("## Goal\nprior goal")
+        );
+
+        let not_compacted = vec![json!({"role": "user", "content": "hello"})];
+        assert_eq!(extract_previous_summary(&not_compacted), None);
+
+        let empty: Vec<Value> = Vec::new();
+        assert_eq!(extract_previous_summary(&empty), None);
     }
 }

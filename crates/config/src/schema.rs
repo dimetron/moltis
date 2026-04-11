@@ -1577,11 +1577,17 @@ pub enum CompactionMode {
     /// Head + LLM-summarised middle + tail using a structured template.
     ///
     /// Head and tail are preserved verbatim (same boundary logic as
-    /// [`CompactionMode::RecencyPreserving`]). The middle is summarised with
-    /// a single LLM call using the Goal / Progress / Key Decisions /
-    /// Relevant Files / Next Steps template used by hermes-agent and
-    /// openclaw safeguard. Supports iterative re-compaction that preserves
-    /// prior summary sections.
+    /// [`CompactionMode::RecencyPreserving`]). The middle is summarised
+    /// with a single LLM call using the
+    /// Goal / Progress / Decisions / Files / Next Steps template used by
+    /// hermes-agent and openclaw safeguard. Iterative re-compaction is
+    /// automatic: when the first head message is already a compacted
+    /// summary, the previous summary body is passed into the prompt so the
+    /// model can preserve and update sections instead of re-summarising.
+    ///
+    /// On LLM failure (error or empty response), automatically falls back
+    /// to [`CompactionMode::RecencyPreserving`] so compaction never
+    /// silently drops information.
     ///
     /// **Best for:** long agentic coding sessions where losing decisions
     /// and rationale would be expensive, and token budget for a single
@@ -1589,9 +1595,6 @@ pub enum CompactionMode {
     ///
     /// **Weaknesses:** costs a summary LLM call per compaction; quality
     /// depends on the summary model's instruction-following.
-    ///
-    /// **Status:** scaffolding only — tracked by beads issue `moltis-aff`.
-    /// Selecting this mode today returns a configuration error.
     Structured,
 
     /// Replace the entire history with a single LLM-generated summary.

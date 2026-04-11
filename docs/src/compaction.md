@@ -77,7 +77,7 @@ through the context window on its own.
 without paying any tokens — the best free option for most agentic coding
 sessions.
 
-### `structured` *(not yet implemented — moltis-aff)*
+### `structured`
 
 **Head + LLM structured summary + tail.** The highest-fidelity mode. Same
 head and tail boundary logic as `recency_preserving`, but the middle is
@@ -153,7 +153,7 @@ behaviour).
 | Fallback on LLM failure | N/A | N/A | → `recency_preserving` | abort |
 | Works offline | ✓ | ✓ | ✗ | ✗ |
 | Deterministic | ✓ | ✓ | ✗ | ✗ |
-| Status | shipped | shipped | **not yet implemented** | shipped |
+| Status | shipped | shipped | shipped | shipped |
 
 ## Configuration
 
@@ -220,8 +220,8 @@ just like the pre-PR behaviour did.
 - Epic: **moltis-dxw** — pluggable compaction modes
 - **moltis-g37** — config scaffolding, docs, `llm_replace` mode ✓
 - **moltis-h0c** — `recency_preserving` mode ✓
-- **moltis-aff** — `structured` mode (in progress)
-- **moltis-8me** — auxiliary-model subsystem for cheap summary models
+- **moltis-aff** — `structured` mode ✓
+- **moltis-8me** — auxiliary-model subsystem for cheap summary models *(follow-up, lets users route compaction to a cheap auxiliary model instead of the session's primary model)*
 
 ## Further reading
 
