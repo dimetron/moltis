@@ -478,7 +478,10 @@ fn test_sandbox_home_persistence_is_separate_from_memory_workspace() {
         data_dir.join("sandbox").join("home").join("shared")
     );
     assert_ne!(home_dir, data_dir);
-    assert_eq!(home_dir.parent(), Some(data_dir.join("sandbox").join("home").as_path()));
+    assert_eq!(
+        home_dir.parent(),
+        Some(data_dir.join("sandbox").join("home").as_path())
+    );
 }
 
 #[test]

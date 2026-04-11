@@ -4572,16 +4572,14 @@ pub(super) fn register(reg: &mut MethodRegistry) {
                 let current_config = moltis_config::discover_and_load();
                 let current_memory = current_config.memory;
                 let current_chat = current_config.chat;
-                let style = ctx
-                    .params
-                    .get("style")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(match current_memory.style {
+                let style = ctx.params.get("style").and_then(|v| v.as_str()).unwrap_or(
+                    match current_memory.style {
                         moltis_config::MemoryStyle::Hybrid => "hybrid",
                         moltis_config::MemoryStyle::PromptOnly => "prompt-only",
                         moltis_config::MemoryStyle::SearchOnly => "search-only",
                         moltis_config::MemoryStyle::Off => "off",
-                    });
+                    },
+                );
                 let backend = ctx
                     .params
                     .get("backend")

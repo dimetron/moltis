@@ -208,13 +208,85 @@ message_queue_mode = "followup"   # Default: process queued messages one-by-one 
 # priority_models = ["claude-opus-4-5", "gpt-5.2", "gemini-3-flash"]  # Optional: models to pin first in selectors
 # allowed_models = ["gpt 5.2"]  # Legacy field (currently ignored).
 
+# ── Compaction ─────────────────────────────────────────────────────────────
+# Strategy used to shrink a session when its context window fills up, or when
+# a user invokes `/compact`. Four modes are available — pick the one that
+# matches your cost/fidelity trade-off. See docs/src/compaction.md for a full
+# comparison table and picking guide.
+#
+# Modes:
+#   "deterministic"        (default) Zero LLM calls. Replaces the entire
+#                          history with a single extracted summary message
+#                          (counts, tool names, file paths, recent user
+#                          requests, head+tail timeline). Fast, free, offline,
+#                          low fidelity. Best for short chat channels and
+#                          cost-sensitive deployments.
+#
+#   "recency_preserving"   Zero LLM calls. Keeps head (system prompt +
+#                          first exchange) and recent tail verbatim (sized
+#                          by token budget). Collapses the middle into a
+#                          short marker message and replaces any bulky
+#                          tool-result content in the retained slice with a
+#                          placeholder. Repairs orphaned tool_use /
+#                          tool_result pairs so strict providers accept the
+#                          retry. Mid fidelity, free.
+#
+#   "structured"           Head + LLM structured summary + tail. Same
+#                          boundary logic as recency_preserving, but the
+#                          middle is summarised with a single LLM call
+#                          using a Goal / Progress / Decisions / Files /
+#                          Next Steps template (same convention as
+#                          hermes-agent and openclaw safeguard). Iterative
+#                          re-compaction preserves prior summary sections.
+#                          Highest fidelity, costs a summary LLM call per
+#                          compaction. Falls back to recency_preserving on
+#                          LLM failure or empty summary.
+#
+#   "llm_replace"          Replaces the entire history with a single
+#                          LLM-generated summary. Pre-PR-#653 behaviour.
+#                          Best for maximum token reduction when the session
+#                          provider is cheap and the tail isn't worth
+#                          preserving.
+#
+[chat.compaction]
+mode = "deterministic"              # "deterministic" | "recency_preserving" | "structured" | "llm_replace"
+# threshold_percent = 0.95          # Fires auto-compaction when the next request is estimated to exceed
+                                    # this fraction of the model context window. Also multiplied into
+                                    # the verbatim tail budget for recency_preserving / structured modes.
+                                    # Default matches the pre-PR-#653 hardcoded trigger so upgrades are
+                                    # behaviour-neutral. Range: 0.10–0.95. Lower = more aggressive compaction.
+# protect_head = 3                  # Number of leading messages kept verbatim by recency/structured modes.
+# protect_tail_min = 20             # Floor for tail messages kept verbatim (recency/structured modes).
+# tail_budget_ratio = 0.20          # Size of the verbatim tail as a fraction of threshold_percent × context_window.
+                                    # Example (defaults): 200K context × 0.95 × 0.20 = 38K tokens of tail preserved.
+# tool_prune_char_threshold = 200   # Tool-result content longer than this is replaced with a placeholder
+                                    # when recency/structured modes prune the middle region.
+# summary_model = "openrouter/google/gemini-2.5-flash"  # RESERVED — auxiliary-model subsystem not yet wired
+                                                         # (tracked by beads issue moltis-8me). Setting this
+                                                         # today emits a one-shot runtime WARN and has no
+                                                         # effect on the structured / llm_replace strategies,
+                                                         # which still use the session's primary provider.
+# max_summary_tokens = 4096         # RESERVED — see summary_model above. Default is 4096 but the value
+                                    # is not yet applied to the streaming summary call.
+# show_settings_hint = true         # Append "Change chat.compaction.mode in moltis.toml…" to every
+                                    # compaction notice (web UI card + channel messages). Default: true.
+                                    # Set to false once you know the setting exists to hide the repetitive
+                                    # footer without losing the mode + token metadata.
+
 # ══════════════════════════════════════════════════════════════════════════════
-# SPAWN PRESETS (OPTIONAL)
+# SUB-AGENT SPAWN PRESETS (OPTIONAL)
 # ══════════════════════════════════════════════════════════════════════════════
-# Configure reusable presets for the `spawn_agent` tool.
+# Configure reusable presets for sub-agents spawned via the `spawn_agent` tool.
+#
+# ⚠️  SCOPE: `[agents.presets.*]` applies ONLY to sub-agents spawned via the
+# `spawn_agent` tool. The `tools.allow` / `tools.deny` fields under a preset
+# do NOT filter tools for the main agent session. To allow/deny tools for the
+# main session, use the `[tools.policy]` section further down this file.
+# `[agents] default_preset` likewise only selects the sub-agent preset used
+# when `spawn_agent.preset` is omitted — it does not apply to the main session.
 #
 # [agents]
-# default_preset = "research"      # Optional: used when spawn_agent.preset is omitted
+# default_preset = "research"      # Sub-agent preset used when spawn_agent.preset is omitted
 #
 # [agents.presets.research]
 # model = "openai/gpt-5.2"
@@ -251,12 +323,15 @@ max_output_bytes = 204800         # Max command output bytes (200KB)
 approval_mode = "on-miss"         # When to require approval:
                                   #   "always"  - Always ask before running
                                   #   "on-miss" - Ask if not in allowlist
-                                  #   "never"   - Never ask (dangerous)
+                                  #   "never"   - Never ask (for headless deployments)
 security_level = "allowlist"      # Security mode:
                                   #   "permissive" - Allow most commands
                                   #   "allowlist"  - Only allow listed commands
                                   #   "strict"     - Very restrictive
-allowlist = []                    # Command patterns to allow (when security_level = "allowlist")
+allowlist = []                    # Command patterns to allow (when security_level = "allowlist").
+                                  # With approval_mode = "never", a non-empty allowlist is enforced:
+                                  # commands that don't match are denied (safe bins still allowed).
+                                  # An empty allowlist in "never" mode is unrestricted.
                                   # Example: ["git *", "npm *", "cargo *"]
 host = "local"                    # Where to run commands:
                                   #   "local" - Run on this machine (default)
@@ -388,7 +463,12 @@ packages = [
 # pids_max = 100                  # Maximum number of processes
 
 # ── Tool Policy ───────────────────────────────────────────────────────────────
-# Control which tools agents can use.
+# Control which tools the MAIN agent session can use.
+#
+# This is the tool policy for the main session. Preset tool policies under
+# `[agents.presets.*]` apply only to sub-agents spawned via `spawn_agent` and
+# are NOT read by the main session. If you want a deny list to harden the
+# main agent, it must live here.
 
 [tools.policy]
 allow = []                        # Tools to always allow (e.g., ["exec", "web_fetch"])

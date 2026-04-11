@@ -397,6 +397,20 @@ fn build_schema_map() -> KnownKeys {
                 ("workspace_file_max_chars", Leaf),
                 ("priority_models", Leaf),
                 ("allowed_models", Leaf),
+                (
+                    "compaction",
+                    Struct(HashMap::from([
+                        ("mode", Leaf),
+                        ("threshold_percent", Leaf),
+                        ("protect_head", Leaf),
+                        ("protect_tail_min", Leaf),
+                        ("tail_budget_ratio", Leaf),
+                        ("tool_prune_char_threshold", Leaf),
+                        ("summary_model", Leaf),
+                        ("max_summary_tokens", Leaf),
+                        ("show_settings_hint", Leaf),
+                    ])),
+                ),
             ])),
         ),
         (
@@ -1147,6 +1161,48 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
         });
     }
 
+    // Compaction config sanity.
+    let compaction = &config.chat.compaction;
+    if !(0.1..=0.95).contains(&compaction.threshold_percent) {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "invalid-value",
+            path: "chat.compaction.threshold_percent".into(),
+            message: format!(
+                "chat.compaction.threshold_percent = {} is outside the supported 0.1–0.95 range; the default (0.95) will be used",
+                compaction.threshold_percent
+            ),
+        });
+    }
+    if !(0.05..=0.80).contains(&compaction.tail_budget_ratio) {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "invalid-value",
+            path: "chat.compaction.tail_budget_ratio".into(),
+            message: format!(
+                "chat.compaction.tail_budget_ratio = {} is outside the supported 0.05–0.80 range; the default (0.20) will be used",
+                compaction.tail_budget_ratio
+            ),
+        });
+    }
+    if compaction.protect_head > 32 {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "invalid-value",
+            path: "chat.compaction.protect_head".into(),
+            message: "chat.compaction.protect_head > 32 will leave little room for the compacted middle region on typical sessions".into(),
+        });
+    }
+    // All four CompactionMode variants are now implemented. Any future
+    // "not-implemented" markers would go here; leave the match explicit so
+    // adding a new variant forces a decision at compile time.
+    match compaction.mode {
+        crate::schema::CompactionMode::Deterministic
+        | crate::schema::CompactionMode::RecencyPreserving
+        | crate::schema::CompactionMode::Structured
+        | crate::schema::CompactionMode::LlmReplace => {},
+    }
+
     if config.mcp.request_timeout_secs == 0 {
         diagnostics.push(Diagnostic {
             severity: Severity::Error,
@@ -1214,6 +1270,50 @@ fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut Vec<Diagnost
                 "default preset \"{default_preset}\" is not defined in agents.presets"
             ),
         });
+    }
+
+    // Silent-misconfiguration trap: `[agents.presets.*]` tool policies apply
+    // ONLY to sub-agents spawned via `spawn_agent`. They do NOT filter tools
+    // for the main agent session — that is controlled exclusively by
+    // `[tools.policy]`. Users hardening their deployment often put a deny
+    // list under a preset and expect it to apply to the main session; it
+    // silently doesn't. Warn when at least one preset declares
+    // `tools.allow`/`tools.deny` while `[tools.policy]` is entirely empty.
+    {
+        let main_policy_empty = config.tools.policy.allow.is_empty()
+            && config.tools.policy.deny.is_empty()
+            && config.tools.policy.profile.is_none();
+        if main_policy_empty {
+            let mut offending: Vec<&str> = config
+                .agents
+                .presets
+                .iter()
+                .filter(|(_, preset)| {
+                    !preset.tools.allow.is_empty() || !preset.tools.deny.is_empty()
+                })
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if !offending.is_empty() {
+                offending.sort_unstable();
+                let quoted: Vec<String> =
+                    offending.iter().map(|name| format!("\"{name}\"")).collect();
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    category: "security",
+                    path: "agents.presets".into(),
+                    message: format!(
+                        "preset(s) [{}] declare tools.allow/tools.deny, but \
+                         [tools.policy] is empty. Preset tool policies apply \
+                         ONLY to sub-agents spawned via the spawn_agent tool; \
+                         they do NOT filter tools for the main agent session. \
+                         To allow/deny tools for the main session, set \
+                         tools.policy.allow, tools.policy.deny, or \
+                         tools.policy.profile.",
+                        quoted.join(", ")
+                    ),
+                });
+            }
+        }
     }
 
     // agents.presets.*.reasoning_effort is now a typed enum (ReasoningEffort)
@@ -2967,5 +3067,165 @@ cache_retention = "{mode}"
                 "upstream_proxy with {scheme} should not produce errors: {errors:?}"
             );
         }
+    }
+
+    /// Helper: locate the silent-misconfiguration warning about preset tool
+    /// policies vs. empty `[tools.policy]`.
+    fn find_preset_silent_policy_warning(result: &ValidationResult) -> Option<&Diagnostic> {
+        result.diagnostics.iter().find(|d| {
+            d.category == "security"
+                && d.path == "agents.presets"
+                && d.message.contains("spawn_agent")
+        })
+    }
+
+    #[test]
+    fn preset_tools_deny_without_main_policy_warns() {
+        let toml = r#"
+[agents]
+default_preset = "full"
+
+[agents.presets.full]
+[agents.presets.full.tools]
+deny = ["browser", "web_fetch"]
+"#;
+        let result = validate_toml_str(toml);
+        let warning = find_preset_silent_policy_warning(&result).unwrap_or_else(|| {
+            panic!(
+                "expected silent-policy warning, got: {:?}",
+                result.diagnostics
+            )
+        });
+        assert_eq!(warning.severity, Severity::Warning);
+        assert!(
+            warning.message.contains("\"full\""),
+            "expected preset name in message: {}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("[tools.policy]"),
+            "expected pointer to [tools.policy] in message: {}",
+            warning.message
+        );
+    }
+
+    #[test]
+    fn preset_tools_allow_without_main_policy_also_warns() {
+        let toml = r#"
+[agents.presets.research]
+[agents.presets.research.tools]
+allow = ["web_search", "web_fetch"]
+"#;
+        let result = validate_toml_str(toml);
+        let warning = find_preset_silent_policy_warning(&result).unwrap_or_else(|| {
+            panic!(
+                "expected silent-policy warning, got: {:?}",
+                result.diagnostics
+            )
+        });
+        assert!(warning.message.contains("\"research\""));
+    }
+
+    #[test]
+    fn preset_tools_deny_with_main_policy_deny_does_not_warn() {
+        let toml = r#"
+[tools.policy]
+deny = ["exec"]
+
+[agents.presets.full]
+[agents.presets.full.tools]
+deny = ["browser"]
+"#;
+        let result = validate_toml_str(toml);
+        assert!(
+            find_preset_silent_policy_warning(&result).is_none(),
+            "should not warn when [tools.policy] is non-empty, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn preset_tools_deny_with_main_policy_allow_does_not_warn() {
+        let toml = r#"
+[tools.policy]
+allow = ["web_search"]
+
+[agents.presets.full]
+[agents.presets.full.tools]
+deny = ["browser"]
+"#;
+        let result = validate_toml_str(toml);
+        assert!(
+            find_preset_silent_policy_warning(&result).is_none(),
+            "should not warn when [tools.policy] has allow list, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn preset_tools_deny_with_main_policy_profile_does_not_warn() {
+        let toml = r#"
+[tools.policy]
+profile = "default"
+
+[agents.presets.full]
+[agents.presets.full.tools]
+deny = ["browser"]
+"#;
+        let result = validate_toml_str(toml);
+        assert!(
+            find_preset_silent_policy_warning(&result).is_none(),
+            "should not warn when [tools.policy.profile] is set, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn empty_preset_tools_does_not_warn() {
+        let toml = r#"
+[agents]
+default_preset = "basic"
+
+[agents.presets.basic]
+model = "openai/gpt-5.2"
+"#;
+        let result = validate_toml_str(toml);
+        assert!(
+            find_preset_silent_policy_warning(&result).is_none(),
+            "should not warn when presets declare no tool policy, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn multiple_offending_presets_are_rolled_up() {
+        let toml = r#"
+[agents.presets.full]
+[agents.presets.full.tools]
+deny = ["browser"]
+
+[agents.presets.minimal]
+[agents.presets.minimal.tools]
+allow = ["web_search"]
+"#;
+        let result = validate_toml_str(toml);
+        let warning = find_preset_silent_policy_warning(&result).unwrap_or_else(|| {
+            panic!(
+                "expected silent-policy warning, got: {:?}",
+                result.diagnostics
+            )
+        });
+        assert!(
+            warning.message.contains("\"full\"") && warning.message.contains("\"minimal\""),
+            "expected both preset names in single rolled-up warning: {}",
+            warning.message
+        );
+        // And only one such diagnostic should be emitted.
+        let count = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.category == "security" && d.path == "agents.presets")
+            .count();
+        assert_eq!(count, 1, "expected exactly one rolled-up warning");
     }
 }

@@ -569,6 +569,22 @@ function renderContextCard(data) {
 	S.chatMsgBox.scrollTop = S.chatMsgBox.scrollHeight;
 }
 
+// Human-readable labels for each CompactionMode variant. Keep the keys in
+// sync with `compaction_run::compaction_mode_key` in the Rust backend —
+// those snake_case keys are what ship in the `mode` field of the
+// auto_compact / compact broadcast events.
+var COMPACTION_MODE_LABELS = {
+	deterministic: "Deterministic",
+	recency_preserving: "Recency preserving",
+	structured: "Structured",
+	llm_replace: "LLM replace",
+};
+
+function compactionModeLabel(mode) {
+	if (!mode) return "Unknown";
+	return COMPACTION_MODE_LABELS[mode] || mode;
+}
+
 export function renderCompactCard(data) {
 	if (!S.chatMsgBox) return;
 	slashInjectStyles();
@@ -582,9 +598,34 @@ export function renderCompactCard(data) {
 	header.appendChild(ctxEl("span", "ctx-header-title", "Conversation compacted"));
 	card.appendChild(header);
 
+	// Strategy section — surfaces the mode that actually ran and the LLM
+	// token spend so users can see why compaction was fast/slow and what
+	// it cost. Fields come from CompactionOutcome::broadcast_metadata()
+	// on the Rust side.
+	if (data.mode) {
+		var strategySection = ctxSection("Strategy");
+		strategySection.appendChild(ctxRow("Mode", compactionModeLabel(data.mode)));
+		var totalTokens = Number(data.compactionTotalTokens || 0);
+		if (totalTokens > 0) {
+			var inputTokens = Number(data.compactionInputTokens || 0);
+			var outputTokens = Number(data.compactionOutputTokens || 0);
+			strategySection.appendChild(
+				ctxRow(
+					"Tokens used",
+					`${formatTokens(totalTokens)} (${formatTokens(inputTokens)} in + ${formatTokens(outputTokens)} out)`,
+				),
+			);
+		} else {
+			strategySection.appendChild(ctxRow("Tokens used", "0 (no LLM call)"));
+		}
+		card.appendChild(strategySection);
+	}
+
 	var statsSection = ctxSection("Before compact");
 	statsSection.appendChild(ctxRow("Messages", String(data.messageCount || 0)));
-	statsSection.appendChild(ctxRow("Total tokens", formatTokens(data.totalTokens || 0)));
+	if (data.totalTokens) {
+		statsSection.appendChild(ctxRow("Total tokens", formatTokens(data.totalTokens || 0)));
+	}
 	if (data.estimatedNextInputTokens) {
 		statsSection.appendChild(ctxRow("Estimated next input", formatTokens(data.estimatedNextInputTokens), true));
 	}
@@ -595,10 +636,32 @@ export function renderCompactCard(data) {
 	}
 	card.appendChild(statsSection);
 
+	// "After compact" messaging depends on the mode: deterministic /
+	// llm_replace collapse to a single summary message, while
+	// recency_preserving / structured splice the summary between head
+	// and tail so multiple messages survive.
 	var afterSection = ctxSection("After compact");
-	afterSection.appendChild(ctxRow("Messages", "1 (summary)"));
-	afterSection.appendChild(ctxRow("Status", "Conversation history replaced with a summary"));
+	var replacesAll = data.mode === "deterministic" || data.mode === "llm_replace" || !data.mode;
+	if (replacesAll) {
+		afterSection.appendChild(ctxRow("Messages", "1 (summary)"));
+		afterSection.appendChild(ctxRow("Status", "Conversation history replaced with a summary"));
+	} else {
+		afterSection.appendChild(ctxRow("Status", "Head + tail preserved verbatim; middle summarised"));
+	}
 	card.appendChild(afterSection);
+
+	// Settings hint — only rendered when the backend supplies one, so
+	// an older backend or a mode that doesn't emit it doesn't leave an
+	// empty row behind. The hint spans the full card width (not the
+	// two-column label/value ctx-row layout) so it reads like a
+	// tooltip/footnote.
+	if (data.settingsHint) {
+		var hintSection = ctxSection("Configure");
+		var hintRow = ctxEl("div", "ctx-value");
+		hintRow.textContent = data.settingsHint;
+		hintSection.appendChild(hintRow);
+		card.appendChild(hintSection);
+	}
 
 	S.chatMsgBox.appendChild(card);
 	S.chatMsgBox.scrollTop = S.chatMsgBox.scrollHeight;

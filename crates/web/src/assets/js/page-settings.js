@@ -21,6 +21,7 @@ import { initMcp, teardownMcp } from "./page-mcp.js";
 import { initMonitoring, teardownMonitoring } from "./page-metrics.js";
 import { initNetworkAudit, teardownNetworkAudit } from "./page-network-audit.js";
 import { initNodes, teardownNodes } from "./page-nodes.js";
+import { initProjects, teardownProjects } from "./page-projects.js";
 import { initProviders, teardownProviders } from "./page-providers.js";
 import { initSkills, teardownSkills } from "./page-skills.js";
 import { initTerminal, teardownTerminal } from "./page-terminal.js";
@@ -117,6 +118,12 @@ var sections = [
 		id: "nodes",
 		label: "Nodes",
 		icon: html`<span class="icon icon-nodes"></span>`,
+		page: true,
+	},
+	{
+		id: "projects",
+		label: "Projects",
+		icon: html`<span class="icon icon-folder"></span>`,
 		page: true,
 	},
 	{
@@ -5472,6 +5479,7 @@ var pageSectionHandlers = {
 	channels: { init: initChannels, teardown: teardownChannels },
 	mcp: { init: initMcp, teardown: teardownMcp },
 	nodes: { init: initNodes, teardown: teardownNodes },
+	projects: { init: initProjects, teardown: teardownProjects },
 	hooks: { init: initHooks, teardown: teardownHooks },
 	skills: { init: initSkills, teardown: teardownSkills },
 	agents: { init: initAgents, teardown: teardownAgents },
