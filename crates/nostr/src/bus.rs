@@ -30,11 +30,13 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Run the relay subscription loop for a single Nostr account.
 ///
 /// Subscribes to NIP-04 DMs (kind:4) targeted at `bot_pubkey` and dispatches
-/// inbound messages to the gateway. Runs until `cancel` is triggered.
+/// inbound messages to the gateway. Runs until `cancel` is triggered or the
+/// relay pool shuts down (which triggers an auto-disable request).
 pub async fn run_subscription_loop(
     client: Client,
     keys: Keys,
     config: Arc<RwLock<NostrAccountConfig>>,
+    cached_allowlist: Arc<RwLock<Vec<PublicKey>>>,
     account_id: String,
     event_sink: Arc<dyn moltis_channels::ChannelEventSink>,
     cancel: CancellationToken,
@@ -84,12 +86,18 @@ pub async fn run_subscription_loop(
                             since,
                             &mut seen,
                             &config,
+                            &cached_allowlist,
                             &account_id,
                             &event_sink,
                         ).await;
                     }
                     Ok(RelayPoolNotification::Shutdown) => {
-                        tracing::warn!(account_id, "relay pool shutdown");
+                        tracing::warn!(account_id, "relay pool shutdown — requesting account disable");
+                        // Propagate shutdown to the plugin layer so the account
+                        // can be restarted by the operator or auto-recovery.
+                        event_sink
+                            .request_disable_account("nostr", &account_id, "relay pool shutdown")
+                            .await;
                         break;
                     }
                     Ok(_) => {} // Message, etc.
@@ -113,6 +121,7 @@ async fn handle_event(
     since: Timestamp,
     seen: &mut SeenTracker,
     config: &Arc<RwLock<NostrAccountConfig>>,
+    cached_allowlist: &Arc<RwLock<Vec<PublicKey>>>,
     account_id: &str,
     event_sink: &Arc<dyn moltis_channels::ChannelEventSink>,
 ) {
@@ -136,10 +145,18 @@ async fn handle_event(
         return;
     }
 
-    // 5. Access control (BEFORE decryption)
-    let cfg = config.read().await;
-    let access_result =
-        access::check_dm_access(&event.pubkey, &cfg.dm_policy, &cfg.allowed_pubkeys);
+    // 5. Access control (BEFORE decryption).
+    //    Read the config and cached allowlist, extract what we need, then drop
+    //    the guards before any `.await` to avoid holding RwLockReadGuard across
+    //    yield points.
+    let (dm_policy, otp_self_approval) = {
+        let cfg = config.read().await;
+        (cfg.dm_policy.clone(), cfg.otp_self_approval)
+    };
+
+    let allowed = cached_allowlist.read().await;
+    let access_result = access::check_dm_access(&event.pubkey, &dm_policy, &allowed);
+    drop(allowed);
 
     let sender_hex = event.pubkey.to_hex();
     let sender_npub = event
@@ -160,7 +177,7 @@ async fn handle_event(
             #[cfg(feature = "metrics")]
             counter!(nostr_metrics::ACCESS_CONTROL_DENIALS_TOTAL, "reason" => "not_allowlisted")
                 .increment(1);
-            if cfg.otp_self_approval {
+            if otp_self_approval {
                 #[cfg(feature = "metrics")]
                 counter!(nostr_metrics::OTP_CHALLENGES_TOTAL).increment(1);
                 event_sink
@@ -184,7 +201,6 @@ async fn handle_event(
             return;
         },
     }
-    drop(cfg);
 
     // 6. Decrypt content — try NIP-04 first, fall back to NIP-44
     let plaintext = match nip04::decrypt(keys.secret_key(), &event.pubkey, &event.content) {

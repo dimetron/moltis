@@ -10,6 +10,7 @@ use {
         message_log::MessageLog, otp::OtpChallengeInfo, plugin::ChannelHealthSnapshot,
     },
     nostr_sdk::prelude::*,
+    secrecy::ExposeSecret,
     serde_json::Value,
     tokio::sync::RwLock,
     tokio_util::sync::CancellationToken,
@@ -26,6 +27,10 @@ use crate::{
 
 #[cfg(feature = "metrics")]
 use moltis_metrics::{gauge, nostr as nostr_metrics};
+
+/// Sentinel value used by `RedactedConfig` — must be detected on update to
+/// avoid overwriting the real secret key with the redacted placeholder.
+const REDACTED_SENTINEL: &str = "[REDACTED]";
 
 /// Nostr channel plugin.
 pub struct NostrPlugin {
@@ -138,9 +143,19 @@ impl ChannelPlugin for NostrPlugin {
             .clone()
             .ok_or_else(|| moltis_channels::Error::unavailable("event sink not configured"))?;
 
+        // Pre-parse allowlist and create shared config — the bus loop and
+        // update_account_config both use this same Arc so policy changes
+        // take effect immediately.
+        let cached_allowlist = Arc::new(RwLock::new(keys::normalize_pubkeys(
+            &nostr_config.allowed_pubkeys,
+        )));
+        let otp_cooldown = nostr_config.otp_cooldown_secs;
+        let shared_config = Arc::new(RwLock::new(nostr_config));
+
         let loop_client = client.clone();
         let loop_keys = bot_keys.clone();
-        let loop_config = Arc::new(RwLock::new(nostr_config.clone()));
+        let loop_config = Arc::clone(&shared_config);
+        let loop_allowlist = Arc::clone(&cached_allowlist);
         let loop_account_id = account_id.to_string();
         let loop_cancel = cancel.clone();
         let loop_sink = Arc::clone(&event_sink);
@@ -150,6 +165,7 @@ impl ChannelPlugin for NostrPlugin {
                 loop_client,
                 loop_keys,
                 loop_config,
+                loop_allowlist,
                 loop_account_id,
                 loop_sink,
                 loop_cancel,
@@ -158,11 +174,11 @@ impl ChannelPlugin for NostrPlugin {
         });
 
         // Store account state
-        let otp_cooldown = nostr_config.otp_cooldown_secs;
         let state = AccountState {
             client,
             keys: bot_keys,
-            config: nostr_config,
+            config: shared_config,
+            cached_allowlist,
             cancel,
             otp: moltis_channels::otp::OtpState::new(otp_cooldown),
         };
@@ -209,25 +225,41 @@ impl ChannelPlugin for NostrPlugin {
 
     fn account_config(&self, account_id: &str) -> Option<Box<dyn ChannelConfigView>> {
         let accounts = self.accounts.blocking_read();
-        accounts
-            .get(account_id)
-            .map(|s| Box::new(s.config.clone()) as Box<dyn ChannelConfigView>)
+        accounts.get(account_id).map(|s| {
+            let cfg = s.config.blocking_read();
+            Box::new(cfg.clone()) as Box<dyn ChannelConfigView>
+        })
     }
 
     fn account_config_json(&self, account_id: &str) -> Option<Value> {
         let accounts = self.accounts.blocking_read();
-        accounts
-            .get(account_id)
-            .and_then(|s| serde_json::to_value(crate::config::RedactedConfig(&s.config)).ok())
+        accounts.get(account_id).and_then(|s| {
+            let cfg = s.config.blocking_read();
+            serde_json::to_value(crate::config::RedactedConfig(&cfg)).ok()
+        })
     }
 
     fn update_account_config(&self, account_id: &str, config: Value) -> ChannelResult<()> {
-        let new_config: NostrAccountConfig = serde_json::from_value(config).map_err(|e| {
+        let mut new_config: NostrAccountConfig = serde_json::from_value(config).map_err(|e| {
             moltis_channels::Error::invalid_input(format!("invalid nostr config: {e}"))
         })?;
-        let mut accounts = self.accounts.blocking_write();
-        if let Some(state) = accounts.get_mut(account_id) {
-            state.config = new_config;
+
+        let accounts = self.accounts.blocking_read();
+        if let Some(state) = accounts.get(account_id) {
+            // Merge guard: if the incoming secret_key is the redacted sentinel,
+            // preserve the existing key instead of corrupting it.
+            if new_config.secret_key.expose_secret() == REDACTED_SENTINEL {
+                let existing = state.config.blocking_read();
+                new_config.secret_key = existing.secret_key.clone();
+            }
+
+            // Update shared config — the bus loop sees this immediately.
+            *state.config.blocking_write() = new_config.clone();
+
+            // Refresh cached allowlist so access control uses the new list
+            // without re-parsing on every DM.
+            *state.cached_allowlist.blocking_write() =
+                keys::normalize_pubkeys(&new_config.allowed_pubkeys);
         }
         Ok(())
     }
