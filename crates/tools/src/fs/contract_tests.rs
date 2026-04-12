@@ -9,13 +9,14 @@ use {
     super::*,
     crate::{
         approval::{ApprovalDecision, ApprovalManager},
-        exec::ApprovalBroadcaster,
+        exec::{ApprovalBroadcaster, ExecOpts, ExecResult},
+        sandbox::{Sandbox, SandboxConfig, SandboxId, SandboxRouter, types::BuildImageResult},
     },
     async_trait::async_trait,
     serde_json::json,
     std::sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -36,6 +37,89 @@ impl ApprovalBroadcaster for TestBroadcaster {
     async fn broadcast_request(&self, _request_id: &str, _command: &str) -> crate::Result<()> {
         self.called.store(true, Ordering::SeqCst);
         Ok(())
+    }
+}
+
+struct ConcurrentExecProbeSandbox {
+    active_execs: AtomicUsize,
+    max_active_execs: AtomicUsize,
+    exec_calls: AtomicUsize,
+    first_exec_started: tokio::sync::Notify,
+}
+
+impl ConcurrentExecProbeSandbox {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            active_execs: AtomicUsize::new(0),
+            max_active_execs: AtomicUsize::new(0),
+            exec_calls: AtomicUsize::new(0),
+            first_exec_started: tokio::sync::Notify::new(),
+        })
+    }
+
+    async fn wait_for_first_exec(&self) {
+        if self.exec_calls.load(Ordering::SeqCst) > 0 {
+            return;
+        }
+        self.first_exec_started.notified().await;
+    }
+
+    fn max_active_execs(&self) -> usize {
+        self.max_active_execs.load(Ordering::SeqCst)
+    }
+
+    fn exec_calls(&self) -> usize {
+        self.exec_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl Sandbox for ConcurrentExecProbeSandbox {
+    fn backend_name(&self) -> &'static str {
+        "probe"
+    }
+
+    async fn ensure_ready(
+        &self,
+        _id: &SandboxId,
+        _image_override: Option<&str>,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
+
+    async fn exec(
+        &self,
+        _id: &SandboxId,
+        _command: &str,
+        _opts: &ExecOpts,
+    ) -> crate::Result<ExecResult> {
+        let call_index = self.exec_calls.fetch_add(1, Ordering::SeqCst);
+        if call_index == 0 {
+            self.first_exec_started.notify_waiters();
+        }
+
+        let active = self.active_execs.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active_execs.fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.active_execs.fetch_sub(1, Ordering::SeqCst);
+
+        Ok(ExecResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        })
+    }
+
+    async fn cleanup(&self, _id: &SandboxId) -> crate::Result<()> {
+        Ok(())
+    }
+
+    async fn build_image(
+        &self,
+        _base: &str,
+        _packages: &[String],
+    ) -> crate::Result<Option<BuildImageResult>> {
+        Ok(None)
     }
 }
 
@@ -754,6 +838,65 @@ async fn sandbox_write_via_registry_sends_base64_to_bridge() {
     let cmd = mock.last_command().unwrap();
     assert!(cmd.contains("/data/out.txt"));
     assert!(cmd.contains(&BASE64.encode(b"sandboxed write")));
+}
+
+#[tokio::test]
+async fn sandbox_write_serializes_same_file_mutations_via_registry() {
+    let probe = ConcurrentExecProbeSandbox::new();
+    let backend: Arc<dyn Sandbox> = probe.clone();
+    let router = Arc::new(SandboxRouter::with_backend(
+        SandboxConfig::default(),
+        backend,
+    ));
+    router.set_override("sandboxed", true).await;
+
+    let mut registry = ToolRegistry::new();
+    register_fs_tools(&mut registry, FsToolsContext {
+        sandbox_router: Some(router),
+        ..FsToolsContext::default()
+    });
+
+    let write = registry.get("Write").unwrap();
+    let first = {
+        let write = Arc::clone(&write);
+        tokio::spawn(async move {
+            write
+                .execute(json!({
+                    "file_path": "/data/out.txt",
+                    "content": "first",
+                    "_session_key": "sandboxed",
+                }))
+                .await
+        })
+    };
+
+    probe.wait_for_first_exec().await;
+
+    let second = {
+        let write = Arc::clone(&write);
+        tokio::spawn(async move {
+            write
+                .execute(json!({
+                    "file_path": "/data/out.txt",
+                    "content": "second",
+                    "_session_key": "sandboxed",
+                }))
+                .await
+        })
+    };
+
+    let (first, second) = tokio::join!(first, second);
+    let first = first.unwrap().unwrap();
+    let second = second.unwrap().unwrap();
+
+    assert_eq!(first["bytes_written"], 5);
+    assert_eq!(second["bytes_written"], 6);
+    assert_eq!(probe.exec_calls(), 2);
+    assert_eq!(
+        probe.max_active_execs(),
+        1,
+        "same-path sandbox mutations should not overlap at the backend exec layer"
+    );
 }
 
 #[tokio::test]
