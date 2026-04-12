@@ -345,10 +345,17 @@ test.describe("Chat input and slash commands", () => {
 
 		const statusBtn = page.locator("#promptMemoryStatusBtn");
 		const refreshBtn = page.locator("#promptMemoryRefreshBtn");
+		const fullContextModal = page.locator("#fullContextModal");
 		await expect(statusBtn).toBeVisible({ timeout: 10_000 });
+		await statusBtn.click();
+		await expect(page.locator("#fullContextPanel")).toContainText("Prompt memory: Frozen at session start", {
+			timeout: 10_000,
+		});
 		await expect(statusBtn).toContainText("Memory frozen");
 		await expect(refreshBtn).toBeVisible();
 		await expect(statusBtn).toHaveAttribute("title", /MEMORY-v1\.md/);
+		await page.locator("#fullContextModalCloseBtn").click();
+		await expect(fullContextModal).toBeHidden({ timeout: 10_000 });
 
 		await refreshBtn.click();
 
