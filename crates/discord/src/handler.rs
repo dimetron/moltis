@@ -985,6 +985,7 @@ impl EventHandler for Handler {
             channel_type: ChannelType::Discord,
             sender_name,
             username,
+            sender_id: Some(peer_id.clone()),
             message_kind: Some(inferred_kind),
             model: config.resolve_model(&chat_id, &peer_id).map(String::from),
             agent_id: config
