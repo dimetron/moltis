@@ -379,6 +379,10 @@ impl AgentTool for ReadTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Maximum number of lines to return (default 2000)."
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "Page range for PDF files (e.g. '1-5', '3', '10-20'). Only applicable to .pdf files. Maximum 20 pages per request."
                 }
             }
         })
@@ -401,7 +405,27 @@ impl AgentTool for ReadTool {
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_READ_LINE_LIMIT)
             .max(1);
+        let pages = params
+            .get("pages")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let session_key = session_key_from(&params).to_string();
+
+        // PDF dispatch: intercept .pdf before the normal read path.
+        if file_path.to_ascii_lowercase().ends_with(".pdf") {
+            return match read_pdf(file_path, pages.as_deref()).await {
+                Ok(value) => Ok(value),
+                Err(e) => {
+                    #[cfg(feature = "metrics")]
+                    counter!(
+                        tools_metrics::EXECUTION_ERRORS_TOTAL,
+                        labels::TOOL => "Read".to_string()
+                    )
+                    .increment(1);
+                    Err(e.into())
+                },
+            };
+        }
 
         match self.read_impl(file_path, offset, limit, &session_key).await {
             Ok(value) => Ok(value),
@@ -416,6 +440,144 @@ impl AgentTool for ReadTool {
             },
         }
     }
+}
+
+/// Maximum pages allowed in a single PDF Read call.
+const MAX_PDF_PAGES_PER_REQUEST: usize = 20;
+
+/// Parse a page-range string like `"1-5"`, `"3"`, or `"10-20"` into a
+/// `(start, end)` pair (1-indexed, inclusive).
+fn parse_page_range(raw: &str) -> Result<(usize, usize)> {
+    let raw = raw.trim();
+    if let Some((start_str, end_str)) = raw.split_once('-') {
+        let start: usize = start_str
+            .trim()
+            .parse()
+            .map_err(|_| Error::message(format!("invalid page range start: '{start_str}'")))?;
+        let end: usize = end_str
+            .trim()
+            .parse()
+            .map_err(|_| Error::message(format!("invalid page range end: '{end_str}'")))?;
+        if start == 0 || end == 0 {
+            return Err(Error::message(
+                "page numbers are 1-indexed (0 is not valid)",
+            ));
+        }
+        if start > end {
+            return Err(Error::message(format!(
+                "page range start ({start}) must be <= end ({end})"
+            )));
+        }
+        Ok((start, end))
+    } else {
+        let page: usize = raw
+            .parse()
+            .map_err(|_| Error::message(format!("invalid page number: '{raw}'")))?;
+        if page == 0 {
+            return Err(Error::message(
+                "page numbers are 1-indexed (0 is not valid)",
+            ));
+        }
+        Ok((page, page))
+    }
+}
+
+/// Read a PDF file and extract text by pages. Returns a structured
+/// payload with `kind: "pdf"`.
+///
+/// Uses the `pdf-extract` crate which is pure Rust and works on all
+/// platforms without native dependencies.
+async fn read_pdf(file_path: &str, pages: Option<&str>) -> Result<Value> {
+    require_absolute(file_path, "file_path")?;
+
+    let path = std::path::PathBuf::from(file_path);
+    if !fs::try_exists(&path).await.unwrap_or(false) {
+        return Ok(json!({
+            "kind": "not_found",
+            "file_path": file_path,
+            "error": "file does not exist",
+            "detail": "",
+        }));
+    }
+
+    let path_for_blocking = path.clone();
+    let pages_owned = pages.map(str::to_string);
+
+    tokio::task::spawn_blocking(move || -> Result<Value> {
+        let all_pages = match pdf_extract::extract_text_by_pages(&path_for_blocking) {
+            Ok(pages) => pages,
+            Err(e) => {
+                return Ok(json!({
+                    "kind": "pdf_error",
+                    "file_path": path_for_blocking.to_string_lossy(),
+                    "error": format!("failed to extract text from PDF: {e}"),
+                    "detail": "The file may be encrypted, corrupted, or use an unsupported PDF feature.",
+                }));
+            },
+        };
+
+        let total_pages = all_pages.len();
+
+        let (selected_pages, start_page, end_page) = if let Some(ref range_str) = pages_owned {
+            let (start, end) = parse_page_range(range_str)?;
+            let end = end.min(total_pages);
+            if start > total_pages {
+                return Ok(json!({
+                    "kind": "pdf",
+                    "file_path": path_for_blocking.to_string_lossy(),
+                    "total_pages": total_pages,
+                    "pages_returned": 0,
+                    "start_page": start,
+                    "end_page": end,
+                    "content": "",
+                    "error": format!("start page {start} exceeds total pages {total_pages}"),
+                }));
+            }
+            let page_count = end - start + 1;
+            if page_count > MAX_PDF_PAGES_PER_REQUEST {
+                return Err(Error::message(format!(
+                    "page range {start}-{end} spans {page_count} pages; maximum is {MAX_PDF_PAGES_PER_REQUEST} per request"
+                )));
+            }
+            let selected: Vec<&str> = all_pages[start - 1..end]
+                .iter()
+                .map(String::as_str)
+                .collect();
+            (selected, start, end)
+        } else {
+            // No pages specified: return all, capped at MAX_PDF_PAGES_PER_REQUEST.
+            let end = total_pages.min(MAX_PDF_PAGES_PER_REQUEST);
+            let selected: Vec<&str> = all_pages[..end]
+                .iter()
+                .map(String::as_str)
+                .collect();
+            (selected, 1, end)
+        };
+
+        // Build content with page markers.
+        let mut content = String::new();
+        for (idx, page_text) in selected_pages.iter().enumerate() {
+            let page_num = start_page + idx;
+            if !content.is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str(&format!("--- Page {page_num} ---\n"));
+            content.push_str(page_text.trim());
+        }
+
+        Ok(json!({
+            "kind": "pdf",
+            "file_path": path_for_blocking.to_string_lossy(),
+            "total_pages": total_pages,
+            "pages_returned": selected_pages.len(),
+            "start_page": start_page,
+            "end_page": end_page,
+            "truncated": end_page < total_pages,
+            "content": content,
+        }))
+    })
+    .await
+    .map_err(|e| Error::message(format!("PDF extraction task failed: {e}")))?
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -580,6 +742,67 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("must be an absolute path"));
+    }
+
+    #[test]
+    fn parse_page_range_single_page() {
+        let (start, end) = parse_page_range("3").unwrap();
+        assert_eq!((start, end), (3, 3));
+    }
+
+    #[test]
+    fn parse_page_range_range() {
+        let (start, end) = parse_page_range("2-5").unwrap();
+        assert_eq!((start, end), (2, 5));
+    }
+
+    #[test]
+    fn parse_page_range_zero_rejected() {
+        assert!(parse_page_range("0").is_err());
+        assert!(parse_page_range("0-5").is_err());
+    }
+
+    #[test]
+    fn parse_page_range_inverted_rejected() {
+        assert!(parse_page_range("5-2").is_err());
+    }
+
+    #[tokio::test]
+    async fn read_pdf_dispatches_for_pdf_extension() {
+        // Create a minimal valid PDF in a tempfile. This is the
+        // smallest valid PDF structure that pdf-extract can parse.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.pdf");
+        // Minimal PDF with one page containing "Hello PDF"
+        let pdf_bytes = b"%PDF-1.0\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj \
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj \
+            3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj \
+            4 0 obj<</Length 44>>stream\nBT /F1 12 Tf 100 700 Td (Hello PDF) Tj ET\nendstream\nendobj \
+            5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj \
+            xref\n0 6\n\
+            0000000000 65535 f \n\
+            0000000009 00000 n \n\
+            0000000058 00000 n \n\
+            0000000115 00000 n \n\
+            0000000266 00000 n \n\
+            0000000360 00000 n \n\
+            trailer<</Size 6/Root 1 0 R>>\nstartxref\n424\n%%EOF";
+        std::fs::write(&path, pdf_bytes).unwrap();
+
+        let tool = ReadTool::new();
+        let value = tool
+            .execute(json!({ "file_path": path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        // pdf-extract might succeed or return pdf_error on a minimal
+        // PDF; either way we should get a structured Ok payload.
+        let kind = value["kind"].as_str().unwrap_or("unknown");
+        assert!(
+            kind == "pdf" || kind == "pdf_error",
+            "unexpected PDF response kind '{kind}': {value}"
+        );
     }
 
     #[tokio::test]
