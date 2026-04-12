@@ -732,6 +732,7 @@ fn extract_single_file_from_tar_reader<R: io::Read>(
     Ok(SandboxReadResult::Ok(bytes))
 }
 
+#[cfg(test)]
 fn extract_single_file_from_tar(
     tar_bytes: &[u8],
     file_path: &str,
