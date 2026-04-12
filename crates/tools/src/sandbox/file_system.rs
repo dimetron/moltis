@@ -30,6 +30,7 @@ use crate::{
 /// single call. Base64 expands by ~33%, so 512 KB raw becomes ~683 KB
 /// of shell arg, comfortably under typical `ARG_MAX` limits.
 pub const MAX_SANDBOX_WRITE_BYTES: usize = 512 * 1024;
+pub const MAX_SANDBOX_LIST_FILES: usize = 10_000;
 
 const DEFAULT_SANDBOX_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SANDBOX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
@@ -290,13 +291,7 @@ pub async fn command_list_files<S: Sandbox + ?Sized>(
             "sandbox list_files '{root}' failed: {detail}"
         )));
     }
-    Ok(result
-        .stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect())
+    parse_listed_files(&result.stdout, root, MAX_SANDBOX_LIST_FILES)
 }
 
 /// Default command-based sandbox grep implementation used by the file service
@@ -509,6 +504,7 @@ enum ContainerCopyErrorKind {
 }
 
 enum OciPathKind {
+    Missing,
     File { bytes: u64 },
     Directory,
     Other,
@@ -583,7 +579,7 @@ async fn oci_probe_file_kind(
                 Ok(OciPathKind::Other)
             }
         },
-        EXIT_NOT_FOUND => Ok(OciPathKind::Other),
+        EXIT_NOT_FOUND => Ok(OciPathKind::Missing),
         EXIT_PERMISSION_DENIED => Err(Error::message(format!(
             "{cli} exec denied access to '{file_path}'"
         ))),
@@ -737,6 +733,22 @@ fn build_single_file_tar(file_path: &str, content: &[u8]) -> Result<Vec<u8>> {
             "failed to finalize OCI tar payload for '{file_path}': {error}"
         ))
     })
+}
+
+fn parse_listed_files(stdout: &str, root: &str, cap: usize) -> Result<Vec<String>> {
+    let mut files = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if files.len() > cap {
+        return Err(Error::message(format!(
+            "sandbox list_files '{root}' exceeded cap of {cap} files; narrow the path"
+        )));
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// Native host-backed read implementation for sandbox backends whose paths
@@ -959,6 +971,7 @@ pub async fn oci_container_read_file(
     max_bytes: u64,
 ) -> Result<SandboxReadResult> {
     match oci_probe_file_kind(cli, container_name, file_path).await? {
+        OciPathKind::Missing => Ok(SandboxReadResult::NotFound),
         OciPathKind::File { bytes } if bytes > max_bytes => Ok(SandboxReadResult::TooLarge(bytes)),
         OciPathKind::File { .. } => {
             let cli = cli.to_string();
@@ -1081,23 +1094,26 @@ pub async fn oci_container_list_files(
     container_name: &str,
     root: &str,
 ) -> Result<Vec<String>> {
-    let quoted = shell_single_quote(root);
-    let script = format!("find {quoted} -type f 2>/dev/null");
-    let (exit_code, stdout, stderr) = oci_exec_shell(cli, container_name, script).await?;
-    if exit_code != 0 && stdout.trim().is_empty() {
-        let detail = stderr.trim();
-        return Err(Error::message(format!(
-            "sandbox list_files '{root}' failed: {detail}"
-        )));
+    match oci_probe_file_kind(cli, container_name, root).await? {
+        OciPathKind::Missing => Ok(Vec::new()),
+        OciPathKind::File { .. } => Ok(vec![root.to_string()]),
+        OciPathKind::Other => Ok(Vec::new()),
+        OciPathKind::Directory => {
+            let quoted = shell_single_quote(root);
+            let script = format!(
+                "find {quoted} -type f 2>/dev/null | head -n {}",
+                MAX_SANDBOX_LIST_FILES + 1
+            );
+            let (exit_code, stdout, stderr) = oci_exec_shell(cli, container_name, script).await?;
+            if exit_code != 0 && stdout.trim().is_empty() {
+                let detail = stderr.trim();
+                return Err(Error::message(format!(
+                    "sandbox list_files '{root}' failed: {detail}"
+                )));
+            }
+            parse_listed_files(&stdout, root, MAX_SANDBOX_LIST_FILES)
+        },
     }
-    let mut files = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    files.sort();
-    Ok(files)
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1248,6 +1264,13 @@ mod tests {
 
         let files = fs.list_files("/data").await.unwrap();
         assert_eq!(files, vec!["/data/a.rs", "/data/b.rs"]);
+    }
+
+    #[test]
+    fn parse_listed_files_rejects_outputs_over_cap() {
+        let error =
+            parse_listed_files("/data/a.rs\n/data/b.rs\n/data/c.rs\n", "/data", 2).unwrap_err();
+        assert!(error.to_string().contains("exceeded cap of 2 files"));
     }
 
     #[tokio::test]

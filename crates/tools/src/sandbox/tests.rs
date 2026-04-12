@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    env,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -16,7 +17,10 @@ use {
     crate::{
         error::{Error, Result},
         exec::{ExecOpts, ExecResult},
-        sandbox::file_system::SandboxReadResult,
+        sandbox::file_system::{
+            SandboxReadResult, oci_container_list_files, oci_container_read_file,
+            oci_container_write_file,
+        },
     },
 };
 
@@ -38,6 +42,128 @@ fn set_test_container_mount_override(cli: &str, reference: &str, mounts: Vec<Con
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .insert(test_container_mount_override_key(cli, reference), mounts);
+}
+
+const OCI_RUNTIME_E2E_ENV: &str = "MOLTIS_SANDBOX_RUNTIME_E2E";
+const OCI_RUNTIME_E2E_IMAGE: &str = "alpine:3.21";
+
+fn runtime_container_e2e_enabled(cli: &str) -> bool {
+    let requested = env::var(OCI_RUNTIME_E2E_ENV)
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes")
+        })
+        .unwrap_or(false);
+    if !requested || !is_cli_available(cli) {
+        return false;
+    }
+    std::process::Command::new(cli)
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+struct RuntimeContainerGuard {
+    cli: String,
+    name: String,
+}
+
+impl RuntimeContainerGuard {
+    async fn start(cli: &str) -> Result<Self> {
+        let name = format!("moltis-runtime-e2e-{}", uuid::Uuid::new_v4().simple());
+        let output = tokio::process::Command::new(cli)
+            .args([
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                &name,
+                OCI_RUNTIME_E2E_IMAGE,
+                "sleep",
+                "600",
+            ])
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(Error::message(format!(
+                "{cli} run failed for runtime e2e container '{name}': {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(Self {
+            cli: cli.to_string(),
+            name,
+        })
+    }
+
+    async fn exec(&self, command: &str) -> Result<String> {
+        let output = tokio::process::Command::new(&self.cli)
+            .args(["exec", &self.name, "sh", "-c", command])
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(Error::message(format!(
+                "{} exec failed in runtime e2e container '{}': {}",
+                self.cli,
+                self.name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+impl Drop for RuntimeContainerGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new(&self.cli)
+            .args(["rm", "-f", &self.name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+async fn assert_runtime_oci_file_transfers(cli: &str) -> Result<()> {
+    let container = RuntimeContainerGuard::start(cli).await?;
+    container
+        .exec(
+            "mkdir -p /tmp/moltis-e2e/list && \
+             printf 'hello runtime\\n' > /tmp/moltis-e2e/read.txt && \
+             printf 'alpha\\n' > /tmp/moltis-e2e/list/a.txt && \
+             printf 'beta\\n' > /tmp/moltis-e2e/list/b.txt",
+        )
+        .await?;
+
+    let read_result =
+        oci_container_read_file(cli, &container.name, "/tmp/moltis-e2e/read.txt", 1024).await?;
+    match read_result {
+        SandboxReadResult::Ok(bytes) => assert_eq!(bytes, b"hello runtime\n"),
+        other => panic!("expected Ok from runtime OCI read, got {other:?}"),
+    }
+
+    assert!(
+        oci_container_write_file(
+            cli,
+            &container.name,
+            "/tmp/moltis-e2e/write.txt",
+            b"written from host"
+        )
+        .await?
+        .is_none()
+    );
+    let written = container.exec("cat /tmp/moltis-e2e/write.txt").await?;
+    assert_eq!(written, "written from host");
+
+    let files = oci_container_list_files(cli, &container.name, "/tmp/moltis-e2e/list").await?;
+    assert_eq!(files, vec![
+        "/tmp/moltis-e2e/list/a.txt".to_string(),
+        "/tmp/moltis-e2e/list/b.txt".to_string(),
+    ]);
+
+    Ok(())
 }
 
 #[test]
@@ -1475,6 +1601,32 @@ fn test_select_backend_explicit_choices() {
         let backend = select_backend(config);
         assert_eq!(backend.backend_name(), "apple-container");
     }
+}
+
+#[tokio::test]
+async fn test_runtime_oci_file_transfers_with_docker() {
+    if !runtime_container_e2e_enabled("docker") {
+        eprintln!(
+            "skipping Docker OCI runtime e2e test, set {}=1 and ensure docker is available",
+            OCI_RUNTIME_E2E_ENV
+        );
+        return;
+    }
+
+    assert_runtime_oci_file_transfers("docker").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_runtime_oci_file_transfers_with_podman() {
+    if !runtime_container_e2e_enabled("podman") {
+        eprintln!(
+            "skipping Podman OCI runtime e2e test, set {}=1 and ensure podman is available",
+            OCI_RUNTIME_E2E_ENV
+        );
+        return;
+    }
+
+    assert_runtime_oci_file_transfers("podman").await.unwrap();
 }
 
 #[test]
