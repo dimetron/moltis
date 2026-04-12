@@ -236,6 +236,11 @@ Prompt injection from `MEMORY.md` is controlled separately via
 each turn, or `frozen-at-session-start` to keep a stable prompt-memory
 snapshot for the lifetime of a session.
 
+If sandboxing is enabled with the default `workspace_mount = "ro"`, sandboxed
+commands may still read mounted memory files, but they cannot modify them
+directly. Durable memory writes should use `memory_save` rather than shell
+redirection or direct file editing inside the sandbox.
+
 ## Tools
 
 The memory system exposes three agent tools:
@@ -267,7 +272,9 @@ result found via `memory_search`.
 
 Save content to long-term memory files. The agent uses this tool when you ask
 it to remember something ("remember that I prefer dark mode") or when it
-decides certain information is worth persisting.
+decides certain information is worth persisting. This is the preferred
+long-term write path even when memory files are visible through a read-only
+sandbox mount.
 
 ```json
 {

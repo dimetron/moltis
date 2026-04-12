@@ -353,7 +353,7 @@ scope = "session"                 # Container lifecycle:
                                   #   "session" - Container per session (recommended)
                                   #   "global"  - Single shared container
 workspace_mount = "ro"            # How to mount workspace in sandbox:
-                                  #   "ro"   - Read-only (safe)
+                                  #   "ro"   - Read-only (safe; sandbox commands can read mounted files but cannot modify them)
                                   #   "rw"   - Read-write (can modify files)
                                   #   "none" - No mount
 # host_data_dir = "/host/path/data"  # Optional override if auto-detection cannot resolve the host-visible data dir

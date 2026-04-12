@@ -138,6 +138,11 @@ If a file exists in the mounted Moltis workspace, it is part of Moltis's
 normal memory surface, regardless of whether the command that wrote it ran in a
 sandbox or not.
 
+With the default `workspace_mount = "ro"`, sandboxed commands may still read
+mounted files such as `MEMORY.md`, but they cannot modify them directly.
+Durable long-term writes should still happen through Moltis memory tools such
+as `memory_save`, not via shell redirection inside the sandbox.
+
 ## Between Sandboxes
 
 Sandbox-to-sandbox sharing depends on `home_persistence`:
