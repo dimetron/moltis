@@ -934,11 +934,16 @@ fn compress_summary(text: &str) -> String {
         return String::new();
     }
 
-    // Step 1: deduplicate lines (case-insensitive, keep first occurrence).
+    // Step 1: deduplicate lines (case-insensitive, keep first occurrence)
+    // and strip blank lines so they don't consume the 24-line budget.
     let mut seen = HashSet::new();
     let mut deduped: Vec<String> = Vec::with_capacity(lines.len());
     for line in lines {
         let key = line.trim().to_ascii_lowercase();
+        // Drop blank lines — they waste budget without adding content.
+        if key.is_empty() {
+            continue;
+        }
         if seen.insert(key) {
             deduped.push(if line.len() <= SUMMARY_MAX_LINE_CHARS {
                 line.to_string()
@@ -1035,27 +1040,38 @@ fn compress_summary(text: &str) -> String {
     }
 
     // Edge case: even dropping all candidates, headers alone are too long.
-    // Force-truncate headers from the end.
-    let all_dropped_count = candidates.len();
-    let mut result: Vec<String> = Vec::new();
+    // Force-truncate headers from the end.  Run two passes so the notice
+    // length is exact: first pass counts dropped headers, second pass
+    // builds the result with the correct budget.
+    let base_dropped = candidates.len();
     let mut header_drop_count = 0usize;
-    // Pre-compute budget assuming 0 header drops; notice rebuilt after loop with actual count.
-    let mut char_budget = SUMMARY_MAX_CHARS.saturating_sub(make_notice(all_dropped_count).len() + 1);
-    for line in &headers {
-        let needed = line.len()
-            + if result.is_empty() {
-                0
+    {
+        // First pass: determine how many headers must be dropped.
+        let mut budget = SUMMARY_MAX_CHARS.saturating_sub(make_notice(base_dropped).len() + 1);
+        let mut kept = 0usize;
+        for line in &headers {
+            let needed = line.len() + if kept == 0 { 0 } else { 1 };
+            if needed > budget || kept + 1 >= SUMMARY_MAX_LINES {
+                header_drop_count += 1;
             } else {
-                1
-            };
+                budget -= needed;
+                kept += 1;
+            }
+        }
+    }
+
+    let notice = make_notice(base_dropped + header_drop_count);
+    // Second pass: rebuild with exact budget including final notice length.
+    let mut char_budget = SUMMARY_MAX_CHARS.saturating_sub(notice.len() + 1);
+    let mut result: Vec<String> = Vec::new();
+    for line in &headers {
+        let needed = line.len() + if result.is_empty() { 0 } else { 1 };
         if needed > char_budget || result.len() + 1 >= SUMMARY_MAX_LINES {
-            header_drop_count += 1;
             continue;
         }
         char_budget -= needed;
         result.push(line.clone());
     }
-    let notice = make_notice(all_dropped_count + header_drop_count);
     result.push(notice);
     result.join("\n")
 }
@@ -15540,9 +15556,16 @@ mod tests {
 
     #[test]
     fn compress_summary_under_budget_returns_unchanged() {
-        let input = "# Summary\n\n- Key point one\n- Key point two\nDone.";
+        let input = "# Summary\n- Key point one\n- Key point two\nDone.";
         let result = compress_summary(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn compress_summary_strips_blank_lines() {
+        let input = "# Summary\n\n- Point one\n\n- Point two\n\nDone.";
+        let result = compress_summary(input);
+        assert_eq!(result, "# Summary\n- Point one\n- Point two\nDone.");
     }
 
     #[test]
