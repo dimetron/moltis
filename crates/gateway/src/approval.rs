@@ -177,7 +177,10 @@ fn truncate_command_preview(command: &str, max_len: usize) -> Cow<'_, str> {
     if command.len() <= max_len {
         Cow::Borrowed(command)
     } else {
-        Cow::Owned(format!("{}…", &command[..max_len]))
+        Cow::Owned(format!(
+            "{}…",
+            &command[..command.floor_char_boundary(max_len)]
+        ))
     }
 }
 
@@ -330,5 +333,12 @@ mod tests {
     fn truncate_command_preview_exact_length_unchanged() {
         let exact = "a".repeat(80);
         assert_eq!(truncate_command_preview(&exact, 80).as_ref(), exact);
+    }
+
+    #[test]
+    fn truncate_command_preview_respects_utf8_boundaries() {
+        let long = "é".repeat(60);
+        let preview = truncate_command_preview(&long, 81);
+        assert_eq!(preview.as_ref(), format!("{}…", "é".repeat(40)));
     }
 }
