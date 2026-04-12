@@ -10428,7 +10428,9 @@ mod tests {
     }
 
     async fn sqlite_pool() -> sqlx::SqlitePool {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool");
         moltis_projects::run_migrations(&pool)
