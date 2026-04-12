@@ -452,7 +452,7 @@ pub struct BrowserConfig {
 }
 
 fn default_sandbox_image() -> String {
-    "browserless/chrome".to_string()
+    "docker.io/browserless/chrome".to_string()
 }
 
 fn default_container_prefix() -> String {
