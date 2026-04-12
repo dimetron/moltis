@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260413.01] - 2026-04-13
+
 ## [20260412.01] - 2026-04-12
 ### Added
 - [discord] Handle inbound voice and image attachments
