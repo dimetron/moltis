@@ -1098,6 +1098,7 @@ async fn run_vault_env_migration(state: &AuthState) {
 /// the startup-time channel loading in `server.rs` — it handles the case where
 /// the vault was sealed at startup and channels couldn't be started then.
 #[cfg(feature = "vault")]
+#[tracing::instrument(skip(state))]
 async fn start_stored_channels_on_vault_unseal(state: &AuthState) {
     let Some(registry) = state.gateway_state.services.channel_registry.as_ref() else {
         tracing::debug!("no channel registry available, skipping channel startup on vault unseal");
