@@ -1,7 +1,7 @@
 //! Live integration tests for the Nostr channel.
 //!
 //! These tests connect to real Nostr relays and require environment variables:
-//!   - `NOSTR_TEST_SECRET_KEY`: nsec1 or hex secret key for the bot
+//!   - `NOSTR_TEST_BOT_KEY`: nsec1 or hex secret key for the bot
 //!   - `NOSTR_TEST_SENDER_KEY` (optional): nsec1 or hex secret key for a
 //!     simulated sender, used for round-trip DM tests
 //!
@@ -23,8 +23,8 @@ const DEFAULT_RELAYS: &[&str] = &[
 ];
 
 fn bot_secret() -> Secret<String> {
-    let key = std::env::var("NOSTR_TEST_SECRET_KEY")
-        .expect("NOSTR_TEST_SECRET_KEY must be set for integration tests");
+    let key = std::env::var("NOSTR_TEST_BOT_KEY")
+        .expect("NOSTR_TEST_BOT_KEY must be set for integration tests");
     Secret::new(key)
 }
 
@@ -110,10 +110,11 @@ async fn send_and_receive_dm() {
         },
     };
 
-    // Set up bot (receiver)
+    // Set up bot (receiver) — get notifications receiver BEFORE connect
     let bot_keys = moltis_nostr::keys::derive_keys(&bot_secret()).unwrap();
     let bot_pubkey = bot_keys.public_key();
     let bot_client = Client::new(bot_keys.clone());
+    let mut notifications = bot_client.notifications();
     for relay in DEFAULT_RELAYS {
         let _ = bot_client.add_relay(*relay).await;
     }
@@ -127,7 +128,8 @@ async fn send_and_receive_dm() {
     }
     sender_client.connect().await;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Give relays time to establish both connections
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Subscribe bot to DMs
     let since = Timestamp::now();
@@ -136,6 +138,9 @@ async fn send_and_receive_dm() {
         .pubkey(bot_pubkey)
         .since(since);
     bot_client.subscribe(filter, None).await.expect("subscribe");
+
+    // Wait for subscription to propagate across relays
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Send DM from sender to bot
     let test_msg = format!("integration test {}", Timestamp::now().as_secs());
@@ -150,35 +155,54 @@ async fn send_and_receive_dm() {
 
     println!("Sent DM: {test_msg}");
 
-    // Wait for bot to receive
-    let mut notifications = bot_client.notifications();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    // Wait for bot to receive — use Message variant for reliability (Event deduplicates)
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut received = false;
 
     while tokio::time::Instant::now() < deadline {
         tokio::select! {
             Ok(notification) = notifications.recv() => {
-                if let RelayPoolNotification::Event { event, .. } = notification {
-                    if event.kind == Kind::EncryptedDirectMessage
-                        && event.pubkey == sender_keys.public_key()
-                    {
-                        let decrypted = nip04::decrypt(
-                            bot_keys.secret_key(),
-                            &event.pubkey,
-                            &event.content,
-                        ).expect("decrypt");
-                        println!("Received DM: {decrypted}");
-                        assert_eq!(decrypted, test_msg);
-                        received = true;
-                        break;
-                    }
+                match notification {
+                    RelayPoolNotification::Event { event, .. } => {
+                        if event.kind == Kind::EncryptedDirectMessage
+                            && event.pubkey == sender_keys.public_key()
+                        {
+                            let decrypted = nip04::decrypt(
+                                bot_keys.secret_key(),
+                                &event.pubkey,
+                                &event.content,
+                            ).expect("decrypt");
+                            println!("Received DM via Event: {decrypted}");
+                            assert_eq!(decrypted, test_msg);
+                            received = true;
+                            break;
+                        }
+                    },
+                    RelayPoolNotification::Message { message, .. } => {
+                        if let RelayMessage::Event { event, .. } = message {
+                            if event.kind == Kind::EncryptedDirectMessage
+                                && event.pubkey == sender_keys.public_key()
+                            {
+                                let decrypted = nip04::decrypt(
+                                    bot_keys.secret_key(),
+                                    &event.pubkey,
+                                    &event.content,
+                                ).expect("decrypt via Message");
+                                println!("Received DM via Message: {decrypted}");
+                                assert_eq!(decrypted, test_msg);
+                                received = true;
+                                break;
+                            }
+                        }
+                    },
+                    _ => {},
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(100)) => {}
         }
     }
 
-    assert!(received, "bot must receive the DM within 15 seconds");
+    assert!(received, "bot must receive the DM within 30 seconds");
 
     bot_client.disconnect().await;
     sender_client.disconnect().await;
