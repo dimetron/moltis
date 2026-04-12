@@ -1282,6 +1282,7 @@ mod tests {
                 channel_account_id: None,
                 channel_chat_id: None,
                 channel_chat_type: None,
+                channel_sender_id: None,
                 data_dir: Some("/home/moltis/.moltis".into()),
                 sudo_non_interactive: Some(true),
                 sudo_status: Some("passwordless".into()),
