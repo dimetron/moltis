@@ -81,7 +81,12 @@ async function mockChannelsStatus(page, { channels, senders = [], allowRetryOwne
 						},
 					});
 					state.setConnected(true);
-					await channelsPage.prefetchChannels();
+					if (typeof state.refreshChannelsPage === "function") {
+						state.refreshChannelsPage();
+					} else {
+						await channelsPage.prefetchChannels();
+					}
+					await new Promise((resolve) => requestAnimationFrame(() => resolve()));
 					await new Promise((resolve) => requestAnimationFrame(() => resolve()));
 				},
 				{ channels, senders, allowRetryOwnership, label },

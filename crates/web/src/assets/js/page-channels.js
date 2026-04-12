@@ -918,8 +918,7 @@ function AddTeamsModal() {
 	    title="Connect Microsoft Teams">
 	    <div class="channel-form">
 	      ${
-					!tsLoading.value &&
-					!(tsStatus.value?.mode === "funnel" && tsStatus.value?.url) &&
+					!(tsLoading.value || (tsStatus.value?.mode === "funnel" && tsStatus.value?.url)) &&
 					html`
 	        <div class="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs flex flex-col gap-2">
 	          <span class="font-medium text-[var(--text-strong)]">Public URL required</span>
@@ -2166,6 +2165,7 @@ function handleChannelEvent(p) {
 // ── Main page component ──────────────────────────────────────
 function ChannelsPage() {
 	useEffect(() => {
+		S.setRefreshChannelsPage(loadChannels);
 		// Use prefetched cache for instant render
 		if (S.cachedChannels !== null) channels.value = S.cachedChannels;
 		if (connected.value) loadChannels();
@@ -2174,6 +2174,7 @@ function ChannelsPage() {
 		S.setChannelEventUnsub(unsub);
 
 		return () => {
+			S.setRefreshChannelsPage(null);
 			if (unsub) unsub();
 			S.setChannelEventUnsub(null);
 		};
