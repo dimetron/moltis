@@ -373,6 +373,10 @@ where
             header::HeaderName::from_static("referrer-policy"),
             HeaderValue::from_static("strict-origin-when-cross-origin"),
         ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("camera=(), microphone=(self), geolocation=(), payment=()"),
+        ))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(cors);
 
@@ -656,6 +660,16 @@ pub fn finalize_gateway_app(
         app_state.clone(),
         crate::request_throttle::throttle_gate,
     ));
+    // HSTS: instruct browsers to always use HTTPS once they've connected securely.
+    let router = if app_state.gateway.is_secure() {
+        use axum::http::{HeaderValue, header};
+        router.layer(SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ))
+    } else {
+        router
+    };
     let router = apply_middleware_stack(router, cors, http_request_logs);
     router.with_state(app_state)
 }

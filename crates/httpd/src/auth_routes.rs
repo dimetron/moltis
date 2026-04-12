@@ -206,13 +206,35 @@ async fn setup_handler(
         return (StatusCode::FORBIDDEN, "setup already completed").into_response();
     }
 
+    let client_ip = crate::request_throttle::resolve_client_ip(
+        &headers,
+        addr,
+        state.gateway_state.behind_proxy,
+    );
+    const SETUP_ACCOUNT: &str = "__setup__";
+
+    if let Some(block) = state.login_guard.check(client_ip, SETUP_ACCOUNT) {
+        return blocked_response(block);
+    }
+
     // Validate setup code if one was generated at startup.
     {
         let inner = state.gateway_state.inner.read().await;
-        if let Some(ref expected) = inner.setup_code
-            && body.setup_code.as_deref() != Some(expected.expose_secret().as_str())
-        {
-            return (StatusCode::FORBIDDEN, "invalid or missing setup code").into_response();
+        if let Some(ref expected) = inner.setup_code {
+            // Expire setup code after 30 minutes.
+            if let Some(created_at) = inner.setup_code_created_at
+                && created_at.elapsed() > std::time::Duration::from_secs(30 * 60)
+            {
+                return (
+                    StatusCode::GONE,
+                    "setup code has expired — restart the server to generate a new one",
+                )
+                    .into_response();
+            }
+            if body.setup_code.as_deref() != Some(expected.expose_secret().as_str()) {
+                state.login_guard.record_failure(client_ip, SETUP_ACCOUNT);
+                return (StatusCode::FORBIDDEN, "invalid or missing setup code").into_response();
+            }
         }
     }
 
@@ -229,10 +251,10 @@ async fn setup_handler(
                 .into_response();
         }
     } else {
-        if password.len() < 8 {
+        if password.len() < 12 {
             return (
                 StatusCode::BAD_REQUEST,
-                "password must be at least 8 characters",
+                "password must be at least 12 characters",
             )
                 .into_response();
         }
@@ -333,9 +355,14 @@ async fn login_handler(
         return blocked_response(block);
     }
 
+    let ip_str = client_ip.to_string();
     match state.credential_store.verify_password(&body.password).await {
         Ok(true) => {
             state.login_guard.record_success(client_ip);
+            state
+                .credential_store
+                .audit_log("login_success", Some(&ip_str), None)
+                .await;
             // Best-effort vault unseal on successful login.
             #[cfg(feature = "vault")]
             if let Some(ref vault) = state.gateway_state.vault {
@@ -365,6 +392,10 @@ async fn login_handler(
             state
                 .login_guard
                 .record_failure(client_ip, PASSWORD_ACCOUNT);
+            state
+                .credential_store
+                .audit_log("login_failure", Some(&ip_str), None)
+                .await;
             (StatusCode::UNAUTHORIZED, "invalid password").into_response()
         },
         Err(e) => (
@@ -404,7 +435,11 @@ async fn reset_auth_handler(
                 .await;
             let code = moltis_gateway::auth::generate_setup_code();
             tracing::info!("setup code: {code} (enter this in the browser to set your password)");
-            state.gateway_state.inner.write().await.setup_code = Some(secrecy::Secret::new(code));
+            {
+                let mut inner = state.gateway_state.inner.write().await;
+                inner.setup_code = Some(secrecy::Secret::new(code));
+                inner.setup_code_created_at = Some(std::time::Instant::now());
+            }
             let bp = state.gateway_state.behind_proxy;
             clear_session_response(&headers, bp, state.gateway_state.tls_active || bp)
         },
@@ -425,10 +460,10 @@ async fn change_password_handler(
     State(state): State<AuthState>,
     Json(body): Json<ChangePasswordRequest>,
 ) -> impl IntoResponse {
-    if body.new_password.len() < 8 {
+    if body.new_password.len() < 12 {
         return (
             StatusCode::BAD_REQUEST,
-            "new password must be at least 8 characters",
+            "new password must be at least 12 characters",
         )
             .into_response();
     }
