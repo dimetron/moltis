@@ -80,6 +80,7 @@ function handleModelsUpdatedEvent(payload) {
 
 function fetchProviders() {
 	loading.value = true;
+	testResult.value = null;
 	return Promise.all([sendRpc("models.list_all", {}), sendRpc("providers.available", {})])
 		.then(([modelsRes, providersRes]) => {
 			loading.value = false;
@@ -238,6 +239,7 @@ function ProviderSection(props) {
 			sendRpc("providers.remove_key", { provider: group.provider })
 				.then((res) => {
 					if (res?.ok) {
+						if (testResult.value?.provider === group.provider) testResult.value = null;
 						configuredModels.value = configuredModels.value.filter((entry) => entry.provider !== group.provider);
 						fetchModels();
 						fetchProviders();

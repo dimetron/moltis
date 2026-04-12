@@ -54,7 +54,6 @@ var OPENAI_COMPATIBLE_PROVIDERS = [
 
 var BYOM_PROVIDERS = ["venice"];
 var VALIDATION_HINT_TEXT = "";
-var VALIDATION_HINT_RUNNING_TEXT = "Discovering models...";
 var VALIDATION_PROGRESS_EVENT = "providers.validate.progress";
 var oauthStatusTimer = null;
 
