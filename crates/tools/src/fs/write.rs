@@ -98,14 +98,20 @@ impl WriteTool {
         let approval_request = format!("Write {file_path}");
 
         // Sandbox dispatch: round-trip through the bridge when sandboxed.
-        // Sandbox path skips host-side canonicalization, symlink check,
-        // and must-read-before-write because those semantics are enforced
-        // by the bridge script / future phase 3 sandbox-side tracker.
+        // Symlink check is handled by the bridge script. Host-side
+        // canonicalization doesn't apply (the path lives inside the
+        // container). Path policy and must-read-before-write are
+        // enforced host-side before dispatching.
         if let Some(ref router) = self.sandbox_router
             && router.is_sandboxed(session_key).await
         {
             if let Some(ref policy) = self.path_policy
                 && let Some(payload) = enforce_path_policy(policy, std::path::Path::new(file_path))
+            {
+                return Ok(payload);
+            }
+            if let Some(payload) =
+                enforce_must_read_before_write(self.fs_state.as_ref(), session_key, file_path)
             {
                 return Ok(payload);
             }

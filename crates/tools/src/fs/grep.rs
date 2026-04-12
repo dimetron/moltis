@@ -685,6 +685,13 @@ impl AgentTool for GrepTool {
         if let Some(ref router) = self.sandbox_router {
             let session_key = session_key_from(&params).to_string();
             if router.is_sandboxed(&session_key).await {
+                // Enforce path policy before dispatching to the sandbox,
+                // matching Read/Write/Edit/MultiEdit.
+                if let Some(ref policy) = self.path_policy
+                    && let Some(payload) = enforce_path_policy_deny_only(policy, &path)
+                {
+                    return Ok(payload);
+                }
                 let (backend, id) = ensure_sandbox(router, &session_key).await?;
                 let path_str = path
                     .to_str()

@@ -205,14 +205,19 @@ impl EditTool {
         let approval_request = format!("Edit {file_path}");
 
         // Sandbox dispatch: read through the bridge, apply in host
-        // memory, write through the bridge. Skips host canonicalization
-        // and symlink check because the sandbox path is what the LLM
-        // sees and operates on.
+        // memory, write through the bridge. Path policy and must-read-
+        // before-write are enforced host-side before dispatching;
+        // symlink check is handled by the bridge script.
         if let Some(ref router) = self.sandbox_router
             && router.is_sandboxed(session_key).await
         {
             if let Some(ref policy) = self.path_policy
                 && let Some(payload) = enforce_path_policy(policy, Path::new(file_path))
+            {
+                return Ok(payload);
+            }
+            if let Some(payload) =
+                enforce_must_read_before_write(self.fs_state.as_ref(), session_key, file_path)
             {
                 return Ok(payload);
             }

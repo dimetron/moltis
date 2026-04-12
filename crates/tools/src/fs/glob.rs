@@ -262,7 +262,6 @@ impl AgentTool for GlobTool {
         if let Some(ref router) = self.sandbox_router
             && router.is_sandboxed(&session_key).await
         {
-            let (backend, id) = ensure_sandbox(router, &session_key).await?;
             let root = match path.as_ref() {
                 Some(p) => p.clone(),
                 None => self.workspace_root.clone().ok_or_else(|| {
@@ -271,6 +270,13 @@ impl AgentTool for GlobTool {
                     )
                 })?,
             };
+            // Root deny-only check, matching the host path.
+            if let Some(ref policy) = self.path_policy
+                && let Some(payload) = enforce_path_policy_deny_only(policy, &root)
+            {
+                return Ok(payload);
+            }
+            let (backend, id) = ensure_sandbox(router, &session_key).await?;
             let root_str = root
                 .to_str()
                 .ok_or_else(|| Error::message("Glob 'path' contains invalid UTF-8"))?;

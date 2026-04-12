@@ -109,11 +109,17 @@ impl MultiEditTool {
 
         // Sandbox dispatch: read once, apply all edits in host memory,
         // write the final buffer back through the bridge atomically.
+        // Path policy and must-read-before-write are enforced host-side.
         if let Some(ref router) = self.sandbox_router
             && router.is_sandboxed(session_key).await
         {
             if let Some(ref policy) = self.path_policy
                 && let Some(payload) = enforce_path_policy(policy, std::path::Path::new(file_path))
+            {
+                return Ok(payload);
+            }
+            if let Some(payload) =
+                enforce_must_read_before_write(self.fs_state.as_ref(), session_key, file_path)
             {
                 return Ok(payload);
             }
