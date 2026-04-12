@@ -621,6 +621,11 @@ impl AgentTool for GrepTool {
                     "minimum": 0,
                     "description": "Lines of context on both sides (content mode)."
                 },
+                "context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Alias for -C."
+                },
                 "multiline": {
                     "type": "boolean",
                     "description": "Enable multi-line mode (`.` matches newlines)."
@@ -679,6 +684,7 @@ impl AgentTool for GrepTool {
         let show_line_numbers = params.get("-n").and_then(Value::as_bool).unwrap_or(false);
         let context_symmetric = params
             .get("-C")
+            .or_else(|| params.get("context"))
             .and_then(Value::as_u64)
             .map(|n| n as usize)
             .unwrap_or(0);

@@ -438,16 +438,22 @@ impl AgentTool for EditTool {
     }
 
     async fn execute(&self, params: Value) -> anyhow::Result<Value> {
+        // Accept Claude Code's parameter aliases for robustness.
         let file_path = params
             .get("file_path")
+            .or_else(|| params.get("filePath"))
+            .or_else(|| params.get("filepath"))
+            .or_else(|| params.get("path"))
             .and_then(Value::as_str)
             .ok_or_else(|| Error::message("missing 'file_path' parameter"))?;
         let old_string = params
             .get("old_string")
+            .or_else(|| params.get("old_str"))
             .and_then(Value::as_str)
             .ok_or_else(|| Error::message("missing 'old_string' parameter"))?;
         let new_string = params
             .get("new_string")
+            .or_else(|| params.get("new_str"))
             .and_then(Value::as_str)
             .ok_or_else(|| Error::message("missing 'new_string' parameter"))?;
         let replace_all = params

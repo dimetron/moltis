@@ -411,9 +411,28 @@ impl AgentTool for ReadTool {
             .map(str::to_string);
         let session_key = session_key_from(&params).to_string();
 
+        let lower = file_path.to_ascii_lowercase();
+
         // PDF dispatch: intercept .pdf before the normal read path.
-        if file_path.to_ascii_lowercase().ends_with(".pdf") {
+        if lower.ends_with(".pdf") {
             return match read_pdf(file_path, pages.as_deref()).await {
+                Ok(value) => Ok(value),
+                Err(e) => {
+                    #[cfg(feature = "metrics")]
+                    counter!(
+                        tools_metrics::EXECUTION_ERRORS_TOTAL,
+                        labels::TOOL => "Read".to_string()
+                    )
+                    .increment(1);
+                    Err(e.into())
+                },
+            };
+        }
+
+        // Image dispatch: intercept known image extensions before binary
+        // rejection and return optimized base64 with dimension info.
+        if is_image_extension(&lower) {
+            return match read_image(file_path).await {
                 Ok(value) => Ok(value),
                 Err(e) => {
                     #[cfg(feature = "metrics")]
@@ -440,6 +459,68 @@ impl AgentTool for ReadTool {
             },
         }
     }
+}
+
+/// Image extensions that get special handling (resize + base64) instead
+/// of binary rejection. Matches Claude Code's `UYq` set.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+
+fn is_image_extension(lower_path: &str) -> bool {
+    IMAGE_EXTENSIONS.iter().any(|ext| lower_path.ends_with(ext))
+}
+
+/// Read an image file, optimize it for LLM consumption (resize to fit
+/// within dimension limits, compress), and return a structured payload
+/// with base64 data + original/final dimensions.
+///
+/// Uses `moltis_media::image_ops::optimize_for_llm` which already
+/// handles Lanczos3 resize, transparency detection (PNG for RGBA,
+/// JPEG otherwise), and progressive quality reduction.
+async fn read_image(file_path: &str) -> Result<Value> {
+    require_absolute(file_path, "file_path")?;
+
+    let path = std::path::PathBuf::from(file_path);
+    if !fs::try_exists(&path).await.unwrap_or(false) {
+        return Ok(json!({
+            "kind": "not_found",
+            "file_path": file_path,
+            "error": "file does not exist",
+            "detail": "",
+        }));
+    }
+
+    let bytes = fs::read(&path)
+        .await
+        .map_err(|e| Error::message(format!("failed to read image '{file_path}': {e}")))?;
+
+    let path_owned = file_path.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Value> {
+        match moltis_media::image_ops::optimize_for_llm(&bytes, None) {
+            Ok(optimized) => {
+                use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+                Ok(json!({
+                    "kind": "image",
+                    "file_path": path_owned,
+                    "media_type": optimized.media_type,
+                    "original_width": optimized.original_width,
+                    "original_height": optimized.original_height,
+                    "final_width": optimized.final_width,
+                    "final_height": optimized.final_height,
+                    "was_resized": optimized.was_resized,
+                    "bytes": optimized.data.len(),
+                    "base64": BASE64.encode(&optimized.data),
+                }))
+            },
+            Err(e) => Ok(json!({
+                "kind": "image_error",
+                "file_path": path_owned,
+                "error": format!("failed to process image: {e}"),
+                "detail": "The file may be corrupted or use an unsupported image format.",
+            })),
+        }
+    })
+    .await
+    .map_err(|e| Error::message(format!("image processing task failed: {e}")))?
 }
 
 /// Maximum pages allowed in a single PDF Read call.
