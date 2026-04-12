@@ -467,6 +467,12 @@ packages = [
 # cpu_quota = 0.5                 # CPU quota as fraction (0.5 = half a core, 2.0 = two cores)
 # pids_max = 100                  # Maximum number of processes
 
+# Tool policy overrides applied when commands run inside the sandbox (layer 6).
+# These narrow the effective policy for sandboxed execution only.
+# [tools.exec.sandbox.tools_policy]
+# allow = ["exec"]                # Only allow exec tool inside sandbox
+# deny = ["browser"]              # Deny browser tool inside sandbox
+
 # ── Tool Policy ───────────────────────────────────────────────────────────────
 # Control which tools the agent can use. Policies are layered (later wins for
 # allow, deny always accumulates across layers):
@@ -476,6 +482,7 @@ packages = [
 #   3. Per-agent     — [agents.presets.<id>.tools]
 #   4. Per-channel   — [channels.<type>.<account>.tools.groups.<chat_type>]
 #   5. Per-sender    — [...groups.<chat_type>.by_sender.<sender_id>]
+#   6. Sandbox       — [tools.exec.sandbox.tools_policy] (only when sandboxed)
 #
 # This is the base policy for all sessions. Provider and channel layers
 # narrow it further based on runtime context.

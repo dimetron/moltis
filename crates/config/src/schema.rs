@@ -2531,6 +2531,10 @@ pub struct SandboxConfig {
     pub wasm_epoch_interval_ms: Option<u64>,
     /// Optional per-tool WASM limits (fuel + memory).
     pub wasm_tool_limits: Option<WasmToolLimitsConfig>,
+    /// Optional tool policy overrides applied when running inside this sandbox.
+    /// Acts as layer 6 in the policy resolution chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_policy: Option<ToolPolicyConfig>,
 }
 
 /// Default packages installed in sandbox containers.
@@ -2729,6 +2733,7 @@ impl Default for SandboxConfig {
             wasm_fuel_limit: None,
             wasm_epoch_interval_ms: None,
             wasm_tool_limits: None,
+            tools_policy: None,
         }
     }
 }

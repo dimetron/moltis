@@ -103,6 +103,7 @@ impl ToolPolicy {
 /// 3. Per-agent preset — `[agents.presets.<agent_id>.tools]`
 /// 4. Per-channel-group — `[channels.<type>.<account>.tools.groups.<chat_type>]`
 /// 5. Per-sender in group — `[channels.<type>.<account>.tools.groups.<chat_type>.by_sender.<id>]`
+/// 6. Sandbox overrides — `[tools.exec.sandbox.tools_policy]` (only when `context.sandboxed`)
 pub fn resolve_effective_policy(
     config: &moltis_config::MoltisConfig,
     context: &PolicyContext,
@@ -180,6 +181,20 @@ pub fn resolve_effective_policy(
                 effective = effective.merge_with(&p);
                 debug!(channel, group_id, sender_id, "policy: applied sender layer");
             }
+        }
+    }
+
+    // Layer 6: Sandbox overrides — [tools.exec.sandbox.tools_policy]
+    if context.sandboxed
+        && let Some(ref sandbox_policy) = config.tools.exec.sandbox.tools_policy
+    {
+        let p = ToolPolicy {
+            allow: sandbox_policy.allow.clone(),
+            deny: sandbox_policy.deny.clone(),
+        };
+        if !p.allow.is_empty() || !p.deny.is_empty() {
+            effective = effective.merge_with(&p);
+            debug!("policy: applied sandbox layer");
         }
     }
 
@@ -435,5 +450,39 @@ mod tests {
         };
         let policy = resolve_effective_policy(&cfg, &ctx);
         assert!(policy.is_allowed("exec")); // Not denied — channel layers skipped.
+    }
+
+    #[test]
+    fn test_resolve_sandbox_layer_overrides() {
+        let mut cfg = moltis_config::MoltisConfig::default();
+        cfg.tools.policy.allow = vec!["*".into()];
+
+        // Configure sandbox-specific tool policy that denies browser.
+        cfg.tools.exec.sandbox.tools_policy = Some(moltis_config::schema::ToolPolicyConfig {
+            allow: vec!["exec".into()],
+            deny: vec!["browser".into()],
+            profile: None,
+        });
+
+        // Without sandboxed flag — layer 6 is skipped.
+        let ctx = PolicyContext {
+            agent_id: "main".into(),
+            sandboxed: false,
+            ..Default::default()
+        };
+        let policy = resolve_effective_policy(&cfg, &ctx);
+        assert!(policy.is_allowed("exec"));
+        assert!(policy.is_allowed("browser")); // Not denied — sandbox layer skipped.
+
+        // With sandboxed flag — layer 6 applies.
+        let ctx_sandboxed = PolicyContext {
+            agent_id: "main".into(),
+            sandboxed: true,
+            ..Default::default()
+        };
+        let policy_sandboxed = resolve_effective_policy(&cfg, &ctx_sandboxed);
+        assert!(policy_sandboxed.is_allowed("exec"));
+        assert!(!policy_sandboxed.is_allowed("browser")); // Denied by sandbox layer.
+        assert!(!policy_sandboxed.is_allowed("web_search")); // Not in sandbox allow list.
     }
 }

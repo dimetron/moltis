@@ -173,6 +173,7 @@ fn build_schema_map() -> KnownKeys {
             ("wasm_fuel_limit", Leaf),
             ("wasm_epoch_interval_ms", Leaf),
             ("wasm_tool_limits", wasm_tool_limits()),
+            ("tools_policy", tool_policy_entry()),
         ]))
     };
 
