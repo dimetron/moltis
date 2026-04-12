@@ -773,7 +773,7 @@ function AddTelegramModal() {
 	      <${AdvancedConfigPatchField} value=${advancedConfigPatch.value} onInput=${(value) => {
 					advancedConfigPatch.value = value;
 				}} />
-	      ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+	      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
 	      <button class="provider-btn" onClick=${onSubmit} disabled=${saving.value}>
 	        ${saving.value ? "Connecting\u2026" : "Connect Telegram"}
 	      </button>
@@ -1023,7 +1023,7 @@ function AddTeamsModal() {
 	      <${AdvancedConfigPatchField} value=${advancedConfigPatch.value} onInput=${(value) => {
 					advancedConfigPatch.value = value;
 				}} />
-	      ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+	      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
 	      <button class="provider-btn" onClick=${onSubmit} disabled=${saving.value}>
 	        ${saving.value ? "Connecting\u2026" : "Connect Microsoft Teams"}
 	      </button>
@@ -1145,7 +1145,7 @@ function AddDiscordModal() {
 	      <${AdvancedConfigPatchField} value=${advancedConfigPatch.value} onInput=${(value) => {
 					advancedConfigPatch.value = value;
 				}} />
-	      ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+	      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
 	      <button class="provider-btn" onClick=${onSubmit} disabled=${saving.value}>
 	        ${saving.value ? "Connecting\u2026" : "Connect Discord"}
 	      </button>
@@ -1312,7 +1312,7 @@ function AddSlackModal() {
 	      <${AdvancedConfigPatchField} value=${advancedConfigPatch.value} onInput=${(value) => {
 					advancedConfigPatch.value = value;
 				}} />
-	      ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+	      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
 	      <button class="provider-btn" onClick=${onSubmit} disabled=${saving.value}>
 	        ${saving.value ? "Connecting\u2026" : "Connect Slack"}
 	      </button>
@@ -1566,7 +1566,7 @@ function AddMatrixModal() {
 	      <${AdvancedConfigPatchField} value=${advancedConfigPatch.value} onInput=${(value) => {
 					advancedConfigPatch.value = value;
 				}} />
-	      ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+	      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
 	      <button class="provider-btn" onClick=${onSubmit} disabled=${saving.value}>
 	        ${saving.value ? "Connecting\u2026" : "Connect Matrix"}
 	      </button>
@@ -1732,7 +1732,7 @@ function AddNostrModal() {
 	      <${AdvancedConfigPatchField} value=${advancedConfigPatch.value} onInput=${(value) => {
 					advancedConfigPatch.value = value;
 				}} />
-	      ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+	      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
 	      <button class="provider-btn" onClick=${onSubmit} disabled=${saving.value}>
 	        ${saving.value ? "Connecting\u2026" : "Connect Nostr"}
 	      </button>
@@ -1858,7 +1858,7 @@ function AddWhatsAppModal() {
         <${AdvancedConfigPatchField} value=${advancedConfigPatch.value} onInput=${(value) => {
 					advancedConfigPatch.value = value;
 				}} />
-        ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+        ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
         <button class="provider-btn" onClick=${onStartPairing} disabled=${saving.value}>
           ${saving.value ? "Starting\u2026" : "Start Pairing"}
         </button>
@@ -2283,7 +2283,7 @@ function EditChannelModal() {
 						editAdvancedConfigPatch.value = value;
 					}}
 	        currentConfig=${cfg} />
-      ${error.value && html`<div class="text-xs text-[var(--error)] channel-error block">${error.value}</div>`}
+      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
 	      <button class="provider-btn"
 	        onClick=${onSave} disabled=${saving.value}>
 	        ${saving.value ? "Saving\u2026" : "Save Changes"}
