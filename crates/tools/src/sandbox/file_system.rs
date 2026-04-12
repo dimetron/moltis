@@ -10,19 +10,20 @@ use {
     base64::{Engine as _, engine::general_purpose::STANDARD as BASE64},
     serde_json::{Value, json},
     std::{
-        io,
-        io::Write as _,
+        ffi::OsString,
+        io::{self, Read as _, Write as _},
         path::{Path, PathBuf},
         sync::Arc,
         time::Duration,
     },
+    tar::{Archive, Builder, EntryType, Header},
 };
 
 use crate::{
     Result,
     error::Error,
     exec::ExecOpts,
-    sandbox::{Sandbox, SandboxId, SandboxRouter},
+    sandbox::{Sandbox, SandboxId, SandboxRouter, containers::container_exec_shell_args},
 };
 
 /// Maximum file size Write/Edit/MultiEdit can send into a sandbox in a
@@ -507,6 +508,12 @@ enum ContainerCopyErrorKind {
     PermissionDenied,
 }
 
+enum OciPathKind {
+    File { bytes: u64 },
+    Directory,
+    Other,
+}
+
 fn classify_container_copy_error(stderr: &str) -> Option<ContainerCopyErrorKind> {
     let lower = stderr.to_ascii_lowercase();
     if lower.contains("permission denied") {
@@ -521,76 +528,208 @@ fn classify_container_copy_error(stderr: &str) -> Option<ContainerCopyErrorKind>
     None
 }
 
-fn container_copy_local_root(destination_dir: &Path, source_path: &str) -> PathBuf {
-    let basename = Path::new(source_path)
-        .components()
-        .rev()
-        .find_map(|component| {
-            if let std::path::Component::Normal(value) = component {
-                Some(value.to_owned())
-            } else {
-                None
-            }
-        });
-
-    match basename {
-        Some(basename) => {
-            let candidate = destination_dir.join(basename);
-            if candidate.exists() {
-                candidate
-            } else {
-                destination_dir.to_path_buf()
-            }
-        },
-        None => destination_dir.to_path_buf(),
-    }
-}
-
-async fn copy_container_path_to_host(
+async fn oci_exec_shell(
     cli: &str,
     container_name: &str,
-    container_path: &str,
-    follow_links: bool,
-    destination_dir: &Path,
-) -> Result<PathBuf> {
-    let mut args = vec!["cp".to_string()];
-    if follow_links {
-        args.push("-L".to_string());
-    }
-    args.push(format!("{container_name}:{container_path}"));
-    args.push(destination_dir.display().to_string());
-
+    shell_command: String,
+) -> Result<(i32, String, String)> {
     let output = tokio::process::Command::new(cli)
-        .args(&args)
-        .stdout(std::process::Stdio::null())
+        .args(container_exec_shell_args(
+            cli,
+            container_name,
+            shell_command,
+        ))
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
         .output()
         .await?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        if let Some(kind) = classify_container_copy_error(detail) {
-            return Err(Error::message(format!("container-copy:{kind:?}:{detail}")));
-        }
-        return Err(Error::message(format!(
-            "{cli} cp failed for '{container_path}': {detail}"
-        )));
-    }
-
-    Ok(container_copy_local_root(destination_dir, container_path))
+    Ok((
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
-fn decode_container_copy_error(error: &Error) -> Option<(ContainerCopyErrorKind, String)> {
-    let message = error.to_string();
-    let rest = message.strip_prefix("container-copy:")?;
-    let (kind, detail) = rest.split_once(':')?;
-    let kind = match kind {
-        "NotFound" => ContainerCopyErrorKind::NotFound,
-        "PermissionDenied" => ContainerCopyErrorKind::PermissionDenied,
-        _ => return None,
+async fn oci_probe_file_kind(
+    cli: &str,
+    container_name: &str,
+    file_path: &str,
+) -> Result<OciPathKind> {
+    let quoted = shell_single_quote(file_path);
+    let script = format!(
+        "path={quoted}; \
+         if [ ! -e \"$path\" ]; then exit {EXIT_NOT_FOUND}; fi; \
+         if [ ! -r \"$path\" ]; then exit {EXIT_PERMISSION_DENIED}; fi; \
+         if [ -f \"$path\" ]; then printf 'file\\t'; wc -c < \"$path\"; exit 0; fi; \
+         if [ -d \"$path\" ]; then printf 'dir\\n'; exit 0; fi; \
+         printf 'other\\n'; exit 0"
+    );
+    let (exit_code, stdout, stderr) = oci_exec_shell(cli, container_name, script).await?;
+    match exit_code {
+        0 => {
+            let line = stdout.trim();
+            if let Some(bytes) = line.strip_prefix("file\t") {
+                let bytes = bytes.trim().parse::<u64>().map_err(|error| {
+                    Error::message(format!(
+                        "failed to parse OCI file size for '{file_path}': {error}"
+                    ))
+                })?;
+                Ok(OciPathKind::File { bytes })
+            } else if line == "dir" {
+                Ok(OciPathKind::Directory)
+            } else {
+                Ok(OciPathKind::Other)
+            }
+        },
+        EXIT_NOT_FOUND => Ok(OciPathKind::Other),
+        EXIT_PERMISSION_DENIED => Err(Error::message(format!(
+            "{cli} exec denied access to '{file_path}'"
+        ))),
+        _ => Err(Error::message(format!(
+            "{cli} exec failed while probing '{file_path}': {}",
+            stderr.trim()
+        ))),
+    }
+}
+
+async fn oci_probe_write_target(
+    cli: &str,
+    container_name: &str,
+    file_path: &str,
+) -> Result<Option<Value>> {
+    let path = Path::new(file_path);
+    let parent = path.parent().ok_or_else(|| {
+        Error::message(format!(
+            "cannot resolve parent of '{file_path}': directory does not exist in container"
+        ))
+    })?;
+
+    let quoted = shell_single_quote(file_path);
+    let quoted_parent = shell_single_quote(&parent.display().to_string());
+    let script = format!(
+        "path={quoted}; parent={quoted_parent}; \
+         if [ ! -e \"$parent\" ]; then exit {EXIT_PARENT_MISSING}; fi; \
+         if [ ! -d \"$parent\" ]; then echo parent-not-dir; exit {EXIT_PARENT_MISSING}; fi; \
+         if [ -e \"$path\" ]; then \
+           if [ -L \"$path\" ]; then echo symlink; exit {EXIT_SYMLINK}; fi; \
+           if [ ! -w \"$path\" ]; then exit {EXIT_PERMISSION_DENIED}; fi; \
+           if [ ! -f \"$path\" ]; then echo other; exit {EXIT_NOT_REGULAR_FILE}; fi; \
+           echo existing-file; \
+           exit 0; \
+         fi; \
+         if [ ! -w \"$parent\" ]; then exit {EXIT_PERMISSION_DENIED}; fi; \
+         echo missing-file"
+    );
+    let (exit_code, stdout, stderr) = oci_exec_shell(cli, container_name, script).await?;
+
+    match exit_code {
+        0 => {
+            let marker = stdout.trim();
+            match marker {
+                "existing-file" | "missing-file" => Ok(None),
+                other => Err(Error::message(format!(
+                    "unexpected OCI write probe marker for '{file_path}': {other}"
+                ))),
+            }
+        },
+        EXIT_PARENT_MISSING => {
+            if stdout.trim() == "parent-not-dir" {
+                Err(Error::message(format!(
+                    "cannot resolve parent of '{file_path}': parent is not a directory in container"
+                )))
+            } else {
+                Err(Error::message(format!(
+                    "cannot resolve parent of '{file_path}': directory does not exist in container"
+                )))
+            }
+        },
+        EXIT_SYMLINK => Ok(Some(path_denied_payload(
+            file_path,
+            "OCI Write rejects symlinks",
+        ))),
+        EXIT_PERMISSION_DENIED => Ok(Some(permission_denied_payload(file_path, stderr.trim()))),
+        EXIT_NOT_REGULAR_FILE => Ok(Some(not_regular_file_payload(
+            file_path,
+            "OCI Write requires a regular file target",
+        ))),
+        _ => Err(Error::message(format!(
+            "{cli} exec failed while probing write target '{file_path}': {}",
+            stderr.trim()
+        ))),
+    }
+}
+
+fn extract_single_file_from_tar(
+    tar_bytes: &[u8],
+    file_path: &str,
+    max_bytes: u64,
+) -> Result<SandboxReadResult> {
+    let cursor = io::Cursor::new(tar_bytes);
+    let mut archive = Archive::new(cursor);
+    let mut entries = archive.entries().map_err(|error| {
+        Error::message(format!(
+            "failed to read OCI tar stream for '{file_path}': {error}"
+        ))
+    })?;
+
+    let Some(entry_result) = entries.next() else {
+        return Err(Error::message(format!(
+            "OCI tar stream for '{file_path}' was empty"
+        )));
     };
-    Some((kind, detail.to_string()))
+    let mut entry = entry_result.map_err(|error| {
+        Error::message(format!(
+            "failed to decode OCI tar entry for '{file_path}': {error}"
+        ))
+    })?;
+
+    if entry.header().entry_type() != EntryType::Regular {
+        return Ok(SandboxReadResult::NotRegularFile);
+    }
+
+    let entry_size = entry.size();
+    if entry_size > max_bytes {
+        return Ok(SandboxReadResult::TooLarge(entry_size));
+    }
+
+    let mut bytes = Vec::with_capacity(entry_size as usize);
+    entry.read_to_end(&mut bytes).map_err(|error| {
+        Error::message(format!(
+            "failed to read OCI tar payload for '{file_path}': {error}"
+        ))
+    })?;
+    if bytes.len() as u64 > max_bytes {
+        return Ok(SandboxReadResult::TooLarge(bytes.len() as u64));
+    }
+    Ok(SandboxReadResult::Ok(bytes))
+}
+
+fn build_single_file_tar(file_path: &str, content: &[u8]) -> Result<Vec<u8>> {
+    let entry_name: OsString = Path::new(file_path)
+        .file_name()
+        .ok_or_else(|| Error::message(format!("'{file_path}' has no file name")))?
+        .to_owned();
+
+    let mut builder = Builder::new(Vec::new());
+    let mut header = Header::new_ustar();
+    header.set_entry_type(EntryType::Regular);
+    header.set_mode(0o644);
+    header.set_size(content.len() as u64);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, entry_name, io::Cursor::new(content))
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to build OCI tar payload for '{file_path}': {error}"
+            ))
+        })?;
+    builder.into_inner().map_err(|error| {
+        Error::message(format!(
+            "failed to finalize OCI tar payload for '{file_path}': {error}"
+        ))
+    })
 }
 
 /// Native host-backed read implementation for sandbox backends whose paths
@@ -812,14 +951,18 @@ pub async fn oci_container_read_file(
     file_path: &str,
     max_bytes: u64,
 ) -> Result<SandboxReadResult> {
-    let temp_dir = tempfile::tempdir()?;
-    let local_path =
-        match copy_container_path_to_host(cli, container_name, file_path, true, temp_dir.path())
-            .await
-        {
-            Ok(local_path) => local_path,
-            Err(error) => {
-                if let Some((kind, _detail)) = decode_container_copy_error(&error) {
+    match oci_probe_file_kind(cli, container_name, file_path).await? {
+        OciPathKind::File { bytes } if bytes > max_bytes => Ok(SandboxReadResult::TooLarge(bytes)),
+        OciPathKind::File { .. } => {
+            let output = tokio::process::Command::new(cli)
+                .args(["cp", &format!("{container_name}:{file_path}"), "-"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if let Some(kind) = classify_container_copy_error(stderr.trim()) {
                     return Ok(match kind {
                         ContainerCopyErrorKind::NotFound => SandboxReadResult::NotFound,
                         ContainerCopyErrorKind::PermissionDenied => {
@@ -827,25 +970,15 @@ pub async fn oci_container_read_file(
                         },
                     });
                 }
-                return Err(error);
-            },
-        };
-
-    let metadata = match tokio::fs::metadata(&local_path).await {
-        Ok(metadata) => metadata,
-        Err(error) => return Ok(map_io_error_to_read_result(&error)),
-    };
-    if !metadata.is_file() {
-        return Ok(SandboxReadResult::NotRegularFile);
+                return Err(Error::message(format!(
+                    "{cli} cp failed for '{file_path}': {}",
+                    stderr.trim()
+                )));
+            }
+            extract_single_file_from_tar(&output.stdout, file_path, max_bytes)
+        },
+        OciPathKind::Directory | OciPathKind::Other => Ok(SandboxReadResult::NotRegularFile),
     }
-
-    native_host_read_file(
-        local_path
-            .to_str()
-            .ok_or_else(|| Error::message("copied container path contains invalid UTF-8"))?,
-        max_bytes,
-    )
-    .await
 }
 
 /// Copy-based write implementation for OCI-compatible container CLIs.
@@ -855,116 +988,34 @@ pub async fn oci_container_write_file(
     file_path: &str,
     content: &[u8],
 ) -> Result<Option<Value>> {
-    let path = Path::new(file_path);
-    let parent = path.parent().ok_or_else(|| {
-        Error::message(format!(
-            "cannot resolve parent of '{file_path}': directory does not exist in container"
-        ))
-    })?;
-
-    let target_temp_dir = tempfile::tempdir()?;
-    match copy_container_path_to_host(
-        cli,
-        container_name,
-        file_path,
-        false,
-        target_temp_dir.path(),
-    )
-    .await
-    {
-        Ok(local_target) => {
-            let metadata = tokio::fs::symlink_metadata(&local_target)
-                .await
-                .map_err(|error| {
-                    Error::message(format!(
-                        "failed to inspect copied container path '{file_path}': {error}"
-                    ))
-                })?;
-            if metadata.file_type().is_symlink() {
-                return Ok(Some(path_denied_payload(
-                    file_path,
-                    "OCI Write rejects symlinks",
-                )));
-            }
-            if !metadata.is_file() {
-                return Ok(Some(not_regular_file_payload(
-                    file_path,
-                    "OCI Write requires a regular file target",
-                )));
-            }
-        },
-        Err(error) => {
-            if let Some((kind, detail)) = decode_container_copy_error(&error) {
-                match kind {
-                    ContainerCopyErrorKind::PermissionDenied => {
-                        return Ok(Some(permission_denied_payload(file_path, &detail)));
-                    },
-                    ContainerCopyErrorKind::NotFound => {
-                        let parent_temp_dir = tempfile::tempdir()?;
-                        let parent_string = parent.display().to_string();
-                        let local_parent = match copy_container_path_to_host(
-                            cli,
-                            container_name,
-                            &parent_string,
-                            true,
-                            parent_temp_dir.path(),
-                        )
-                        .await
-                        {
-                            Ok(local_parent) => local_parent,
-                            Err(parent_error) => {
-                                if let Some((parent_kind, parent_detail)) =
-                                    decode_container_copy_error(&parent_error)
-                                {
-                                    return match parent_kind {
-                                        ContainerCopyErrorKind::NotFound => {
-                                            Err(Error::message(format!(
-                                                "cannot resolve parent of '{file_path}': directory does not exist in container"
-                                            )))
-                                        },
-                                        ContainerCopyErrorKind::PermissionDenied => Ok(Some(
-                                            permission_denied_payload(file_path, &parent_detail),
-                                        )),
-                                    };
-                                }
-                                return Err(parent_error);
-                            },
-                        };
-
-                        let parent_metadata =
-                            tokio::fs::metadata(&local_parent).await.map_err(|error| {
-                                Error::message(format!(
-                                    "failed to inspect copied container parent '{parent_string}': {error}"
-                                ))
-                            })?;
-                        if !parent_metadata.is_dir() {
-                            return Err(Error::message(format!(
-                                "cannot resolve parent of '{file_path}': parent is not a directory in container"
-                            )));
-                        }
-                    },
-                }
-            } else {
-                return Err(error);
-            }
-        },
+    if let Some(payload) = oci_probe_write_target(cli, container_name, file_path).await? {
+        return Ok(Some(payload));
     }
 
-    let mut temp_file = tempfile::NamedTempFile::new()?;
-    temp_file.write_all(content)?;
-    temp_file.as_file().sync_all()?;
+    let destination_dir = Path::new(file_path)
+        .parent()
+        .ok_or_else(|| Error::message(format!("'{file_path}' has no parent directory")))?;
+    let tar_bytes = build_single_file_tar(file_path, content)?;
 
-    let args = vec![
-        "cp".to_string(),
-        temp_file.path().display().to_string(),
-        format!("{container_name}:{file_path}"),
-    ];
-    let output = tokio::process::Command::new(cli)
-        .args(&args)
+    let mut child = tokio::process::Command::new(cli)
+        .args([
+            "cp",
+            "-",
+            &format!("{container_name}:{}", destination_dir.display()),
+        ])
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .output()
-        .await?;
+        .spawn()?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::message("failed to open OCI copy stdin"))?;
+    tokio::io::AsyncWriteExt::write_all(&mut stdin, &tar_bytes).await?;
+    tokio::io::AsyncWriteExt::shutdown(&mut stdin).await?;
+    drop(stdin);
+    let output = child.wait_with_output().await?;
 
     if output.status.success() {
         return Ok(None);
@@ -994,64 +1045,23 @@ pub async fn oci_container_list_files(
     container_name: &str,
     root: &str,
 ) -> Result<Vec<String>> {
-    let temp_dir = tempfile::tempdir()?;
-    let local_root = copy_container_path_to_host(cli, container_name, root, true, temp_dir.path())
-        .await
-        .map_err(|error| {
-            if let Some((kind, detail)) = decode_container_copy_error(&error) {
-                match kind {
-                    ContainerCopyErrorKind::NotFound => {
-                        Error::message(format!("sandbox list_files '{root}' failed: {detail}"))
-                    },
-                    ContainerCopyErrorKind::PermissionDenied => {
-                        Error::message(format!("sandbox list_files '{root}' failed: {detail}"))
-                    },
-                }
-            } else {
-                error
-            }
-        })?;
-
-    let metadata = tokio::fs::metadata(&local_root).await.map_err(|error| {
-        Error::message(format!(
-            "failed to inspect copied container tree '{root}': {error}"
-        ))
-    })?;
-
-    if metadata.is_file() {
-        return Ok(vec![root.to_string()]);
-    }
-    if !metadata.is_dir() {
+    let quoted = shell_single_quote(root);
+    let script = format!("find {quoted} -type f 2>/dev/null");
+    let (exit_code, stdout, stderr) = oci_exec_shell(cli, container_name, script).await?;
+    if exit_code != 0 && stdout.trim().is_empty() {
+        let detail = stderr.trim();
         return Err(Error::message(format!(
-            "sandbox list_files '{root}' failed: copied path is not a directory"
+            "sandbox list_files '{root}' failed: {detail}"
         )));
     }
-
-    let local_files = native_host_list_files(
-        local_root
-            .to_str()
-            .ok_or_else(|| Error::message("copied container path contains invalid UTF-8"))?,
-    )
-    .await?;
-
-    let mut mapped_files = Vec::with_capacity(local_files.len());
-    for local_file in local_files {
-        let relative = Path::new(&local_file)
-            .strip_prefix(&local_root)
-            .map_err(|error| {
-                Error::message(format!(
-                    "failed to relativize copied container path '{local_file}': {error}"
-                ))
-            })?;
-        let mapped = if relative.as_os_str().is_empty() {
-            PathBuf::from(root)
-        } else {
-            Path::new(root).join(relative)
-        };
-        mapped_files.push(mapped.display().to_string());
-    }
-    mapped_files.sort();
-    Ok(mapped_files)
+    let mut files = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1232,5 +1242,22 @@ mod tests {
         let matches = value["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["line"], 9);
+    }
+
+    #[test]
+    fn build_single_file_tar_round_trips() {
+        let tar_bytes = build_single_file_tar("/tmp/example.txt", b"hello tar").unwrap();
+        let result = extract_single_file_from_tar(&tar_bytes, "/tmp/example.txt", 1024).unwrap();
+        match result {
+            SandboxReadResult::Ok(bytes) => assert_eq!(bytes, b"hello tar"),
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_single_file_from_tar_rejects_large_entry() {
+        let tar_bytes = build_single_file_tar("/tmp/example.txt", b"hello tar").unwrap();
+        let result = extract_single_file_from_tar(&tar_bytes, "/tmp/example.txt", 4).unwrap();
+        assert!(matches!(result, SandboxReadResult::TooLarge(9)));
     }
 }

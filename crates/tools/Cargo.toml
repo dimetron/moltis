@@ -49,6 +49,7 @@ sha2                  = { workspace = true }
 shell-words           = { optional = true, workspace = true }
 sqlx                  = { workspace = true }
 tempfile              = { workspace = true }
+tar                   = { workspace = true }
 thiserror             = { workspace = true }
 time                  = { workspace = true }
 tokio                 = { workspace = true }

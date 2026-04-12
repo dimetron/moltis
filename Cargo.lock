@@ -7957,6 +7957,7 @@ dependencies = [
  "sha2",
  "shell-words",
  "sqlx",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "time",
