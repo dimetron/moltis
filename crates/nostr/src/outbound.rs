@@ -18,6 +18,9 @@ use {
 
 use crate::state::AccountState;
 
+#[cfg(feature = "metrics")]
+use moltis_metrics::{counter, histogram, nostr as nostr_metrics};
+
 /// Shared account state map type.
 pub type AccountStateMap = Arc<RwLock<HashMap<String, AccountState>>>;
 
@@ -55,8 +58,13 @@ impl ChannelOutbound for NostrOutbound {
     ) -> ChannelResult<()> {
         let (client, keys, recipient) = self.resolve(account_id, to).await?;
 
+        #[cfg(feature = "metrics")]
+        let start = tokio::time::Instant::now();
+
         // Encrypt with NIP-04
         let encrypted = nip04::encrypt(keys.secret_key(), &recipient, text).map_err(|e| {
+            #[cfg(feature = "metrics")]
+            counter!(nostr_metrics::MESSAGE_SEND_ERRORS_TOTAL, "reason" => "encrypt").increment(1);
             moltis_channels::Error::external(
                 "nostr",
                 crate::error::Error::Encryption(format!("NIP-04 encrypt failed: {e}")),
@@ -67,10 +75,18 @@ impl ChannelOutbound for NostrOutbound {
         let tag = Tag::public_key(recipient);
         let builder = EventBuilder::new(Kind::EncryptedDirectMessage, &encrypted).tag(tag);
 
-        client
-            .send_event_builder(builder)
-            .await
-            .map_err(|e| moltis_channels::Error::external("nostr", crate::error::Error::Sdk(e)))?;
+        client.send_event_builder(builder).await.map_err(|e| {
+            #[cfg(feature = "metrics")]
+            counter!(nostr_metrics::MESSAGE_SEND_ERRORS_TOTAL, "reason" => "relay").increment(1);
+            moltis_channels::Error::external("nostr", crate::error::Error::Sdk(e))
+        })?;
+
+        #[cfg(feature = "metrics")]
+        {
+            counter!(nostr_metrics::MESSAGES_SENT_TOTAL).increment(1);
+            histogram!(nostr_metrics::MESSAGE_SEND_DURATION_SECONDS)
+                .record(start.elapsed().as_secs_f64());
+        }
 
         let npub = recipient.to_bech32().unwrap_or_else(|_| recipient.to_hex());
         tracing::debug!(account_id, to = %npub, len = text.len(), "sent NIP-04 DM");

@@ -6,13 +6,23 @@
 
 use std::sync::Arc;
 
-use {nostr_sdk::prelude::*, tokio::sync::RwLock, tokio_util::sync::CancellationToken};
+use {
+    nostr_sdk::prelude::{
+        Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, Timestamp, ToBech32,
+        nip04, nip44,
+    },
+    tokio::sync::RwLock,
+    tokio_util::sync::CancellationToken,
+};
 
 use crate::{
     access::{self, AccessDenied},
     config::NostrAccountConfig,
     seen::SeenTracker,
 };
+
+#[cfg(feature = "metrics")]
+use moltis_metrics::{counter, nostr as nostr_metrics};
 
 /// Maximum plaintext message size in bytes.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
@@ -140,11 +150,19 @@ async fn handle_event(
     match &access_result {
         Ok(()) => {},
         Err(AccessDenied::Disabled) => {
+            #[cfg(feature = "metrics")]
+            counter!(nostr_metrics::ACCESS_CONTROL_DENIALS_TOTAL, "reason" => "disabled")
+                .increment(1);
             tracing::debug!(account_id, sender = sender_hex, "DM rejected: disabled");
             return;
         },
         Err(AccessDenied::NotAllowlisted) => {
+            #[cfg(feature = "metrics")]
+            counter!(nostr_metrics::ACCESS_CONTROL_DENIALS_TOTAL, "reason" => "not_allowlisted")
+                .increment(1);
             if cfg.otp_self_approval {
+                #[cfg(feature = "metrics")]
+                counter!(nostr_metrics::OTP_CHALLENGES_TOTAL).increment(1);
                 event_sink
                     .emit(moltis_channels::ChannelEvent::InboundMessage {
                         channel_type: moltis_channels::ChannelType::Nostr,
@@ -168,12 +186,24 @@ async fn handle_event(
     }
     drop(cfg);
 
-    // 6. Decrypt content (NIP-04)
+    // 6. Decrypt content — try NIP-04 first, fall back to NIP-44
     let plaintext = match nip04::decrypt(keys.secret_key(), &event.pubkey, &event.content) {
         Ok(text) => text,
-        Err(e) => {
-            tracing::warn!(account_id, event_id = %event.id, "decrypt failed: {e}");
-            return;
+        Err(_nip04_err) => {
+            // NIP-04 failed — try NIP-44 (some clients use it for kind:4 events)
+            match nip44::decrypt(keys.secret_key(), &event.pubkey, &event.content) {
+                Ok(text) => text,
+                Err(nip44_err) => {
+                    #[cfg(feature = "metrics")]
+                    counter!(nostr_metrics::DECRYPT_ERRORS_TOTAL).increment(1);
+                    tracing::warn!(
+                        account_id,
+                        event_id = %event.id,
+                        "decrypt failed (NIP-04 and NIP-44): {nip44_err}"
+                    );
+                    return;
+                },
+            }
         },
     };
 
@@ -186,6 +216,9 @@ async fn handle_event(
     };
 
     // 8. Emit inbound event
+    #[cfg(feature = "metrics")]
+    counter!(nostr_metrics::MESSAGES_RECEIVED_TOTAL).increment(1);
+
     event_sink
         .emit(moltis_channels::ChannelEvent::InboundMessage {
             channel_type: moltis_channels::ChannelType::Nostr,

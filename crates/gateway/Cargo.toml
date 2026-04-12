@@ -142,6 +142,7 @@ metrics = [
   "moltis-matrix/metrics",
   "moltis-metrics/sqlite",
   "moltis-msteams/metrics",
+  "moltis-nostr?/metrics",
 ]
 nostr = ["dep:moltis-nostr"]
 openclaw-import = ["dep:moltis-openclaw-import"]

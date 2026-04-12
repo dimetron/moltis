@@ -24,6 +24,9 @@ use crate::{
     state::AccountState,
 };
 
+#[cfg(feature = "metrics")]
+use moltis_metrics::{gauge, nostr as nostr_metrics};
+
 /// Nostr channel plugin.
 pub struct NostrPlugin {
     accounts: AccountStateMap,
@@ -169,6 +172,9 @@ impl ChannelPlugin for NostrPlugin {
             .await
             .insert(account_id.to_string(), state);
 
+        #[cfg(feature = "metrics")]
+        gauge!(nostr_metrics::ACTIVE_ACCOUNTS).set(self.accounts.read().await.len() as f64);
+
         tracing::info!(account_id, "Nostr account started");
         Ok(())
     }
@@ -178,6 +184,8 @@ impl ChannelPlugin for NostrPlugin {
         if let Some(state) = state {
             state.cancel.cancel();
             state.client.disconnect().await;
+            #[cfg(feature = "metrics")]
+            gauge!(nostr_metrics::ACTIVE_ACCOUNTS).set(self.accounts.read().await.len() as f64);
             tracing::info!(account_id, "Nostr account stopped");
         }
         Ok(())
