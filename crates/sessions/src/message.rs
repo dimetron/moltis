@@ -149,7 +149,8 @@ pub struct UserDocument {
     pub stored_filename: String,
     pub mime_type: String,
     pub media_ref: String,
-    pub absolute_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub absolute_path: Option<String>,
 }
 
 /// A tool call stored in an assistant message.
@@ -518,7 +519,7 @@ mod tests {
                 stored_filename: "abc_report.pdf".to_string(),
                 mime_type: "application/pdf".to_string(),
                 media_ref: "media/main/abc_report.pdf".to_string(),
-                absolute_path: "/tmp/main/abc_report.pdf".to_string(),
+                absolute_path: Some("/tmp/main/abc_report.pdf".to_string()),
             }]),
             channel: None,
             seq: None,

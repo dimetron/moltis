@@ -141,7 +141,13 @@ fn format_user_documents_context(documents: &[UserDocument]) -> Option<String> {
     for document in documents {
         sections.push(format!(
             "filename: {}\nmime_type: {}\nlocal_path: {}\nmedia_ref: {}",
-            document.display_name, document.mime_type, document.absolute_path, document.media_ref
+            document.display_name,
+            document.mime_type,
+            document
+                .absolute_path
+                .as_deref()
+                .unwrap_or(&document.media_ref),
+            document.media_ref
         ));
     }
 
@@ -1262,10 +1268,12 @@ fn user_documents_from_params(
             stored_filename: stored_filename.to_string(),
             mime_type: mime_type.to_string(),
             media_ref: format!("media/{media_dir_key}/{stored_filename}"),
-            absolute_path: session_store
-                .media_path_for(session_key, stored_filename)
-                .to_string_lossy()
-                .to_string(),
+            absolute_path: Some(
+                session_store
+                    .media_path_for(session_key, stored_filename)
+                    .to_string_lossy()
+                    .to_string(),
+            ),
         });
     }
 
@@ -1274,6 +1282,23 @@ fn user_documents_from_params(
     } else {
         Some(parsed)
     }
+}
+
+fn user_documents_for_persistence(documents: &[UserDocument]) -> Option<Vec<UserDocument>> {
+    if documents.is_empty() {
+        return None;
+    }
+
+    Some(
+        documents
+            .iter()
+            .cloned()
+            .map(|mut document| {
+                document.absolute_path = None;
+                document
+            })
+            .collect(),
+    )
 }
 
 fn detect_runtime_shell() -> Option<String> {
@@ -3711,7 +3736,9 @@ impl ChatService for LiveChatService {
                 content: message_content,
                 created_at: Some(now_ms()),
                 audio: user_audio,
-                documents: user_documents,
+                documents: user_documents
+                    .as_deref()
+                    .and_then(user_documents_for_persistence),
                 channel: channel_meta,
                 seq: client_seq,
                 run_id: Some(run_id.clone()),
@@ -4289,7 +4316,7 @@ impl ChatService for LiveChatService {
             content: message_content,
             created_at: Some(now_ms()),
             audio: user_audio,
-            documents: (!user_documents.is_empty()).then_some(user_documents),
+            documents: user_documents_for_persistence(&user_documents),
             channel: channel_meta,
             seq: client_seq,
             run_id: Some(run_id.clone()),
@@ -4863,7 +4890,9 @@ impl ChatService for LiveChatService {
             content: MessageContent::Text(text.clone()),
             created_at: Some(now_ms()),
             audio: user_audio,
-            documents: user_documents,
+            documents: user_documents
+                .as_deref()
+                .and_then(user_documents_for_persistence),
             channel: None,
             seq: None,
             run_id: None,
@@ -10662,12 +10691,34 @@ mod tests {
         );
         assert_eq!(
             documents[0].absolute_path,
-            dir.path()
-                .join("media")
-                .join("session_abc")
-                .join("doc-file-id_report.pdf")
-                .to_string_lossy()
+            Some(
+                dir.path()
+                    .join("media")
+                    .join("session_abc")
+                    .join("doc-file-id_report.pdf")
+                    .to_string_lossy()
+                    .to_string()
+            )
         );
+    }
+
+    #[test]
+    fn user_documents_for_persistence_drops_absolute_paths() {
+        let documents = vec![UserDocument {
+            display_name: "report.pdf".to_string(),
+            stored_filename: "doc-file-id_report.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            media_ref: "media/session_abc/doc-file-id_report.pdf".to_string(),
+            absolute_path: Some("/tmp/session_abc/doc-file-id_report.pdf".to_string()),
+        }];
+        let persisted = user_documents_for_persistence(&documents).expect("documents");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].display_name, "report.pdf");
+        assert_eq!(
+            persisted[0].media_ref,
+            "media/session_abc/doc-file-id_report.pdf"
+        );
+        assert!(persisted[0].absolute_path.is_none());
     }
 
     #[async_trait]
@@ -13883,7 +13934,7 @@ mod tests {
             stored_filename: "abc_report.pdf".to_string(),
             mime_type: "application/pdf".to_string(),
             media_ref: "media/session_abc/abc_report.pdf".to_string(),
-            absolute_path: "/tmp/session_abc/abc_report.pdf".to_string(),
+            absolute_path: Some("/tmp/session_abc/abc_report.pdf".to_string()),
         }];
         let uc = to_user_content(&mc, &documents);
         match uc {
@@ -13978,7 +14029,7 @@ mod tests {
             stored_filename: "doc-image-file-id_screenshot.png".to_string(),
             mime_type: "image/png".to_string(),
             media_ref: "media/session_abc/doc-image-file-id_screenshot.png".to_string(),
-            absolute_path: "/tmp/session_abc/doc-image-file-id_screenshot.png".to_string(),
+            absolute_path: Some("/tmp/session_abc/doc-image-file-id_screenshot.png".to_string()),
         }];
         let uc = to_user_content(&mc, &documents);
         match uc {
