@@ -39,6 +39,16 @@ use crate::{
     sandbox::SandboxRouter,
 };
 
+const MAX_AUTO_PAGED_READS: usize = 8;
+
+struct TextReadPage {
+    content: String,
+    total_lines: usize,
+    start_line: usize,
+    rendered_lines: usize,
+    truncated: bool,
+}
+
 /// Native `Read` tool implementation.
 #[derive(Default)]
 pub struct ReadTool {
@@ -114,6 +124,12 @@ impl ReadTool {
     /// Effective file-size cap: config override or default.
     fn effective_max_read_bytes(&self) -> u64 {
         self.max_read_bytes.unwrap_or(DEFAULT_MAX_READ_BYTES)
+    }
+
+    fn effective_render_byte_cap(&self) -> usize {
+        self.context_window_tokens
+            .map(compute_adaptive_read_cap)
+            .unwrap_or(MAX_READ_OUTPUT_BYTES)
     }
 
     #[instrument(skip(self), fields(file_path = %file_path))]
@@ -232,6 +248,93 @@ impl ReadTool {
         ))
     }
 
+    fn parse_text_page(payload: &Value) -> Option<TextReadPage> {
+        if payload.get("kind").and_then(Value::as_str) != Some("text") {
+            return None;
+        }
+        Some(TextReadPage {
+            content: payload.get("content")?.as_str()?.to_string(),
+            total_lines: payload.get("total_lines")?.as_u64()? as usize,
+            start_line: payload.get("start_line")?.as_u64()? as usize,
+            rendered_lines: payload.get("rendered_lines")?.as_u64()? as usize,
+            truncated: payload.get("truncated")?.as_bool()?,
+        })
+    }
+
+    async fn read_with_auto_paging(
+        &self,
+        file_path: &str,
+        offset: usize,
+        page_limit: usize,
+        session_key: &str,
+    ) -> Result<Value> {
+        let max_bytes = self.effective_render_byte_cap();
+        let mut next_offset = offset;
+        let mut aggregated_content = String::new();
+        let mut aggregated_bytes = 0usize;
+        let mut rendered_lines_total = 0usize;
+        let mut total_lines = 0usize;
+        let mut start_line = offset;
+        let mut truncated = false;
+
+        for page_index in 0..MAX_AUTO_PAGED_READS {
+            let payload = self
+                .read_impl(file_path, next_offset, page_limit, session_key)
+                .await?;
+            let Some(page) = Self::parse_text_page(&payload) else {
+                return Ok(payload);
+            };
+
+            if page_index == 0 {
+                total_lines = page.total_lines;
+                start_line = page.start_line;
+            }
+
+            let page_bytes = page.content.len();
+            if !aggregated_content.is_empty()
+                && aggregated_bytes.saturating_add(page_bytes) > max_bytes
+            {
+                truncated = true;
+                break;
+            }
+
+            aggregated_bytes = aggregated_bytes.saturating_add(page_bytes);
+            aggregated_content.push_str(&page.content);
+            rendered_lines_total = rendered_lines_total.saturating_add(page.rendered_lines);
+
+            if !page.truncated {
+                truncated = false;
+                break;
+            }
+
+            let candidate_next_offset = page.start_line.saturating_add(page.rendered_lines);
+            if page.rendered_lines == 0
+                || candidate_next_offset > page.total_lines
+                || page_index == MAX_AUTO_PAGED_READS - 1
+            {
+                truncated = true;
+                break;
+            }
+
+            next_offset = candidate_next_offset;
+
+            if aggregated_bytes >= max_bytes {
+                truncated = true;
+                break;
+            }
+        }
+
+        Ok(json!({
+            "kind": "text",
+            "file_path": file_path,
+            "content": aggregated_content,
+            "total_lines": total_lines,
+            "start_line": start_line,
+            "rendered_lines": rendered_lines_total,
+            "truncated": truncated,
+        }))
+    }
+
     /// Render raw file bytes into the typed Read payload.
     ///
     /// Shared by the host and sandbox branches so the LLM-facing shape
@@ -302,10 +405,7 @@ impl ReadTool {
         // context window, scale per-call output so Read can't consume
         // more than ~20% of the model's working set. Otherwise fall
         // back to the fixed default.
-        let byte_cap = self
-            .context_window_tokens
-            .map(compute_adaptive_read_cap)
-            .unwrap_or(MAX_READ_OUTPUT_BYTES);
+        let byte_cap = self.effective_render_byte_cap();
         let rendered = format_numbered_lines_with_cap(&text, offset, limit, byte_cap);
 
         #[cfg(feature = "metrics")]
@@ -399,6 +499,8 @@ impl AgentTool for ReadTool {
             .get("file_path")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::message("missing 'file_path' parameter"))?;
+        let explicit_offset = params.get("offset").is_some();
+        let explicit_limit = params.get("limit").is_some();
         let offset = params
             .get("offset")
             .and_then(Value::as_u64)
@@ -500,7 +602,15 @@ impl AgentTool for ReadTool {
             };
         }
 
-        match self.read_impl(file_path, offset, limit, &session_key).await {
+        let should_auto_page = !explicit_limit && !explicit_offset;
+        let result = if should_auto_page {
+            self.read_with_auto_paging(file_path, offset, limit, &session_key)
+                .await
+        } else {
+            self.read_impl(file_path, offset, limit, &session_key).await
+        };
+
+        match result {
             Ok(value) => Ok(value),
             Err(e) => {
                 #[cfg(feature = "metrics")]
@@ -565,6 +675,55 @@ mod tests {
         assert!(content.contains("line 3"));
         assert!(content.contains("line 4"));
         assert!(!content.contains("line 5"));
+    }
+
+    #[tokio::test]
+    async fn read_auto_pages_when_limit_is_omitted() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        for i in 1..=3_000 {
+            writeln!(tmp, "line {i}").unwrap();
+        }
+
+        let tool = ReadTool::new();
+        let value = tool
+            .execute(json!({ "file_path": tmp.path().to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert_eq!(value["kind"], "text");
+        assert_eq!(value["total_lines"], 3_000);
+        assert_eq!(value["start_line"], 1);
+        assert_eq!(value["rendered_lines"], 3_000);
+        assert_eq!(value["truncated"], false);
+        let content = value["content"].as_str().unwrap();
+        assert!(content.contains("line 1"));
+        assert!(content.contains("line 2001"));
+        assert!(content.contains("line 3000"));
+    }
+
+    #[tokio::test]
+    async fn read_explicit_limit_disables_auto_paging() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        for i in 1..=3_000 {
+            writeln!(tmp, "line {i}").unwrap();
+        }
+
+        let tool = ReadTool::new();
+        let value = tool
+            .execute(json!({
+                "file_path": tmp.path().to_str().unwrap(),
+                "limit": 100,
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(value["kind"], "text");
+        assert_eq!(value["total_lines"], 3_000);
+        assert_eq!(value["rendered_lines"], 100);
+        assert_eq!(value["truncated"], true);
+        let content = value["content"].as_str().unwrap();
+        assert!(content.contains("line 100"));
+        assert!(!content.contains("line 101"));
     }
 
     #[tokio::test]

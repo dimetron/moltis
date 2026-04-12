@@ -28,8 +28,9 @@ use crate::{
         shared::{
             DEFAULT_MAX_READ_BYTES, FsPathPolicy, FsState, canonicalize_existing,
             enforce_must_read_before_write, enforce_path_policy, ensure_regular_file,
-            note_fs_mutation, reject_if_symlink, require_absolute, require_fs_mutation_approval,
-            session_key_from,
+            host_mutation_queue_key, note_fs_mutation, reject_if_symlink, require_absolute,
+            require_fs_mutation_approval, sandbox_mutation_queue_key, session_key_from,
+            with_fs_mutation_lock,
         },
     },
     sandbox::SandboxRouter,
@@ -123,60 +124,66 @@ impl MultiEditTool {
             {
                 return Ok(payload);
             }
-            let (backend, id) = ensure_sandbox(router, session_key).await?;
-            let read_result =
-                sandbox_read(&backend, &id, file_path, DEFAULT_MAX_READ_BYTES).await?;
-            let bytes = match read_result {
-                SandboxReadResult::Ok(bytes) => bytes,
-                other => {
-                    return Ok(other
-                        .into_typed_payload(file_path, DEFAULT_MAX_READ_BYTES)
-                        .unwrap_or(json!({})));
+            return with_fs_mutation_lock(
+                sandbox_mutation_queue_key(session_key, file_path),
+                async {
+                    let (backend, id) = ensure_sandbox(router, session_key).await?;
+                    let read_result =
+                        sandbox_read(&backend, &id, file_path, DEFAULT_MAX_READ_BYTES).await?;
+                    let bytes = match read_result {
+                        SandboxReadResult::Ok(bytes) => bytes,
+                        other => {
+                            return Ok(other
+                                .into_typed_payload(file_path, DEFAULT_MAX_READ_BYTES)
+                                .unwrap_or(json!({})));
+                        },
+                    };
+                    let original = String::from_utf8(bytes).map_err(|e| {
+                        Error::message(format!(
+                            "sandbox file '{file_path}' is not valid UTF-8: {e}"
+                        ))
+                    })?;
+
+                    let mut buffer = original;
+                    let mut per_edit_replacements: Vec<usize> = Vec::with_capacity(edits.len());
+                    let mut any_crlf_recovery = false;
+                    for (idx, edit) in edits.iter().enumerate() {
+                        let outcome = apply_edit(
+                            &buffer,
+                            &edit.old_string,
+                            &edit.new_string,
+                            edit.replace_all,
+                        )
+                        .map_err(|e| Error::message(format!("edit #{}: {e}", idx + 1)))?;
+                        per_edit_replacements.push(outcome.replacements);
+                        if outcome.recovered_via_crlf {
+                            any_crlf_recovery = true;
+                        }
+                        buffer = outcome.content;
+                    }
+
+                    require_fs_mutation_approval(
+                        self.approval_manager.as_ref(),
+                        self.broadcaster.as_ref(),
+                        &approval_request,
+                    )
+                    .await?;
+                    if let Some(payload) =
+                        sandbox_write(&backend, &id, file_path, buffer.as_bytes()).await?
+                    {
+                        return Ok(payload);
+                    }
+                    note_fs_mutation(self.fs_state.as_ref(), session_key, file_path);
+                    Ok(json!({
+                        "file_path": file_path,
+                        "edits_applied": edits.len(),
+                        "replacements_per_edit": per_edit_replacements,
+                        "recovered_via_crlf": any_crlf_recovery,
+                        "checkpoint_id": Value::Null,
+                    }))
                 },
-            };
-            let original = String::from_utf8(bytes).map_err(|e| {
-                Error::message(format!(
-                    "sandbox file '{file_path}' is not valid UTF-8: {e}"
-                ))
-            })?;
-
-            let mut buffer = original;
-            let mut per_edit_replacements: Vec<usize> = Vec::with_capacity(edits.len());
-            let mut any_crlf_recovery = false;
-            for (idx, edit) in edits.iter().enumerate() {
-                let outcome = apply_edit(
-                    &buffer,
-                    &edit.old_string,
-                    &edit.new_string,
-                    edit.replace_all,
-                )
-                .map_err(|e| Error::message(format!("edit #{}: {e}", idx + 1)))?;
-                per_edit_replacements.push(outcome.replacements);
-                if outcome.recovered_via_crlf {
-                    any_crlf_recovery = true;
-                }
-                buffer = outcome.content;
-            }
-
-            require_fs_mutation_approval(
-                self.approval_manager.as_ref(),
-                self.broadcaster.as_ref(),
-                &approval_request,
             )
-            .await?;
-            if let Some(payload) =
-                sandbox_write(&backend, &id, file_path, buffer.as_bytes()).await?
-            {
-                return Ok(payload);
-            }
-            note_fs_mutation(self.fs_state.as_ref(), session_key, file_path);
-            return Ok(json!({
-                "file_path": file_path,
-                "edits_applied": edits.len(),
-                "replacements_per_edit": per_edit_replacements,
-                "recovered_via_crlf": any_crlf_recovery,
-                "checkpoint_id": Value::Null,
-            }));
+            .await;
         }
 
         reject_if_symlink(file_path).await?;
@@ -200,62 +207,65 @@ impl MultiEditTool {
             return Ok(payload);
         }
 
-        let original = tokio::fs::read_to_string(&canonical)
-            .await
-            .map_err(|e| Error::message(format!("failed to read '{file_path}': {e}")))?;
+        with_fs_mutation_lock(host_mutation_queue_key(&canonical), async {
+            let original = tokio::fs::read_to_string(&canonical)
+                .await
+                .map_err(|e| Error::message(format!("failed to read '{file_path}': {e}")))?;
 
-        let mut buffer = original;
-        let mut per_edit_replacements: Vec<usize> = Vec::with_capacity(edits.len());
-        let mut any_crlf_recovery = false;
+            let mut buffer = original;
+            let mut per_edit_replacements: Vec<usize> = Vec::with_capacity(edits.len());
+            let mut any_crlf_recovery = false;
 
-        for (idx, edit) in edits.iter().enumerate() {
-            let outcome = apply_edit(
-                &buffer,
-                &edit.old_string,
-                &edit.new_string,
-                edit.replace_all,
-            )
-            .map_err(|e| Error::message(format!("edit #{}: {e}", idx + 1)))?;
-            per_edit_replacements.push(outcome.replacements);
-            if outcome.recovered_via_crlf {
-                any_crlf_recovery = true;
+            for (idx, edit) in edits.iter().enumerate() {
+                let outcome = apply_edit(
+                    &buffer,
+                    &edit.old_string,
+                    &edit.new_string,
+                    edit.replace_all,
+                )
+                .map_err(|e| Error::message(format!("edit #{}: {e}", idx + 1)))?;
+                per_edit_replacements.push(outcome.replacements);
+                if outcome.recovered_via_crlf {
+                    any_crlf_recovery = true;
+                }
+                buffer = outcome.content;
             }
-            buffer = outcome.content;
-        }
 
-        require_fs_mutation_approval(
-            self.approval_manager.as_ref(),
-            self.broadcaster.as_ref(),
-            &approval_request,
-        )
-        .await?;
+            require_fs_mutation_approval(
+                self.approval_manager.as_ref(),
+                self.broadcaster.as_ref(),
+                &approval_request,
+            )
+            .await?;
 
-        // Optional checkpoint before the whole batch lands.
-        let checkpoint_id = if let Some(ref manager) = self.checkpoint_manager {
-            Some(manager.checkpoint_path(&canonical, "MultiEdit").await?.id)
-        } else {
-            None
-        };
+            // Optional checkpoint before the whole batch lands.
+            let checkpoint_id = if let Some(ref manager) = self.checkpoint_manager {
+                Some(manager.checkpoint_path(&canonical, "MultiEdit").await?.id)
+            } else {
+                None
+            };
 
-        persist_atomic(&canonical, &buffer).await?;
+            persist_atomic(&canonical, &buffer).await?;
 
-        note_fs_mutation(self.fs_state.as_ref(), session_key, &canonical_str);
+            note_fs_mutation(self.fs_state.as_ref(), session_key, &canonical_str);
 
-        #[cfg(feature = "metrics")]
-        counter!(
-            tools_metrics::EXECUTIONS_TOTAL,
-            labels::TOOL => "MultiEdit".to_string(),
-            labels::SUCCESS => "true".to_string()
-        )
-        .increment(1);
+            #[cfg(feature = "metrics")]
+            counter!(
+                tools_metrics::EXECUTIONS_TOTAL,
+                labels::TOOL => "MultiEdit".to_string(),
+                labels::SUCCESS => "true".to_string()
+            )
+            .increment(1);
 
-        Ok(json!({
-            "file_path": canonical.to_string_lossy(),
-            "edits_applied": edits.len(),
-            "replacements_per_edit": per_edit_replacements,
-            "recovered_via_crlf": any_crlf_recovery,
-            "checkpoint_id": checkpoint_id,
-        }))
+            Ok(json!({
+                "file_path": canonical.to_string_lossy(),
+                "edits_applied": edits.len(),
+                "replacements_per_edit": per_edit_replacements,
+                "recovered_via_crlf": any_crlf_recovery,
+                "checkpoint_id": checkpoint_id,
+            }))
+        })
+        .await
     }
 }
 

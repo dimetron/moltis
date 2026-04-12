@@ -26,8 +26,9 @@ use crate::{
         sandbox_bridge::{ensure_sandbox, sandbox_write},
         shared::{
             FsPathPolicy, FsState, canonicalize_for_create, enforce_must_read_before_write,
-            enforce_path_policy, note_fs_mutation, reject_if_symlink, require_absolute,
-            require_fs_mutation_approval, session_key_from,
+            enforce_path_policy, host_mutation_queue_key, note_fs_mutation, reject_if_symlink,
+            require_absolute, require_fs_mutation_approval, sandbox_mutation_queue_key,
+            session_key_from, with_fs_mutation_lock,
         },
     },
     sandbox::SandboxRouter,
@@ -110,29 +111,35 @@ impl WriteTool {
             {
                 return Ok(payload);
             }
-            // must-read-before-write: skip for sandbox Write because we
-            // can't cheaply check whether the file exists inside the
-            // container (that would cost an extra exec round-trip). New
-            // files would be falsely blocked. Edit/MultiEdit always read
-            // before writing so they get the check naturally.
-            require_fs_mutation_approval(
-                self.approval_manager.as_ref(),
-                self.broadcaster.as_ref(),
-                &approval_request,
+            return with_fs_mutation_lock(
+                sandbox_mutation_queue_key(session_key, file_path),
+                async {
+                    // must-read-before-write: skip for sandbox Write because we
+                    // can't cheaply check whether the file exists inside the
+                    // container (that would cost an extra exec round-trip). New
+                    // files would be falsely blocked. Edit/MultiEdit always read
+                    // before writing so they get the check naturally.
+                    require_fs_mutation_approval(
+                        self.approval_manager.as_ref(),
+                        self.broadcaster.as_ref(),
+                        &approval_request,
+                    )
+                    .await?;
+                    let (backend, id) = ensure_sandbox(router, session_key).await?;
+                    if let Some(payload) =
+                        sandbox_write(&backend, &id, file_path, content.as_bytes()).await?
+                    {
+                        return Ok(payload);
+                    }
+                    note_fs_mutation(self.fs_state.as_ref(), session_key, file_path);
+                    Ok(json!({
+                        "file_path": file_path,
+                        "bytes_written": content.len(),
+                        "checkpoint_id": Value::Null,
+                    }))
+                },
             )
-            .await?;
-            let (backend, id) = ensure_sandbox(router, session_key).await?;
-            if let Some(payload) =
-                sandbox_write(&backend, &id, file_path, content.as_bytes()).await?
-            {
-                return Ok(payload);
-            }
-            note_fs_mutation(self.fs_state.as_ref(), session_key, file_path);
-            return Ok(json!({
-                "file_path": file_path,
-                "bytes_written": content.len(),
-                "checkpoint_id": Value::Null,
-            }));
+            .await;
         }
 
         let canonical = canonicalize_for_create(file_path).await?;
@@ -149,84 +156,89 @@ impl WriteTool {
             return Ok(payload);
         }
 
-        let target_exists = tokio::fs::try_exists(&canonical).await.unwrap_or(false);
-        let mut checkpoint_id: Option<String> = None;
+        with_fs_mutation_lock(host_mutation_queue_key(&canonical), async {
+            let target_exists = tokio::fs::try_exists(&canonical).await.unwrap_or(false);
+            let mut checkpoint_id: Option<String> = None;
 
-        if target_exists {
-            // Reject symlinks so we don't unknowingly write through to
-            // another location. A new file naturally isn't a symlink.
-            reject_if_symlink(&canonical_str).await?;
+            if target_exists {
+                // Reject symlinks so we don't unknowingly write through to
+                // another location. A new file naturally isn't a symlink.
+                reject_if_symlink(&canonical_str).await?;
 
-            // Must-read-before-write: reject if the target exists and the
-            // session hasn't read it. Skip this check for new files —
-            // there's nothing to have read.
-            if let Some(payload) =
-                enforce_must_read_before_write(self.fs_state.as_ref(), session_key, &canonical_str)
-            {
-                return Ok(payload);
+                // Must-read-before-write: reject if the target exists and the
+                // session hasn't read it. Skip this check for new files —
+                // there's nothing to have read.
+                if let Some(payload) = enforce_must_read_before_write(
+                    self.fs_state.as_ref(),
+                    session_key,
+                    &canonical_str,
+                ) {
+                    return Ok(payload);
+                }
             }
-        }
 
-        require_fs_mutation_approval(
-            self.approval_manager.as_ref(),
-            self.broadcaster.as_ref(),
-            &approval_request,
-        )
-        .await?;
+            require_fs_mutation_approval(
+                self.approval_manager.as_ref(),
+                self.broadcaster.as_ref(),
+                &approval_request,
+            )
+            .await?;
 
-        // Optional checkpoint backup before the mutation lands.
-        if target_exists && let Some(ref manager) = self.checkpoint_manager {
-            let record = manager.checkpoint_path(&canonical, "Write").await?;
-            checkpoint_id = Some(record.id);
-        }
+            // Optional checkpoint backup before the mutation lands.
+            if target_exists && let Some(ref manager) = self.checkpoint_manager {
+                let record = manager.checkpoint_path(&canonical, "Write").await?;
+                checkpoint_id = Some(record.id);
+            }
 
-        let parent = canonical
-            .parent()
-            .ok_or_else(|| Error::message(format!("'{file_path}' has no parent directory")))?;
+            let parent = canonical
+                .parent()
+                .ok_or_else(|| Error::message(format!("'{file_path}' has no parent directory")))?;
 
-        let bytes = content.as_bytes().to_vec();
-        let canonical_for_blocking = canonical.clone();
-        let parent_owned = parent.to_path_buf();
+            let bytes = content.as_bytes().to_vec();
+            let canonical_for_blocking = canonical.clone();
+            let parent_owned = parent.to_path_buf();
 
-        // tempfile's persist + sync on a blocking thread so we stay async-safe.
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut tmp = tempfile::NamedTempFile::new_in(&parent_owned).map_err(|e| {
-                Error::message(format!(
-                    "failed to create temp file in '{}': {e}",
-                    parent_owned.display()
-                ))
-            })?;
-            tmp.write_all(&bytes)
-                .map_err(|e| Error::message(format!("failed to write temp file: {e}")))?;
-            tmp.as_file()
-                .sync_all()
-                .map_err(|e| Error::message(format!("failed to fsync temp file: {e}")))?;
-            tmp.persist(&canonical_for_blocking).map_err(|e| {
-                Error::message(format!(
-                    "failed to persist file '{}': {e}",
-                    canonical_for_blocking.display()
-                ))
-            })?;
-            Ok(())
+            // tempfile's persist + sync on a blocking thread so we stay async-safe.
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let mut tmp = tempfile::NamedTempFile::new_in(&parent_owned).map_err(|e| {
+                    Error::message(format!(
+                        "failed to create temp file in '{}': {e}",
+                        parent_owned.display()
+                    ))
+                })?;
+                tmp.write_all(&bytes)
+                    .map_err(|e| Error::message(format!("failed to write temp file: {e}")))?;
+                tmp.as_file()
+                    .sync_all()
+                    .map_err(|e| Error::message(format!("failed to fsync temp file: {e}")))?;
+                tmp.persist(&canonical_for_blocking).map_err(|e| {
+                    Error::message(format!(
+                        "failed to persist file '{}': {e}",
+                        canonical_for_blocking.display()
+                    ))
+                })?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| Error::message(format!("blocking write task failed: {e}")))??;
+
+            note_fs_mutation(self.fs_state.as_ref(), session_key, &canonical_str);
+
+            #[cfg(feature = "metrics")]
+            counter!(
+                tools_metrics::EXECUTIONS_TOTAL,
+                labels::TOOL => "Write".to_string(),
+                labels::SUCCESS => "true".to_string()
+            )
+            .increment(1);
+
+            Ok(json!({
+                "file_path": canonical.to_string_lossy(),
+                "bytes_written": content.len(),
+                "checkpoint_id": checkpoint_id,
+            }))
         })
         .await
-        .map_err(|e| Error::message(format!("blocking write task failed: {e}")))??;
-
-        note_fs_mutation(self.fs_state.as_ref(), session_key, &canonical_str);
-
-        #[cfg(feature = "metrics")]
-        counter!(
-            tools_metrics::EXECUTIONS_TOTAL,
-            labels::TOOL => "Write".to_string(),
-            labels::SUCCESS => "true".to_string()
-        )
-        .increment(1);
-
-        Ok(json!({
-            "file_path": canonical.to_string_lossy(),
-            "bytes_written": content.len(),
-            "checkpoint_id": checkpoint_id,
-        }))
     }
 }
 

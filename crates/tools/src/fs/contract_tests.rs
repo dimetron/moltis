@@ -181,6 +181,33 @@ async fn glob_and_grep_via_registry_with_workspace_root() {
 }
 
 #[tokio::test]
+async fn read_via_registry_auto_pages_when_limit_is_omitted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.txt");
+    let mut content = String::new();
+    for i in 1..=3_000 {
+        content.push_str(&format!("line {i}\n"));
+    }
+    tokio::fs::write(&path, content).await.unwrap();
+
+    let registry = build_registry(None);
+    let read = registry.get("Read").unwrap();
+    let value = read
+        .execute(json!({ "file_path": path.to_str().unwrap() }))
+        .await
+        .unwrap();
+
+    assert_eq!(value["kind"], "text");
+    assert_eq!(value["total_lines"], 3_000);
+    assert_eq!(value["rendered_lines"], 3_000);
+    assert_eq!(value["truncated"], false);
+    let body = value["content"].as_str().unwrap();
+    assert!(body.contains("line 1"));
+    assert!(body.contains("line 2001"));
+    assert!(body.contains("line 3000"));
+}
+
+#[tokio::test]
 async fn must_read_before_write_rejects_unread_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("secret.txt");

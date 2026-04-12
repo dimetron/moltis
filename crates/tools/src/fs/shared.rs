@@ -9,9 +9,10 @@ use {
     serde_json::{Value, json},
     std::{
         collections::HashMap,
+        future::Future,
         io,
         path::{Path, PathBuf},
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, OnceLock},
     },
     tokio::fs,
 };
@@ -29,6 +30,61 @@ use {
 /// Number of consecutive identical reads before a `loop_warning` is added
 /// to Read's response payload. Ported from hermes's `_read_tracker`.
 pub const READ_LOOP_THRESHOLD: usize = 3;
+
+type MutationQueueMap = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+fn mutation_queue_map() -> &'static MutationQueueMap {
+    static QUEUES: OnceLock<MutationQueueMap> = OnceLock::new();
+    QUEUES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Serialize filesystem mutations that target the same logical path.
+///
+/// Host mutations should use a canonical absolute path as the key. Sandbox
+/// mutations should include the session key in the namespace so two isolated
+/// sandboxes writing the same in-container path do not block each other.
+pub async fn with_fs_mutation_lock<T, F>(key: String, op: F) -> T
+where
+    F: Future<Output = T>,
+{
+    let gate = {
+        let mut queues = mutation_queue_map()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queues
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+
+    let guard = gate.lock().await;
+    let result = op.await;
+    drop(guard);
+
+    let mut queues = mutation_queue_map()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let should_remove = queues
+        .get(&key)
+        .is_some_and(|current| Arc::ptr_eq(current, &gate) && Arc::strong_count(current) == 2);
+    if should_remove {
+        queues.remove(&key);
+    }
+
+    result
+}
+
+/// Key for host-side filesystem mutation serialization.
+#[must_use]
+pub fn host_mutation_queue_key(path: &Path) -> String {
+    format!("host:{}", path.display())
+}
+
+/// Key for sandbox-side filesystem mutation serialization.
+#[must_use]
+pub fn sandbox_mutation_queue_key(session_key: &str, file_path: &str) -> String {
+    format!("sandbox:{session_key}:{file_path}")
+}
 
 /// Strategy for handling binary files encountered by `Read`.
 ///
@@ -791,7 +847,14 @@ fn decimal_width(n: usize) -> usize {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
-    use {super::*, std::io::Write};
+    use {
+        super::*,
+        std::{
+            io::Write,
+            sync::atomic::{AtomicBool, Ordering},
+            time::Duration,
+        },
+    };
 
     #[test]
     fn adaptive_read_cap_small_context_clamps_to_min() {
@@ -887,6 +950,38 @@ mod tests {
         inner.note_mutation("s1", &path);
         // After note_mutation, the next read starts a fresh streak.
         assert_eq!(inner.record_read("s1", path.clone(), 1, 100, None), 1);
+    }
+
+    #[tokio::test]
+    async fn mutation_lock_serializes_same_key() {
+        let entered_second = Arc::new(AtomicBool::new(false));
+        let entered_second_task = Arc::clone(&entered_second);
+
+        let first = tokio::spawn(async move {
+            with_fs_mutation_lock("host:/tmp/demo".to_string(), async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            })
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let second = tokio::spawn(async move {
+            with_fs_mutation_lock("host:/tmp/demo".to_string(), async {
+                entered_second_task.store(true, Ordering::SeqCst);
+            })
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(
+            !entered_second.load(Ordering::SeqCst),
+            "second mutation should wait for the first lock holder"
+        );
+
+        first.await.unwrap();
+        second.await.unwrap();
+        assert!(entered_second.load(Ordering::SeqCst));
     }
 
     #[test]
