@@ -1124,11 +1124,12 @@ async fn start_stored_channels_on_vault_unseal(state: &AuthState) {
     for ch in stored {
         // Skip channel types with no registered plugin.
         if registry.get(&ch.channel_type).is_none() {
-        tracing::debug!(
-            account_id = ch.account_id,
-            channel_type = ch.channel_type,
-            "unsupported channel type on vault unseal, skipping stored account"
-        );
+            tracing::debug!(
+                account_id = ch.account_id,
+                channel_type = ch.channel_type,
+                "unsupported channel type on vault unseal, skipping stored account"
+            );
+            continue;
         }
 
         // Skip accounts that are already running.
