@@ -115,7 +115,8 @@ export default {
 	testing: "Testing\u2026",
 	testSuccess: "Connection successful.",
 	testFailed: "Connection test failed.",
-	testProviderConfirm: "This will send a test message to one model from {{name}}, which may use tokens or trigger model loading on local servers. Continue?",
+	testProviderConfirm:
+		"This will send a test message to one model from {{name}}, which may use tokens or trigger model loading on local servers. Continue?",
 	preferred: "Preferred",
 	showAllModels: "Show {{count}} more models\u2026",
 	showFewerModels: "Show fewer models",

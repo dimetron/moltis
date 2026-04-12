@@ -115,7 +115,8 @@ export default {
 	testing: "Test en cours\u2026",
 	testSuccess: "Connexion r\u00e9ussie.",
 	testFailed: "Le test de connexion a \u00e9chou\u00e9.",
-	testProviderConfirm: "Ceci enverra un message de test \u00e0 un mod\u00e8le de {{name}}, ce qui peut consommer des tokens ou d\u00e9clencher le chargement d\u2019un mod\u00e8le sur les serveurs locaux. Continuer\u00a0?",
+	testProviderConfirm:
+		"Ceci enverra un message de test \u00e0 un mod\u00e8le de {{name}}, ce qui peut consommer des tokens ou d\u00e9clencher le chargement d\u2019un mod\u00e8le sur les serveurs locaux. Continuer\u00a0?",
 	preferred: "Pr\u00e9f\u00e9r\u00e9",
 	showAllModels: "Afficher {{count}} mod\u00e8les suppl\u00e9mentaires\u2026",
 	showFewerModels: "Afficher moins de mod\u00e8les",

@@ -313,11 +313,15 @@ function ProviderSection(props) {
 				</span>
 			</div>
 			<div class="flex gap-2 shrink-0">
-				${group.models.length > 0 ? html`<button
+				${
+					group.models.length > 0
+						? html`<button
 					class="provider-btn provider-btn-secondary provider-btn-sm"
 					disabled=${isTesting}
 					onClick=${onTestProvider}
-				>${isTesting ? t("providers:testing") : t("providers:test")}</button>` : null}
+				>${isTesting ? t("providers:testing") : t("providers:test")}</button>`
+						: null
+				}
 				${group.models.length > 0 ? html`<button class="provider-btn provider-btn-secondary provider-btn-sm" onClick=${onSelectModels}>${t("providers:preferredModels.button")}</button>` : null}
 				<button
 					class="provider-btn provider-btn-danger provider-btn-sm"
@@ -328,9 +332,13 @@ function ProviderSection(props) {
 				</button>
 			</div>
 		</div>
-		${providerTestResult ? html`<div class="mt-1 text-xs ${providerTestResult.ok ? "text-[var(--success,#22c55e)]" : "text-[var(--danger,#ef4444)]"}">
+		${
+			providerTestResult
+				? html`<div class="mt-1 text-xs ${providerTestResult.ok ? "text-[var(--success,#22c55e)]" : "text-[var(--danger,#ef4444)]"}">
 			${providerTestResult.ok ? t("providers:testSuccess") : providerTestResult.error}
-		</div>` : null}
+		</div>`
+				: null
+		}
 		<div class="mt-2 border-b border-[var(--border)]"></div>
 		${
 			group.models.length === 0
