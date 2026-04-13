@@ -1,4 +1,4 @@
-use std::sync::{Arc, MutexGuard};
+use std::sync::MutexGuard;
 
 use {async_trait::async_trait, moltis_common::types::ReplyPayload, tokio::sync::Mutex};
 

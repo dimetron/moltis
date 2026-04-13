@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path as FsPath, sync::Arc};
+use std::{collections::HashMap, path::Path as FsPath};
 
 use moltis_tools::approval::{ApprovalMode, SecurityLevel};
 

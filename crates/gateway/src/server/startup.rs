@@ -4,9 +4,6 @@ use tracing::{debug, info, warn};
 
 use crate::{auth_webauthn::SharedWebAuthnRegistry, state::GatewayState};
 
-#[cfg(feature = "tailscale")]
-use crate::tailscale::{CliTailscaleManager, TailscaleManager};
-
 // ── OpenClaw detection / import ──────────────────────────────────────────────
 
 #[cfg(feature = "openclaw-import")]
@@ -267,59 +264,6 @@ pub async fn sync_runtime_webauthn_host_and_notice(
     } else {
         None
     }
-}
-
-#[cfg(feature = "tailscale")]
-pub(crate) fn spawn_webauthn_tailscale_registration(
-    gateway: Arc<GatewayState>,
-    registry: SharedWebAuthnRegistry,
-) {
-    tokio::spawn(async move {
-        let started = std::time::Instant::now();
-        match CliTailscaleManager::new().hostname().await {
-            Ok(Some(ts_hostname)) => {
-                let registered = sync_runtime_webauthn_host_and_notice(
-                    &gateway,
-                    Some(&registry),
-                    Some(&ts_hostname),
-                    None,
-                    "tailscale hostname",
-                )
-                .await
-                .is_some()
-                    || registry
-                        .read()
-                        .await
-                        .contains_host(&crate::auth_webauthn::normalize_host(&ts_hostname));
-                if registered {
-                    info!(
-                        hostname = %ts_hostname,
-                        elapsed_ms = started.elapsed().as_millis(),
-                        "processed Tailscale WebAuthn hostname"
-                    );
-                } else {
-                    debug!(
-                        hostname = %ts_hostname,
-                        elapsed_ms = started.elapsed().as_millis(),
-                        "tailscale hostname did not add a new WebAuthn RP"
-                    );
-                }
-            },
-            Ok(None) => {
-                debug!(
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "tailscale hostname unavailable, skipping WebAuthn RP registration"
-                );
-            },
-            Err(error) => {
-                debug!(
-                    %error,
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "tailscale hostname lookup failed, skipping WebAuthn RP registration"
-                );
-            },
-        }
-    });
 }
 
 // ── Feature-gated UI helpers ─────────────────────────────────────────────────

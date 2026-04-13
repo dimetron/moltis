@@ -222,7 +222,7 @@ pub(super) async fn complete_startup(
         resolved_auth,
         deploy_platform,
         session_event_bus,
-        mut services,
+        services,
         registry,
         effective_providers,
         config_env_overrides,
@@ -239,9 +239,9 @@ pub(super) async fn complete_startup(
         db_pool,
         session_store,
         session_metadata,
-        session_share_store,
+        session_share_store: _session_share_store,
         session_state_store,
-        agent_persona_store,
+        agent_persona_store: _agent_persona_store,
         sandbox_router,
         cron_service,
         deferred_state,
@@ -471,13 +471,6 @@ pub(super) async fn complete_startup(
         validate_tailscale_config(tailscale_mode, &bind, credential_store.is_setup_complete())?;
     }
 
-    let explicit_rp_id = std::env::var("MOLTIS_WEBAUTHN_RP_ID")
-        .or_else(|_| std::env::var("APP_DOMAIN"))
-        .or_else(|_| std::env::var("RENDER_EXTERNAL_HOSTNAME"))
-        .or_else(|_| std::env::var("FLY_APP_NAME").map(|name| format!("{name}.fly.dev")))
-        .or_else(|_| std::env::var("RAILWAY_PUBLIC_DOMAIN"))
-        .ok();
-
     let webauthn_registry = build_webauthn_registry(&config, port).await?;
 
     if startup_discovery_pending.is_empty() {
@@ -565,10 +558,6 @@ pub(super) async fn complete_startup(
     }
     #[cfg(feature = "graphql")]
     state.set_graphql_enabled(config.graphql.enabled);
-
-    #[cfg(feature = "trusted-network")]
-    let proxy_url_for_tools: Option<String> = None;
-    let browser_tool_for_warmup: Option<Arc<dyn moltis_agents::tool_registry::AgentTool>>;
 
     {
         let broadcaster: Arc<dyn moltis_tools::exec::ApprovalBroadcaster> =
@@ -766,12 +755,6 @@ pub(super) async fn complete_startup(
         }
         if let Some(t) = moltis_tools::web_fetch::WebFetchTool::from_config(&config.tools.web.fetch)
         {
-            #[cfg(feature = "trusted-network")]
-            let t = if let Some(ref url) = proxy_url_for_tools {
-                t.with_proxy(url.clone())
-            } else {
-                t
-            };
             #[cfg(feature = "firecrawl")]
             let t = t.with_firecrawl(&config.tools.web.firecrawl);
             tool_registry.register(Box::new(t));
@@ -1091,7 +1074,6 @@ pub(super) async fn complete_startup(
         }
 
         let shared_tool_registry = Arc::new(tokio::sync::RwLock::new(tool_registry));
-        browser_tool_for_warmup = shared_tool_registry.read().await.get("browser");
         let mut chat_service = LiveChatService::new(
             Arc::clone(&registry),
             Arc::clone(&model_store),

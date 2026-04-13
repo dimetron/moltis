@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use {super::common::LocalModelConfigTestGuard, secrecy::Secret, sqlx::SqlitePool};
+use {super::common::LocalModelConfigTestGuard, secrecy::Secret};
 
 #[cfg(feature = "local-llm")]
 #[test]

@@ -8,7 +8,6 @@ use {
         },
         init_channels, init_memory,
         prepared::PreparedGatewayCore,
-        startup::deferred_openclaw_status,
         workspace::{
             seed_default_workspace_markdown_files, sync_persona_into_preset,
             warn_on_workspace_prompt_file_truncation,
@@ -373,8 +372,6 @@ pub async fn prepare_gateway_core(
     });
     log_startup_config_storage_diagnostics();
 
-    let openclaw_startup_status = deferred_openclaw_status();
-
     log_persistence::spawn_startup_log_persistence(log_buffer.as_ref(), &data_dir);
     let db_path = data_dir.join("moltis.db");
     let db_pool = {
@@ -486,101 +483,6 @@ pub async fn prepare_gateway_core(
         }
         mcp_for_sync.sync_tools_if_ready().await;
     });
-
-    // Initialize WebAuthn registry for passkey support.
-    let default_scheme = if config.tls.enabled {
-        "https"
-    } else {
-        "http"
-    };
-
-    let explicit_rp_id = std::env::var("MOLTIS_WEBAUTHN_RP_ID")
-        .or_else(|_| std::env::var("APP_DOMAIN"))
-        .or_else(|_| std::env::var("RENDER_EXTERNAL_HOSTNAME"))
-        .or_else(|_| std::env::var("FLY_APP_NAME").map(|name| format!("{name}.fly.dev")))
-        .or_else(|_| std::env::var("RAILWAY_PUBLIC_DOMAIN"))
-        .ok();
-
-    let explicit_origin = std::env::var("MOLTIS_WEBAUTHN_ORIGIN")
-        .or_else(|_| std::env::var("APP_URL"))
-        .or_else(|_| std::env::var("RENDER_EXTERNAL_URL"))
-        .ok();
-
-    let webauthn_registry = {
-        let mut wa_registry = crate::auth_webauthn::WebAuthnRegistry::new();
-        let mut any_ok = false;
-
-        let mut try_add = |rp_id: &str, origin_str: &str, extras: &[webauthn_rs::prelude::Url]| {
-            let rp_id = crate::auth_webauthn::normalize_host(rp_id);
-            if rp_id.is_empty() || wa_registry.contains_host(&rp_id) {
-                return;
-            }
-            let Ok(origin_url) = webauthn_rs::prelude::Url::parse(origin_str) else {
-                tracing::warn!("invalid WebAuthn origin URL '{origin_str}'");
-                return;
-            };
-            match crate::auth_webauthn::WebAuthnState::new(&rp_id, &origin_url, extras) {
-                Ok(wa) => {
-                    info!(rp_id = %rp_id, origins = ?wa.get_allowed_origins(), "WebAuthn RP registered");
-                    wa_registry.add(rp_id.clone(), wa);
-                    any_ok = true;
-                },
-                Err(e) => tracing::warn!(rp_id = %rp_id, "failed to init WebAuthn: {e}"),
-            }
-        };
-
-        if let Some(ref rp_id) = explicit_rp_id {
-            let origin = explicit_origin
-                .clone()
-                .unwrap_or_else(|| format!("https://{rp_id}"));
-            try_add(rp_id, &origin, &[]);
-        } else {
-            let localhost_origin = format!("{default_scheme}://localhost:{port}");
-            let moltis_localhost: Vec<webauthn_rs::prelude::Url> =
-                webauthn_rs::prelude::Url::parse(&format!(
-                    "{default_scheme}://moltis.localhost:{port}"
-                ))
-                .into_iter()
-                .collect();
-            try_add("localhost", &localhost_origin, &moltis_localhost);
-
-            let bot_slug = instance_slug_value.clone();
-            if bot_slug != "localhost" {
-                let bot_origin = format!("{default_scheme}://{bot_slug}:{port}");
-                try_add(&bot_slug, &bot_origin, &[]);
-
-                let bot_local = format!("{bot_slug}.local");
-                let bot_local_origin = format!("{default_scheme}://{bot_local}:{port}");
-                try_add(&bot_local, &bot_local_origin, &[]);
-            }
-
-            if let Ok(hn) = hostname::get() {
-                let hn_str = hn.to_string_lossy();
-                if hn_str != "localhost" {
-                    let local_name = if hn_str.ends_with(".local") {
-                        hn_str.to_string()
-                    } else {
-                        format!("{hn_str}.local")
-                    };
-                    let local_origin = format!("{default_scheme}://{local_name}:{port}");
-                    try_add(&local_name, &local_origin, &[]);
-
-                    let bare = hn_str.strip_suffix(".local").unwrap_or(&hn_str);
-                    if bare != local_name {
-                        let bare_origin = format!("{default_scheme}://{bare}:{port}");
-                        try_add(bare, &bare_origin, &[]);
-                    }
-                }
-            }
-        }
-
-        if any_ok {
-            info!(origins = ?wa_registry.get_all_origins(), "WebAuthn passkeys enabled");
-            Some(Arc::new(tokio::sync::RwLock::new(wa_registry)))
-        } else {
-            None
-        }
-    };
 
     // If MOLTIS_PASSWORD is set and no password in DB yet, migrate it.
     if let Some(ref pw) = password
@@ -947,8 +849,6 @@ pub async fn prepare_gateway_core(
     #[cfg(feature = "trusted-network")]
     let audit_buffer_for_broadcast: Option<crate::network_audit::NetworkAuditBuffer>;
     #[cfg(feature = "trusted-network")]
-    let proxy_url_for_tools: Option<String>;
-    #[cfg(feature = "trusted-network")]
     let proxy_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
     #[cfg(feature = "trusted-network")]
     {
@@ -991,7 +891,6 @@ pub async fn prepare_gateway_core(
                 "trusted-network proxy started, routing all HTTP tools through proxy"
             );
             moltis_tools::init_shared_http_client(Some(&url));
-            proxy_url_for_tools = Some(url);
             proxy_shutdown_tx = Some(shutdown_tx);
         } else {
             info!(
@@ -999,7 +898,6 @@ pub async fn prepare_gateway_core(
                 "trusted-network proxy not started (policy is not Trusted)"
             );
             moltis_tools::init_shared_http_client(upstream_proxy);
-            proxy_url_for_tools = upstream_proxy.map(String::from);
             proxy_shutdown_tx = None;
         }
 
