@@ -287,7 +287,8 @@ pub(super) fn extract_text_document_content(data: &[u8], media_type: &str) -> Op
         return None;
     }
 
-    let bounded = if data.len() > MAX_INLINE_DOCUMENT_BYTES {
+    let byte_truncated = data.len() > MAX_INLINE_DOCUMENT_BYTES;
+    let bounded = if byte_truncated {
         let slice = &data[..MAX_INLINE_DOCUMENT_BYTES];
         match std::str::from_utf8(slice) {
             Ok(_) => slice,
@@ -298,7 +299,11 @@ pub(super) fn extract_text_document_content(data: &[u8], media_type: &str) -> Op
     };
 
     let lossy = String::from_utf8_lossy(bounded);
-    truncate_inline_document_text(&lossy)
+    let mut text = truncate_inline_document_text(&lossy)?;
+    if byte_truncated && !text.contains("[Document content truncated]") {
+        text.push_str("\n\n[Document content truncated]");
+    }
+    Some(text)
 }
 
 pub(super) async fn extract_pdf_document_content(data: Vec<u8>) -> Option<String> {
