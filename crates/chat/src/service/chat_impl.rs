@@ -46,6 +46,7 @@ use crate::{
         prompt_build_limits_from_config, resolve_prompt_agent_id,
     },
     run_with_tools::run_with_tools,
+    service::build_persisted_assistant_message,
     streaming::run_streaming,
     types::*,
 };
@@ -273,23 +274,13 @@ impl ChatService for LiveChatService {
 
         // Persist assistant response (even empty ones — needed for LLM history coherence).
         if let Some(ref assistant_output) = result {
-            let assistant_msg = PersistedMessage::Assistant {
-                content: assistant_output.text.clone(),
-                created_at: Some(now_ms()),
-                model: Some(model_id.clone()),
-                provider: Some(provider_name.clone()),
-                input_tokens: Some(assistant_output.input_tokens),
-                output_tokens: Some(assistant_output.output_tokens),
-                duration_ms: Some(assistant_output.duration_ms),
-                request_input_tokens: Some(assistant_output.request_input_tokens),
-                request_output_tokens: Some(assistant_output.request_output_tokens),
-                tool_calls: None,
-                reasoning: assistant_output.reasoning.clone(),
-                llm_api_response: assistant_output.llm_api_response.clone(),
-                audio: assistant_output.audio_path.clone(),
-                seq: None,
-                run_id: Some(run_id.clone()),
-            };
+            let assistant_msg = build_persisted_assistant_message(
+                assistant_output.clone(),
+                Some(model_id.clone()),
+                Some(provider_name.clone()),
+                None,
+                Some(run_id.clone()),
+            );
             if let Err(e) = self
                 .session_store
                 .append(&session_key, &assistant_msg.to_value())
@@ -308,9 +299,13 @@ impl ChatService for LiveChatService {
                 "text": assistant_output.text,
                 "inputTokens": assistant_output.input_tokens,
                 "outputTokens": assistant_output.output_tokens,
+                "cacheReadTokens": assistant_output.cache_read_tokens,
+                "cacheWriteTokens": assistant_output.cache_write_tokens,
                 "durationMs": assistant_output.duration_ms,
                 "requestInputTokens": assistant_output.request_input_tokens,
                 "requestOutputTokens": assistant_output.request_output_tokens,
+                "requestCacheReadTokens": assistant_output.request_cache_read_tokens,
+                "requestCacheWriteTokens": assistant_output.request_cache_write_tokens,
             })),
             None => {
                 // Check the last broadcast for this run to get the actual error message.
@@ -932,9 +927,13 @@ impl ChatService for LiveChatService {
             "tokenUsage": {
                 "inputTokens": usage.session_input_tokens,
                 "outputTokens": usage.session_output_tokens,
+                "cacheReadTokens": usage.session_cache_read_tokens,
+                "cacheWriteTokens": usage.session_cache_write_tokens,
                 "total": total_tokens,
                 "currentInputTokens": usage.current_request_input_tokens,
                 "currentOutputTokens": usage.current_request_output_tokens,
+                "currentCacheReadTokens": usage.current_request_cache_read_tokens,
+                "currentCacheWriteTokens": usage.current_request_cache_write_tokens,
                 "currentTotal": current_total_tokens,
                 "estimatedNextInputTokens": usage.current_request_input_tokens,
                 "contextWindow": context_window,

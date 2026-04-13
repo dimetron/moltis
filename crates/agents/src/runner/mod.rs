@@ -16,10 +16,11 @@ use std::borrow::Cow;
 
 use tracing::{info, warn};
 
-use moltis_common::hooks::ChannelBinding;
+use moltis_common::hooks::{ChannelBinding, HookAction, HookPayload, HookRegistry};
 
 use crate::{
     model::{ChatMessage, ToolCall, Usage, UserContent},
+    response_sanitizer::clean_response,
     tool_loop_detector::{
         LoopDetectorAction, ToolLoopDetector, format_intervention_message,
         format_strip_tools_message,
@@ -86,6 +87,27 @@ pub struct AgentRunResult {
     /// Usage for the final LLM request in this run.
     pub request_usage: Usage,
     pub raw_llm_responses: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UsageAccumulator {
+    total: Usage,
+    request: Usage,
+}
+
+impl UsageAccumulator {
+    pub(crate) fn record_request(&mut self, usage: Usage) {
+        self.total.saturating_add_assign(&usage);
+        self.request = usage;
+    }
+
+    pub(crate) fn total(&self) -> Usage {
+        self.total.clone()
+    }
+
+    pub(crate) fn request(&self) -> Usage {
+        self.request.clone()
+    }
 }
 
 /// Callback for streaming events out of the runner.
@@ -196,6 +218,98 @@ fn sanitize_tool_name(name: &str) -> Cow<'_, str> {
         Cow::Borrowed(name)
     } else {
         Cow::Owned(cleaned.to_string())
+    }
+}
+
+fn build_after_llm_call_payload(
+    session_key: &str,
+    provider: &str,
+    model: &str,
+    text: Option<String>,
+    tool_calls: &[ToolCall],
+    usage: &Usage,
+    iteration: usize,
+) -> HookPayload {
+    let tool_calls = tool_calls
+        .iter()
+        .map(|tc| {
+            serde_json::json!({
+                "id": tc.id,
+                "name": tc.name,
+                "arguments": tc.arguments,
+            })
+        })
+        .collect();
+
+    HookPayload::AfterLLMCall {
+        session_key: session_key.to_string(),
+        provider: provider.to_string(),
+        model: model.to_string(),
+        text,
+        tool_calls,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        iteration,
+    }
+}
+
+pub(crate) async fn dispatch_after_llm_call_hook(
+    hook_registry: Option<&std::sync::Arc<HookRegistry>>,
+    session_key: &str,
+    provider: &str,
+    model: &str,
+    text: Option<String>,
+    tool_calls: &[ToolCall],
+    usage: &Usage,
+    iteration: usize,
+) -> Result<(), AgentRunError> {
+    let Some(hooks) = hook_registry else {
+        return Ok(());
+    };
+
+    let payload = build_after_llm_call_payload(
+        session_key,
+        provider,
+        model,
+        text,
+        tool_calls,
+        usage,
+        iteration,
+    );
+
+    match hooks.dispatch(&payload).await {
+        Ok(HookAction::Block(reason)) => {
+            warn!(reason = %reason, "LLM response blocked by AfterLLMCall hook");
+            Err(AgentRunError::Other(anyhow::anyhow!(
+                "blocked by AfterLLMCall hook: {reason}"
+            )))
+        },
+        Ok(HookAction::ModifyPayload(_)) => {
+            tracing::debug!("AfterLLMCall ModifyPayload ignored (response is typed)");
+            Ok(())
+        },
+        Ok(HookAction::Continue) => Ok(()),
+        Err(e) => {
+            warn!(error = %e, "AfterLLMCall hook dispatch failed");
+            Ok(())
+        },
+    }
+}
+
+pub(crate) fn finish_agent_run(
+    final_text: String,
+    iterations: usize,
+    tool_calls_made: usize,
+    usage_accumulator: &UsageAccumulator,
+    raw_llm_responses: Vec<serde_json::Value>,
+) -> AgentRunResult {
+    AgentRunResult {
+        text: clean_response(&final_text),
+        iterations,
+        tool_calls_made,
+        usage: usage_accumulator.total(),
+        request_usage: usage_accumulator.request(),
+        raw_llm_responses,
     }
 }
 

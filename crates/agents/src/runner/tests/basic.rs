@@ -134,6 +134,176 @@ async fn test_simple_text_response() {
     assert_eq!(result.tool_calls_made, 0);
 }
 
+struct StreamingUsageProvider;
+
+#[async_trait]
+impl LlmProvider for StreamingUsageProvider {
+    fn name(&self) -> &str {
+        "streaming-usage"
+    }
+
+    fn id(&self) -> &str {
+        "streaming-usage-model"
+    }
+
+    async fn complete(
+        &self,
+        _messages: &[ChatMessage],
+        _tools: &[serde_json::Value],
+    ) -> Result<CompletionResponse> {
+        Ok(CompletionResponse {
+            text: Some("unused".into()),
+            tool_calls: vec![],
+            usage: Usage::default(),
+        })
+    }
+
+    fn stream(
+        &self,
+        _messages: Vec<ChatMessage>,
+    ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+        Box::pin(tokio_stream::empty())
+    }
+
+    fn stream_with_tools(
+        &self,
+        _messages: Vec<ChatMessage>,
+        _tools: Vec<serde_json::Value>,
+    ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+        Box::pin(tokio_stream::iter(vec![
+            StreamEvent::Delta("cached reply".into()),
+            StreamEvent::Done(Usage {
+                input_tokens: 13_047,
+                output_tokens: 17,
+                cache_read_tokens: 12_800,
+                cache_write_tokens: 64,
+            }),
+        ]))
+    }
+}
+
+#[tokio::test]
+async fn test_streaming_runner_preserves_cache_usage() {
+    let provider = Arc::new(StreamingUsageProvider);
+    let tools = ToolRegistry::new();
+    let uc = UserContent::text("another");
+
+    let result = run_agent_loop_streaming(
+        provider,
+        &tools,
+        "You are a test bot.",
+        &uc,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.text, "cached reply");
+    assert_eq!(result.iterations, 1);
+    assert_eq!(result.tool_calls_made, 0);
+    assert_eq!(result.usage.input_tokens, 13_047);
+    assert_eq!(result.usage.output_tokens, 17);
+    assert_eq!(result.usage.cache_read_tokens, 12_800);
+    assert_eq!(result.usage.cache_write_tokens, 64);
+    assert_eq!(result.request_usage.input_tokens, 13_047);
+    assert_eq!(result.request_usage.output_tokens, 17);
+    assert_eq!(result.request_usage.cache_read_tokens, 12_800);
+    assert_eq!(result.request_usage.cache_write_tokens, 64);
+}
+
+struct NonStreamingUsageProvider {
+    call_count: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl LlmProvider for NonStreamingUsageProvider {
+    fn name(&self) -> &str {
+        "non-streaming-usage"
+    }
+
+    fn id(&self) -> &str {
+        "non-streaming-usage-model"
+    }
+
+    fn supports_tools(&self) -> bool {
+        true
+    }
+
+    async fn complete(
+        &self,
+        _messages: &[ChatMessage],
+        _tools: &[serde_json::Value],
+    ) -> Result<CompletionResponse> {
+        let count = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        if count == 0 {
+            Ok(CompletionResponse {
+                text: None,
+                tool_calls: vec![ToolCall {
+                    id: "call_usage_1".into(),
+                    name: "echo_tool".into(),
+                    arguments: serde_json::json!({"text": "hi"}),
+                }],
+                usage: Usage {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                    cache_read_tokens: 80,
+                    cache_write_tokens: 8,
+                },
+            })
+        } else {
+            Ok(CompletionResponse {
+                text: Some("Done with cache.".into()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 40,
+                    output_tokens: 5,
+                    cache_read_tokens: 32,
+                    cache_write_tokens: 3,
+                },
+            })
+        }
+    }
+
+    fn stream(
+        &self,
+        _messages: Vec<ChatMessage>,
+    ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send + '_>> {
+        Box::pin(tokio_stream::empty())
+    }
+}
+
+#[tokio::test]
+async fn test_non_streaming_runner_preserves_total_and_request_cache_usage() {
+    let provider = Arc::new(NonStreamingUsageProvider {
+        call_count: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut tools = ToolRegistry::new();
+    tools.register(Box::new(EchoTool));
+
+    let uc = UserContent::text("Use the tool");
+    let result = run_agent_loop(provider, &tools, "You are a test bot.", &uc, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(result.text, "Done with cache.");
+    assert_eq!(result.iterations, 2);
+    assert_eq!(result.tool_calls_made, 1);
+    assert_eq!(result.usage.input_tokens, 140);
+    assert_eq!(result.usage.output_tokens, 15);
+    assert_eq!(result.usage.cache_read_tokens, 112);
+    assert_eq!(result.usage.cache_write_tokens, 11);
+    assert_eq!(result.request_usage.input_tokens, 40);
+    assert_eq!(result.request_usage.output_tokens, 5);
+    assert_eq!(result.request_usage.cache_read_tokens, 32);
+    assert_eq!(result.request_usage.cache_write_tokens, 3);
+}
+
 #[tokio::test]
 async fn test_tool_call_loop() {
     let provider = Arc::new(ToolCallingProvider {

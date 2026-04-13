@@ -7,7 +7,10 @@ use {
     serde_json::Value,
 };
 
-use moltis_config::{AgentMemoryWriteMode, MemoryStyle, PromptMemoryMode};
+use {
+    moltis_agents::model::Usage,
+    moltis_config::{AgentMemoryWriteMode, MemoryStyle, PromptMemoryMode},
+};
 
 /// Placeholder to match the old `BroadcastOpts` pattern. All fields are ignored;
 /// the trait's `broadcast` always uses default behaviour.
@@ -56,6 +59,50 @@ pub(crate) enum InputMediumParam {
     Voice,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct UsageSnapshot {
+    total: Usage,
+    request: Option<Usage>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UsageFields {
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_read_tokens: u32,
+    cache_write_tokens: u32,
+}
+
+impl From<&Usage> for UsageFields {
+    fn from(usage: &Usage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+        }
+    }
+}
+
+impl UsageSnapshot {
+    #[must_use]
+    pub(crate) fn new(total: Usage, request: Option<Usage>) -> Self {
+        Self { total, request }
+    }
+
+    fn total_fields(&self) -> UsageFields {
+        UsageFields::from(&self.total)
+    }
+
+    fn request_fields(&self) -> Option<UsageFields> {
+        self.request.as_ref().map(UsageFields::from)
+    }
+
+    fn request_or_total_fields(&self) -> UsageFields {
+        self.request_fields().unwrap_or_else(|| self.total_fields())
+    }
+}
+
 /// Typed broadcast payload for the "final" chat event.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,11 +115,17 @@ pub(crate) struct ChatFinalBroadcast {
     pub provider: String,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_input_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_cache_read_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_cache_write_tokens: Option<u32>,
     pub message_index: usize,
     pub reply_medium: ReplyMedium,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,24 +154,107 @@ pub(crate) struct ChatErrorBroadcast {
     pub seq: Option<u64>,
 }
 
+#[derive(Clone)]
 pub(crate) struct AssistantTurnOutput {
     pub text: String,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
     pub duration_ms: u64,
     pub request_input_tokens: u32,
     pub request_output_tokens: u32,
+    pub request_cache_read_tokens: u32,
+    pub request_cache_write_tokens: u32,
     pub audio_path: Option<String>,
     pub reasoning: Option<String>,
     pub llm_api_response: Option<Value>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_chat_final_broadcast(
+    run_id: &str,
+    session_key: &str,
+    text: String,
+    model: String,
+    provider: String,
+    usage: UsageSnapshot,
+    duration_ms: u64,
+    message_index: usize,
+    reply_medium: ReplyMedium,
+    iterations: Option<usize>,
+    tool_calls_made: Option<usize>,
+    audio: Option<String>,
+    audio_warning: Option<String>,
+    reasoning: Option<String>,
+    seq: Option<u64>,
+) -> ChatFinalBroadcast {
+    let total = usage.total_fields();
+    let request = usage.request_fields();
+    ChatFinalBroadcast {
+        run_id: run_id.to_string(),
+        session_key: session_key.to_string(),
+        state: "final",
+        text,
+        model,
+        provider,
+        input_tokens: total.input_tokens,
+        output_tokens: total.output_tokens,
+        cache_read_tokens: total.cache_read_tokens,
+        cache_write_tokens: total.cache_write_tokens,
+        duration_ms,
+        request_input_tokens: request.map(|usage| usage.input_tokens),
+        request_output_tokens: request.map(|usage| usage.output_tokens),
+        request_cache_read_tokens: request.map(|usage| usage.cache_read_tokens),
+        request_cache_write_tokens: request.map(|usage| usage.cache_write_tokens),
+        message_index,
+        reply_medium,
+        iterations,
+        tool_calls_made,
+        audio,
+        audio_warning,
+        reasoning,
+        seq,
+    }
+}
+
+pub(crate) fn build_assistant_turn_output(
+    text: String,
+    usage: UsageSnapshot,
+    duration_ms: u64,
+    audio_path: Option<String>,
+    reasoning: Option<String>,
+    llm_api_response: Option<Value>,
+) -> AssistantTurnOutput {
+    let total = usage.total_fields();
+    let request = usage.request_or_total_fields();
+    AssistantTurnOutput {
+        text,
+        input_tokens: total.input_tokens,
+        output_tokens: total.output_tokens,
+        cache_read_tokens: total.cache_read_tokens,
+        cache_write_tokens: total.cache_write_tokens,
+        duration_ms,
+        request_input_tokens: request.input_tokens,
+        request_output_tokens: request.output_tokens,
+        request_cache_read_tokens: request.cache_read_tokens,
+        request_cache_write_tokens: request.cache_write_tokens,
+        audio_path,
+        reasoning,
+        llm_api_response,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SessionTokenUsage {
     pub session_input_tokens: u64,
     pub session_output_tokens: u64,
+    pub session_cache_read_tokens: u64,
+    pub session_cache_write_tokens: u64,
     pub current_request_input_tokens: u64,
     pub current_request_output_tokens: u64,
+    pub current_request_cache_read_tokens: u64,
+    pub current_request_cache_write_tokens: u64,
 }
 
 #[must_use]
@@ -131,12 +267,25 @@ pub(crate) fn session_token_usage_from_messages(messages: &[Value]) -> SessionTo
         .iter()
         .filter_map(|m| m.get("outputTokens").and_then(|v| v.as_u64()))
         .sum();
+    let session_cache_read_tokens = messages
+        .iter()
+        .filter_map(|m| m.get("cacheReadTokens").and_then(|v| v.as_u64()))
+        .sum();
+    let session_cache_write_tokens = messages
+        .iter()
+        .filter_map(|m| m.get("cacheWriteTokens").and_then(|v| v.as_u64()))
+        .sum();
 
-    let (current_request_input_tokens, current_request_output_tokens) = messages
+    let (
+        current_request_input_tokens,
+        current_request_output_tokens,
+        current_request_cache_read_tokens,
+        current_request_cache_write_tokens,
+    ) = messages
         .iter()
         .rev()
         .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("assistant"))
-        .map_or((0, 0), |m| {
+        .map_or((0, 0, 0, 0), |m| {
             let input = m
                 .get("requestInputTokens")
                 .and_then(|v| v.as_u64())
@@ -147,14 +296,149 @@ pub(crate) fn session_token_usage_from_messages(messages: &[Value]) -> SessionTo
                 .and_then(|v| v.as_u64())
                 .or_else(|| m.get("outputTokens").and_then(|v| v.as_u64()))
                 .unwrap_or(0);
-            (input, output)
+            let cache_read = m
+                .get("requestCacheReadTokens")
+                .and_then(|v| v.as_u64())
+                .or_else(|| m.get("cacheReadTokens").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
+            let cache_write = m
+                .get("requestCacheWriteTokens")
+                .and_then(|v| v.as_u64())
+                .or_else(|| m.get("cacheWriteTokens").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
+            (input, output, cache_read, cache_write)
         });
 
     SessionTokenUsage {
         session_input_tokens,
         session_output_tokens,
+        session_cache_read_tokens,
+        session_cache_write_tokens,
         current_request_input_tokens,
         current_request_output_tokens,
+        current_request_cache_read_tokens,
+        current_request_cache_write_tokens,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::{
+            ReplyMedium, UsageSnapshot, build_assistant_turn_output, build_chat_final_broadcast,
+            session_token_usage_from_messages,
+        },
+        moltis_agents::model::Usage,
+    };
+
+    #[test]
+    fn session_token_usage_tracks_cached_tokens() {
+        let messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "inputTokens": 200,
+                "outputTokens": 20,
+                "cacheReadTokens": 150,
+                "cacheWriteTokens": 10,
+                "requestInputTokens": 180,
+                "requestOutputTokens": 18,
+                "requestCacheReadTokens": 140,
+                "requestCacheWriteTokens": 8
+            }),
+            serde_json::json!({
+                "role": "assistant",
+                "inputTokens": 300,
+                "outputTokens": 30,
+                "cacheReadTokens": 120,
+                "cacheWriteTokens": 5,
+                "requestInputTokens": 250,
+                "requestOutputTokens": 25,
+                "requestCacheReadTokens": 100,
+                "requestCacheWriteTokens": 2
+            }),
+        ];
+
+        let usage = session_token_usage_from_messages(&messages);
+
+        assert_eq!(usage.session_input_tokens, 500);
+        assert_eq!(usage.session_output_tokens, 50);
+        assert_eq!(usage.session_cache_read_tokens, 270);
+        assert_eq!(usage.session_cache_write_tokens, 15);
+        assert_eq!(usage.current_request_input_tokens, 250);
+        assert_eq!(usage.current_request_output_tokens, 25);
+        assert_eq!(usage.current_request_cache_read_tokens, 100);
+        assert_eq!(usage.current_request_cache_write_tokens, 2);
+    }
+
+    #[test]
+    fn build_chat_final_broadcast_includes_cache_usage() {
+        let usage = Usage {
+            input_tokens: 1200,
+            output_tokens: 80,
+            cache_read_tokens: 1050,
+            cache_write_tokens: 4,
+        };
+        let request_usage = Usage {
+            input_tokens: 900,
+            output_tokens: 60,
+            cache_read_tokens: 850,
+            cache_write_tokens: 2,
+        };
+
+        let payload = build_chat_final_broadcast(
+            "run-1",
+            "main",
+            "hello".to_string(),
+            "gpt-4.1".to_string(),
+            "openai".to_string(),
+            UsageSnapshot::new(usage, Some(request_usage)),
+            250,
+            7,
+            ReplyMedium::Text,
+            Some(2),
+            Some(1),
+            None,
+            None,
+            Some("thinking".to_string()),
+            Some(42),
+        );
+
+        assert_eq!(payload.cache_read_tokens, 1050);
+        assert_eq!(payload.cache_write_tokens, 4);
+        assert_eq!(payload.request_cache_read_tokens, Some(850));
+        assert_eq!(payload.request_cache_write_tokens, Some(2));
+        assert_eq!(payload.message_index, 7);
+        assert_eq!(payload.seq, Some(42));
+    }
+
+    #[test]
+    fn build_assistant_turn_output_copies_cache_usage() {
+        let output = build_assistant_turn_output(
+            "hello".to_string(),
+            UsageSnapshot::new(
+                Usage {
+                    input_tokens: 1200,
+                    output_tokens: 80,
+                    cache_read_tokens: 1050,
+                    cache_write_tokens: 4,
+                },
+                Some(Usage {
+                    input_tokens: 900,
+                    output_tokens: 60,
+                    cache_read_tokens: 850,
+                    cache_write_tokens: 2,
+                }),
+            ),
+            250,
+            None,
+            Some("thinking".to_string()),
+            None,
+        );
+
+        assert_eq!(output.cache_read_tokens, 1050);
+        assert_eq!(output.cache_write_tokens, 4);
+        assert_eq!(output.request_cache_read_tokens, 850);
+        assert_eq!(output.request_cache_write_tokens, 2);
     }
 }
 

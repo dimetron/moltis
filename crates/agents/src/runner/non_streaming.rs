@@ -10,8 +10,8 @@ use {
 use moltis_common::hooks::{HookAction, HookPayload, HookRegistry};
 
 use crate::{
-    model::{ChatMessage, LlmProvider, ToolCall, Usage, UserContent},
-    response_sanitizer::{clean_response, recover_tool_calls_from_content},
+    model::{ChatMessage, LlmProvider, ToolCall, UserContent},
+    response_sanitizer::recover_tool_calls_from_content,
     tool_arg_validator::validate_tool_args,
     tool_loop_detector::ToolCallFingerprint,
     tool_parsing::{
@@ -22,10 +22,10 @@ use crate::{
 
 use super::{
     AUTO_CONTINUE_NUDGE, AgentRunError, AgentRunResult, MALFORMED_TOOL_RETRY_PROMPT, OnEvent,
-    RunnerEvent, apply_loop_detector_intervention, channel_binding_from_tool_context,
-    empty_tool_name_retry_prompt, explicit_shell_command_from_user_content,
-    find_empty_tool_name_call, has_named_tool_call, is_substantive_answer_text, record_answer_text,
-    resolve_tool_lookup,
+    RunnerEvent, UsageAccumulator, apply_loop_detector_intervention,
+    channel_binding_from_tool_context, dispatch_after_llm_call_hook, empty_tool_name_retry_prompt,
+    explicit_shell_command_from_user_content, find_empty_tool_name_call, finish_agent_run,
+    has_named_tool_call, is_substantive_answer_text, record_answer_text, resolve_tool_lookup,
     retry::{
         RATE_LIMIT_MAX_RETRIES, is_context_window_error, next_retry_delay_ms,
         resolve_agent_max_iterations,
@@ -120,8 +120,7 @@ pub async fn run_agent_loop_with_context(
 
     let mut iterations = 0;
     let mut total_tool_calls = 0;
-    let mut total_input_tokens: u32 = 0;
-    let mut total_output_tokens: u32 = 0;
+    let mut usage_accumulator = UsageAccumulator::default();
     let mut server_retries_remaining: u8 = 1;
     let mut rate_limit_retries_remaining: u8 = RATE_LIMIT_MAX_RETRIES;
     let mut rate_limit_backoff_ms: Option<u64> = None;
@@ -246,8 +245,7 @@ pub async fn run_agent_loop_with_context(
             cb(RunnerEvent::ThinkingDone);
         }
 
-        total_input_tokens = total_input_tokens.saturating_add(response.usage.input_tokens);
-        total_output_tokens = total_output_tokens.saturating_add(response.usage.output_tokens);
+        usage_accumulator.record_request(response.usage.clone());
 
         info!(
             iteration = iterations,
@@ -366,44 +364,17 @@ pub async fn run_agent_loop_with_context(
         }
 
         // Dispatch AfterLLMCall hook — may block tool execution.
-        if let Some(ref hooks) = hook_registry {
-            let tc_json: Vec<serde_json::Value> = response
-                .tool_calls
-                .iter()
-                .map(|tc| {
-                    serde_json::json!({
-                        "id": tc.id,
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                    })
-                })
-                .collect();
-            let payload = HookPayload::AfterLLMCall {
-                session_key: session_key_for_hooks.clone(),
-                provider: provider.name().to_string(),
-                model: provider.id().to_string(),
-                text: response.text.clone(),
-                tool_calls: tc_json,
-                input_tokens: response.usage.input_tokens,
-                output_tokens: response.usage.output_tokens,
-                iteration: iterations,
-            };
-            match hooks.dispatch(&payload).await {
-                Ok(HookAction::Block(reason)) => {
-                    warn!(reason = %reason, "LLM response blocked by AfterLLMCall hook");
-                    return Err(AgentRunError::Other(anyhow::anyhow!(
-                        "blocked by AfterLLMCall hook: {reason}"
-                    )));
-                },
-                Ok(HookAction::ModifyPayload(_)) => {
-                    debug!("AfterLLMCall ModifyPayload ignored (response is typed)");
-                },
-                Ok(HookAction::Continue) => {},
-                Err(e) => {
-                    warn!(error = %e, "AfterLLMCall hook dispatch failed");
-                },
-            }
-        }
+        dispatch_after_llm_call_hook(
+            hook_registry.as_ref(),
+            &session_key_for_hooks,
+            provider.name(),
+            provider.id(),
+            response.text.clone(),
+            &response.tool_calls,
+            &response.usage,
+            iterations,
+        )
+        .await?;
 
         // If no tool calls, auto-continue or return the text response.
         if response.tool_calls.is_empty() {
@@ -440,29 +411,24 @@ pub async fn run_agent_loop_with_context(
                 continue;
             }
 
-            let text = clean_response(&if !response_text.is_empty() {
+            let text = if !response_text.is_empty() {
                 response_text
             } else {
                 std::mem::take(&mut last_answer_text)
-            });
+            };
 
             info!(
                 iterations,
                 tool_calls = total_tool_calls,
                 "agent loop complete — returning text"
             );
-            return Ok(AgentRunResult {
+            return Ok(finish_agent_run(
                 text,
                 iterations,
-                tool_calls_made: total_tool_calls,
-                usage: Usage {
-                    input_tokens: total_input_tokens,
-                    output_tokens: total_output_tokens,
-                    ..Default::default()
-                },
-                request_usage: response.usage.clone(),
-                raw_llm_responses: Vec::new(),
-            });
+                total_tool_calls,
+                &usage_accumulator,
+                Vec::new(),
+            ));
         }
 
         // Append assistant message with tool calls.

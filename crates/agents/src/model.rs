@@ -559,6 +559,8 @@ pub struct CompletionResponse {
     pub usage: Usage,
 }
 
+pub const MAX_CAPTURED_PROVIDER_RAW_EVENTS: usize = 256;
+
 #[derive(Debug, Clone)]
 pub struct ToolCall {
     pub id: String,
@@ -572,6 +574,35 @@ pub struct Usage {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_write_tokens: u32,
+}
+
+impl Usage {
+    #[must_use]
+    pub fn saturating_add(&self, other: &Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens.saturating_add(other.input_tokens),
+            output_tokens: self.output_tokens.saturating_add(other.output_tokens),
+            cache_read_tokens: self
+                .cache_read_tokens
+                .saturating_add(other.cache_read_tokens),
+            cache_write_tokens: self
+                .cache_write_tokens
+                .saturating_add(other.cache_write_tokens),
+        }
+    }
+
+    pub fn saturating_add_assign(&mut self, other: &Self) {
+        *self = self.saturating_add(other);
+    }
+}
+
+pub fn push_capped_provider_raw_event(
+    raw_events: &mut Vec<serde_json::Value>,
+    raw_event: serde_json::Value,
+) {
+    if raw_events.len() < MAX_CAPTURED_PROVIDER_RAW_EVENTS {
+        raw_events.push(raw_event);
+    }
 }
 
 /// Runtime model metadata fetched from provider APIs.
@@ -632,6 +663,28 @@ mod tests {
         let decoded = decode_tool_call_arguments(Some(&arguments));
 
         assert_eq!(decoded, arguments);
+    }
+
+    #[test]
+    fn usage_saturating_add_assign_preserves_all_fields() {
+        let mut total = Usage {
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_write_tokens: 40,
+        };
+
+        total.saturating_add_assign(&Usage {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 3,
+            cache_write_tokens: 4,
+        });
+
+        assert_eq!(total.input_tokens, 11);
+        assert_eq!(total.output_tokens, 22);
+        assert_eq!(total.cache_read_tokens, 33);
+        assert_eq!(total.cache_write_tokens, 44);
     }
 
     // ── to_openai_value ──────────────────────────────────────────────
