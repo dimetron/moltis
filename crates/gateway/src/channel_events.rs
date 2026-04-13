@@ -1,10 +1,9 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 use {
     async_trait::async_trait,
-    moltis_tools::image_cache::ImageBuilder,
     serde::Deserialize,
-    tracing::{debug, error, info, warn},
+    tracing::{debug, error, warn},
 };
 
 use {

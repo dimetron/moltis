@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use {super::*, crate::channel_events::commands::unique_providers};
+use {super::*, crate::channel_events::commands::formatting::unique_providers};
 
 use moltis_channels::ChannelType;
 

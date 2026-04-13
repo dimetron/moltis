@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) async fn dispatch_to_chat(
+pub(in crate::channel_events) async fn dispatch_to_chat(
     state: &Arc<tokio::sync::OnceCell<Arc<GatewayState>>>,
     text: &str,
     reply_to: ChannelReplyTarget,

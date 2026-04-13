@@ -1,50 +1,17 @@
-#![allow(unused_imports)]
-
 pub mod provider;
-#[allow(unused_imports)]
+
 pub use crate::DiscoveredModel;
-#[allow(unused_imports)]
-pub(crate) use crate::http::{retry_after_ms_from_headers, with_retry_after_marker};
-#[allow(unused_imports)]
-pub(crate) use crate::ollama::normalize_ollama_api_base_url;
-#[allow(unused_imports)]
-pub use crate::openai_compat;
-#[allow(unused_imports)]
-pub use crate::ws_pool;
-#[allow(unused_imports)]
-pub(crate) use crate::{
-    context_window_for_model, raw_model_id, supports_tools_for_model, supports_vision_for_model,
-};
-use std::{
-    collections::{HashMap, HashSet},
-    pin::Pin,
-    sync::mpsc,
-    time::Duration,
-};
+
+use std::{collections::HashSet, sync::mpsc, time::Duration};
 
 use {
-    async_trait::async_trait,
-    futures::{SinkExt, StreamExt},
     moltis_config::schema::{ProviderStreamTransport, WireApi},
     secrecy::ExposeSecret,
-    tokio_stream::Stream,
-    tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http::HeaderValue},
 };
 
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
-use {
-    super::openai_compat::{
-        ResponsesStreamState, SseLineResult, StreamingToolState, finalize_responses_stream,
-        finalize_stream, parse_openai_compat_usage, parse_openai_compat_usage_from_payload,
-        parse_tool_calls, process_openai_sse_line, process_responses_sse_line,
-        responses_output_index, split_responses_instructions_and_input, strip_think_tags,
-        to_openai_tools, to_responses_api_tools,
-    },
-    moltis_agents::model::{
-        ChatMessage, CompletionResponse, LlmProvider, ModelMetadata, StreamEvent, Usage,
-    },
-};
+use moltis_agents::model::ModelMetadata;
 
 pub struct OpenAiProvider {
     api_key: secrecy::Secret<String>,
@@ -262,101 +229,6 @@ fn parse_models_payload(value: &serde_json::Value) -> Vec<DiscoveredModel> {
     models
 }
 
-fn is_chat_endpoint_unsupported_model_error(body_text: &str) -> bool {
-    let lower = body_text.to_ascii_lowercase();
-    lower.contains("not a chat model")
-        || lower.contains("does not support chat")
-        || lower.contains("only supported in v1/responses")
-        || lower.contains("not supported in the v1/chat/completions endpoint")
-        || lower.contains("input content or output modality contain audio")
-        || lower.contains("requires audio")
-}
-
-fn should_warn_on_api_error(status: reqwest::StatusCode, body_text: &str) -> bool {
-    if is_chat_endpoint_unsupported_model_error(body_text) {
-        return false;
-    }
-    !matches!(status.as_u16(), 404)
-}
-
-const OPENAI_MAX_TOOL_CALL_ID_LEN: usize = 40;
-
-fn short_stable_hash(value: &str) -> String {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-fn base_openai_tool_call_id(raw: &str) -> String {
-    let mut cleaned: String = raw
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect();
-
-    if cleaned.is_empty() {
-        cleaned = "call".to_string();
-    }
-
-    if cleaned.len() <= OPENAI_MAX_TOOL_CALL_ID_LEN {
-        return cleaned;
-    }
-
-    let hash = short_stable_hash(raw);
-    let keep = OPENAI_MAX_TOOL_CALL_ID_LEN.saturating_sub(hash.len() + 1);
-    cleaned.truncate(keep);
-    if cleaned.is_empty() {
-        return format!("call-{hash}");
-    }
-    format!("{cleaned}-{hash}")
-}
-
-fn disambiguate_tool_call_id(base: &str, nonce: usize) -> String {
-    let suffix = format!("-{nonce}");
-    let keep = OPENAI_MAX_TOOL_CALL_ID_LEN.saturating_sub(suffix.len());
-
-    let mut value = base.to_string();
-    if value.len() > keep {
-        value.truncate(keep);
-    }
-    if value.is_empty() {
-        value = "call".to_string();
-        if value.len() > keep {
-            value.truncate(keep);
-        }
-    }
-    format!("{value}{suffix}")
-}
-
-fn assign_openai_tool_call_id(
-    raw: &str,
-    remapped_tool_call_ids: &mut HashMap<String, String>,
-    used_tool_call_ids: &mut HashSet<String>,
-) -> String {
-    if let Some(existing) = remapped_tool_call_ids.get(raw) {
-        return existing.clone();
-    }
-
-    let base = base_openai_tool_call_id(raw);
-    let mut candidate = base.clone();
-    let mut nonce = 1usize;
-    while used_tool_call_ids.contains(&candidate) {
-        candidate = disambiguate_tool_call_id(&base, nonce);
-        nonce = nonce.saturating_add(1);
-    }
-
-    used_tool_call_ids.insert(candidate.clone());
-    remapped_tool_call_ids.insert(raw.to_string(), candidate.clone());
-    candidate
-}
-
 fn models_endpoint(base_url: &str) -> String {
     format!(
         "{}{OPENAI_MODELS_ENDPOINT_PATH}",
@@ -364,10 +236,7 @@ fn models_endpoint(base_url: &str) -> String {
     )
 }
 
-/// Resolve the output index from a Responses API WebSocket streaming event.
-///
-/// The Responses API includes `output_index` on most events. Falls back to
-/// `item_index` / `index` for robustness, then to `fallback`.
+/// Fetch available models from the OpenAI-compatible `/models` endpoint.
 pub async fn fetch_models_from_api(
     api_key: secrecy::Secret<String>,
     base_url: String,
