@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashMap,
-    env,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -12,15 +11,17 @@ use std::{
 
 #[cfg(target_os = "macos")]
 use super::apple::*;
+#[cfg(target_os = "macos")]
+use crate::sandbox::file_system::{
+    SandboxReadResult, oci_container_list_files, oci_container_read_file, oci_container_write_file,
+};
+#[cfg(target_os = "macos")]
+use std::env;
 use {
     super::{containers::*, docker::*, host::*, paths::*, platform::*, router::*, types::*, *},
     crate::{
         error::{Error, Result},
         exec::{ExecOpts, ExecResult},
-        sandbox::file_system::{
-            SandboxReadResult, oci_container_list_files, oci_container_read_file,
-            oci_container_write_file,
-        },
     },
 };
 
@@ -44,9 +45,12 @@ fn set_test_container_mount_override(cli: &str, reference: &str, mounts: Vec<Con
         .insert(test_container_mount_override_key(cli, reference), mounts);
 }
 
+#[cfg(target_os = "macos")]
 const OCI_RUNTIME_E2E_ENV: &str = "MOLTIS_SANDBOX_RUNTIME_E2E";
+#[cfg(target_os = "macos")]
 const OCI_RUNTIME_E2E_IMAGE: &str = "alpine:3.21";
 
+#[cfg(target_os = "macos")]
 fn runtime_container_e2e_enabled(cli: &str) -> bool {
     let requested = env::var(OCI_RUNTIME_E2E_ENV)
         .map(|value| {
@@ -66,11 +70,13 @@ fn runtime_container_e2e_enabled(cli: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "macos")]
 struct RuntimeContainerGuard {
     cli: String,
     name: String,
 }
 
+#[cfg(target_os = "macos")]
 impl RuntimeContainerGuard {
     async fn start(cli: &str) -> Result<Self> {
         let name = format!("moltis-runtime-e2e-{}", uuid::Uuid::new_v4().simple());
@@ -116,6 +122,7 @@ impl RuntimeContainerGuard {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for RuntimeContainerGuard {
     fn drop(&mut self) {
         let _ = std::process::Command::new(&self.cli)
@@ -126,6 +133,7 @@ impl Drop for RuntimeContainerGuard {
     }
 }
 
+#[cfg(target_os = "macos")]
 async fn assert_runtime_oci_file_transfers(cli: &str) -> Result<()> {
     let container = RuntimeContainerGuard::start(cli).await?;
     container
@@ -335,10 +343,12 @@ impl TestSandbox {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn ensure_ready_calls(&self) -> usize {
         self.ensure_ready_calls.load(Ordering::SeqCst)
     }
 
+    #[cfg(target_os = "macos")]
     fn exec_calls(&self) -> usize {
         self.exec_calls.load(Ordering::SeqCst)
     }
