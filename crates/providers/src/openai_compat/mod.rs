@@ -145,7 +145,13 @@ pub fn sanitize_schema_for_openai_compat(schema: &mut serde_json::Value) {
     }
 
     if let Some(items) = obj.get_mut("items") {
-        sanitize_schema_for_openai_compat(items);
+        if let Some(item_schemas) = items.as_array_mut() {
+            for item_schema in item_schemas {
+                sanitize_schema_for_openai_compat(item_schema);
+            }
+        } else {
+            sanitize_schema_for_openai_compat(items);
+        }
     }
 
     for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
@@ -1178,8 +1184,8 @@ pub fn parse_responses_completion(resp: &serde_json::Value) -> CompletionRespons
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_responses_completion, parse_tool_calls, sanitize_schema_for_openai_compat,
-        to_responses_api_tools,
+        OPENAI_UNSUPPORTED_SCHEMA_KEYWORDS, parse_responses_completion, parse_tool_calls,
+        sanitize_schema_for_openai_compat, to_responses_api_tools,
     };
 
     #[test]
@@ -1352,6 +1358,19 @@ mod tests {
                     "patternProperties": {
                         "^x-": { "type": "string" }
                     },
+                    "dependentRequired": {
+                        "mode": ["enabled"]
+                    },
+                    "unevaluatedProperties": false,
+                    "unevaluatedItems": false,
+                    "propertyNames": {
+                        "minLength": 1
+                    },
+                    "contains": {
+                        "type": "string"
+                    },
+                    "minContains": 1,
+                    "maxContains": 2,
                     "items": {
                         "not": {
                             "type": "integer"
@@ -1364,19 +1383,47 @@ mod tests {
         sanitize_schema_for_openai_compat(&mut schema);
         let encoded = schema.to_string();
 
-        for keyword in [
-            "\"if\"",
-            "\"then\"",
-            "\"else\"",
-            "\"dependentSchemas\"",
-            "\"patternProperties\"",
-            "\"not\"",
-        ] {
-            assert!(!encoded.contains(keyword), "{keyword} should be removed");
+        for keyword in OPENAI_UNSUPPORTED_SCHEMA_KEYWORDS {
+            assert!(
+                !encoded.contains(&format!("\"{keyword}\"")),
+                "{keyword} should be removed"
+            );
         }
         assert_eq!(
             schema["properties"]["config"]["properties"]["mode"]["type"],
             "string"
         );
+    }
+
+    #[test]
+    fn sanitize_schema_for_openai_compat_recurses_into_array_form_items() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tuple": {
+                    "type": "array",
+                    "items": [
+                        {
+                            "type": "string",
+                            "not": { "const": "" }
+                        },
+                        {
+                            "type": "object",
+                            "patternProperties": {
+                                "^x-": { "type": "string" }
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+
+        sanitize_schema_for_openai_compat(&mut schema);
+
+        let tuple_items = schema["properties"]["tuple"]["items"]
+            .as_array()
+            .expect("tuple items should remain an array");
+        assert!(tuple_items[0].get("not").is_none());
+        assert!(tuple_items[1].get("patternProperties").is_none());
     }
 }
