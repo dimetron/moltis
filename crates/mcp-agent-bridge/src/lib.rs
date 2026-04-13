@@ -6,7 +6,10 @@
 
 use std::sync::Arc;
 
-use {async_trait::async_trait, tokio::sync::RwLock, tracing::info};
+use {async_trait::async_trait, tokio::sync::RwLock};
+
+#[cfg(feature = "tracing")]
+use tracing::info;
 
 use {
     moltis_agents::tool_registry::{AgentTool, ToolRegistry},
@@ -41,6 +44,7 @@ impl AgentTool for McpToolAdapter {
 /// Synchronize MCP tool bridges into the shared [`ToolRegistry`].
 ///
 /// Removes all existing `mcp__*` tools and re-registers current bridges.
+#[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(tool_count)))]
 pub async fn sync_mcp_tools(
     manager: &moltis_mcp::McpManager,
     registry: &Arc<RwLock<ToolRegistry>>,
@@ -59,6 +63,7 @@ pub async fn sync_mcp_tools(
         reg.register_mcp(Box::new(McpToolAdapter(bridge)), server);
     }
 
+    #[cfg(feature = "tracing")]
     if count > 0 {
         info!(tools = count, "MCP tools synced into tool registry");
     }
@@ -139,9 +144,16 @@ mod tests {
             std::time::Duration::from_secs(30),
         );
 
-        // Sync with empty manager — unregister_mcp should not panic.
+        // Register a non-MCP tool before sync — it should survive.
+        {
+            let mut reg_guard = registry.write().await;
+            reg_guard.register(Box::new(FakeTool("builtin_tool")));
+        }
+
         sync_mcp_tools(&manager, &registry).await;
         let reg_guard = registry.read().await;
-        assert!(reg_guard.list_schemas().is_empty());
+        let schemas = reg_guard.list_schemas();
+        assert_eq!(schemas.len(), 1, "non-MCP tool should survive sync");
+        assert_eq!(schemas[0]["name"], "builtin_tool");
     }
 }

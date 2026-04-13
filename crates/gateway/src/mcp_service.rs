@@ -3,77 +3,21 @@
 use std::{collections::HashMap, sync::Arc};
 
 use {
-    anyhow::Result,
     async_trait::async_trait,
     serde_json::Value,
     tokio::sync::RwLock,
     tracing::{info, warn},
 };
 
-use {
-    moltis_agents::tool_registry::{AgentTool, ToolRegistry},
-    moltis_mcp::tool_bridge::{McpAgentTool, McpToolBridge},
-};
+use moltis_agents::tool_registry::ToolRegistry;
 
 use crate::services::{McpService, ServiceError, ServiceResult};
 
 // Re-export pure parsing functions that now live in moltis-mcp.
 pub(crate) use moltis_mcp::{merge_env_overrides, parse_server_config};
 
-// ── McpToolAdapter: bridge McpAgentTool → AgentTool ─────────────────────────
-
-/// Thin adapter that implements `AgentTool` (agents crate) by delegating to
-/// `McpToolBridge` which implements `McpAgentTool` (mcp crate).
-struct McpToolAdapter(McpToolBridge);
-
-#[async_trait]
-impl AgentTool for McpToolAdapter {
-    fn name(&self) -> &str {
-        McpAgentTool::name(&self.0)
-    }
-
-    fn description(&self) -> &str {
-        McpAgentTool::description(&self.0)
-    }
-
-    fn parameters_schema(&self) -> Value {
-        McpAgentTool::parameters_schema(&self.0)
-    }
-
-    async fn execute(&self, params: Value) -> Result<Value> {
-        McpAgentTool::execute(&self.0, params)
-            .await
-            .map_err(anyhow::Error::from)
-    }
-}
-
-// ── Sync helper ─────────────────────────────────────────────────────────────
-
-/// Synchronize MCP tool bridges into the shared `ToolRegistry`.
-///
-/// Removes all existing `mcp__*` tools and re-registers current bridges.
-pub async fn sync_mcp_tools(
-    manager: &moltis_mcp::McpManager,
-    registry: &Arc<RwLock<ToolRegistry>>,
-) {
-    let bridges = manager.tool_bridges().await;
-
-    let mut reg = registry.write().await;
-
-    // Remove all MCP-sourced tools before re-registering current ones.
-    reg.unregister_mcp();
-
-    // Register current bridges with their server name metadata.
-    let count = bridges.len();
-    for bridge in bridges {
-        let server = bridge.server_name().to_string();
-        reg.register_mcp(Box::new(McpToolAdapter(bridge)), server);
-    }
-
-    if count > 0 {
-        info!(tools = count, "MCP tools synced into tool registry");
-    }
-}
+// Re-export sync_mcp_tools from the dedicated bridge crate.
+pub(crate) use moltis_mcp_agent_bridge::sync_mcp_tools;
 
 // ── Config parsing helper ───────────────────────────────────────────────────
 

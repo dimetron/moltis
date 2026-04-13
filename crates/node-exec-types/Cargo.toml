@@ -9,11 +9,12 @@ anyhow         = { workspace = true }
 async-trait    = { workspace = true }
 moltis-metrics = { optional = true, workspace = true }
 serde          = { workspace = true, features = ["derive"] }
-tracing        = { workspace = true }
+tracing        = { optional = true, workspace = true }
 
 [features]
-default = []
+default = ["metrics", "tracing"]
 metrics = ["dep:moltis-metrics"]
+tracing = ["dep:tracing"]
 
 [lints]
 workspace = true

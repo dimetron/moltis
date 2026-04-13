@@ -7275,6 +7275,7 @@ dependencies = [
  "async-trait",
  "moltis-agents",
  "moltis-mcp",
+ "moltis-metrics",
  "serde_json",
  "tokio",
  "tracing",
