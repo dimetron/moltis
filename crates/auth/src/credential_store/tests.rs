@@ -607,7 +607,7 @@ async fn test_change_password_invalidates_sessions() {
 async fn test_add_password_marks_setup_complete_and_reenables_auth() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     let store = CredentialStore::new(pool).await.unwrap();
-    let password = fixture_secret("add-password");
+    let password = generate_token();
 
     store.reset_all().await.unwrap();
     assert!(store.is_auth_disabled());
