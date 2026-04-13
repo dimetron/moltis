@@ -19,6 +19,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260413.04] - 2026-04-13
+### Changed
+- Split oversized rust modules
+- Split remaining oversized rust modules
+- Remove replaced module entrypoints
+
+
+### Removed
+- [agents] Remove duplicate tool arg match arm
+
+
+### Fixed
+- [providers] Preserve native tool arg types
+- [gateway] Repair split module blockers
+- Restore post-merge validation
+- Repair local lint regressions
+- [chat] Clean up split validation fallout
+- [gateway] Remove split warning debt
+- [httpd] Restore split module boundaries
+- [httpd] Drop stale server re-export
+- [httpd] Repair test and bridge lint fallout
+- [httpd] Restore vault test imports
+- [telegram] Mark byte-truncated documents
+- [httpd] Repair ngrok server split
+- [provider-setup] Restore ollama validation payload
+- [gateway] Drop duplicate broadcaster default impl
+- [gateway] Remove stale mcp service doc comment
+- [httpd] Move runtime-only route import
+- [tools] Scope apple sandbox helpers to macos
+- [tools] Restore sandbox test imports
+- [ci] Restore main build stability
+
 ## [20260413.03] - 2026-04-13
 ### Fixed
 - [gateway] Resolve release CI regressions
