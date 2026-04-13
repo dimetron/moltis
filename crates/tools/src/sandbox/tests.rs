@@ -13,7 +13,7 @@ use std::{
 use super::apple::*;
 #[cfg(target_os = "macos")]
 use crate::sandbox::file_system::{
-    SandboxReadResult, oci_container_list_files, oci_container_read_file, oci_container_write_file,
+    oci_container_list_files, oci_container_read_file, oci_container_write_file,
 };
 #[cfg(target_os = "macos")]
 use std::env;
@@ -22,6 +22,7 @@ use {
     crate::{
         error::{Error, Result},
         exec::{ExecOpts, ExecResult},
+        sandbox::file_system::SandboxReadResult,
     },
 };
 
