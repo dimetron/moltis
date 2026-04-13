@@ -5,7 +5,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use {serde::Serialize, tracing::trace};
+use {
+    json_schema_ast::SchemaDocument,
+    schemars::{
+        Schema,
+        transform::{
+            RecursiveTransform, RemoveRefSiblings, ReplaceConstValue, ReplacePrefixItems,
+            ReplaceUnevaluatedProperties, Transform,
+        },
+    },
+    serde::Serialize,
+    tracing::{trace, warn},
+};
 
 use moltis_agents::model::{
     ChatMessage, CompletionResponse, StreamEvent, ToolCall, Usage, UserContent,
@@ -107,74 +118,118 @@ fn make_nullable(schema: &mut serde_json::Value) {
     }
 }
 
-const OPENAI_UNSUPPORTED_SCHEMA_KEYWORDS: &[&str] = &[
-    "not",
-    "if",
-    "then",
-    "else",
-    "dependentSchemas",
-    "dependentRequired",
-    "unevaluatedProperties",
-    "unevaluatedItems",
-    "patternProperties",
-    "propertyNames",
-    "contains",
-    "minContains",
-    "maxContains",
+const OPENAI_ALLOWED_SCHEMA_KEYWORDS: &[&str] = &[
+    "$ref",
+    "$defs",
+    "definitions",
+    "type",
+    "enum",
+    "title",
+    "description",
+    "default",
+    "example",
+    "examples",
+    "format",
+    "pattern",
+    "properties",
+    "required",
+    "items",
+    "additionalProperties",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "minProperties",
+    "maxProperties",
 ];
 
-/// Recursively strip JSON Schema keywords that OpenAI-compatible tool schemas
-/// reject in strict function-calling mode.
+#[derive(Debug, Clone, Default)]
+struct OpenAiSchemaSubsetTransform;
+
+impl Transform for OpenAiSchemaSubsetTransform {
+    fn transform(&mut self, schema: &mut Schema) {
+        let Some(obj) = schema.as_object_mut() else {
+            return;
+        };
+
+        obj.retain(|key, _| OPENAI_ALLOWED_SCHEMA_KEYWORDS.contains(&key.as_str()));
+    }
+}
+
+fn canonicalize_schema_for_openai_compat(schema: &serde_json::Value) -> serde_json::Value {
+    let document = match SchemaDocument::from_json(schema) {
+        Ok(document) => document,
+        Err(error) => {
+            warn!(
+                error = %error,
+                "openai tool schema failed Draft 2020-12 preflight; using raw schema for best-effort normalization"
+            );
+            return schema.clone();
+        },
+    };
+
+    if let Err(error) = document.root() {
+        warn!(
+            error = %error,
+            "openai tool schema failed canonical AST resolution; using raw schema for best-effort normalization"
+        );
+        return schema.clone();
+    }
+
+    document
+        .canonical_schema_json()
+        .map_or_else(
+            |error| {
+                warn!(
+                    error = %error,
+                    "openai tool schema canonicalization was unavailable; using raw schema for best-effort normalization"
+                );
+                schema.clone()
+            },
+            serde_json::Value::clone,
+        )
+}
+
+/// Validate and normalize a JSON Schema document into the smaller subset used
+/// by OpenAI-compatible function-calling APIs.
 ///
-/// This keeps the schema permissive instead of failing the entire request when
-/// an MCP server advertises a valid draft-2020-12 schema that the provider does
-/// not accept.
+/// The pipeline is:
+/// 1. Validate and canonicalize the raw schema with `json_schema_ast`
+/// 2. Apply recursive schema transforms with `schemars`
+/// 3. Retain only the OpenAI-compatible subset before strict-mode patching
 pub fn sanitize_schema_for_openai_compat(schema: &mut serde_json::Value) {
-    let Some(obj) = schema.as_object_mut() else {
+    let canonical = canonicalize_schema_for_openai_compat(schema);
+
+    let Ok(mut transformed) = Schema::try_from(canonical.clone()) else {
+        *schema = canonical;
         return;
     };
 
-    for keyword in OPENAI_UNSUPPORTED_SCHEMA_KEYWORDS {
-        obj.remove(*keyword);
-    }
+    let mut replace_const = ReplaceConstValue::default();
+    replace_const.transform(&mut transformed);
 
-    if let Some(props) = obj.get_mut("properties").and_then(|p| p.as_object_mut()) {
-        for prop_schema in props.values_mut() {
-            sanitize_schema_for_openai_compat(prop_schema);
-        }
-    }
+    let mut replace_unevaluated_properties = ReplaceUnevaluatedProperties::default();
+    replace_unevaluated_properties.transform(&mut transformed);
 
-    if let Some(items) = obj.get_mut("items") {
-        if let Some(item_schemas) = items.as_array_mut() {
-            for item_schema in item_schemas {
-                sanitize_schema_for_openai_compat(item_schema);
-            }
-        } else {
-            sanitize_schema_for_openai_compat(items);
-        }
-    }
+    let mut replace_prefix_items = ReplacePrefixItems::default();
+    replace_prefix_items.transform(&mut transformed);
 
-    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
-        if let Some(variants) = obj.get_mut(key).and_then(|v| v.as_array_mut()) {
-            for variant in variants {
-                sanitize_schema_for_openai_compat(variant);
-            }
-        }
-    }
+    let mut remove_ref_siblings = RemoveRefSiblings::default();
+    remove_ref_siblings.transform(&mut transformed);
 
-    if let Some(additional) = obj.get_mut("additionalProperties")
-        && additional.is_object()
-    {
-        sanitize_schema_for_openai_compat(additional);
-    }
+    let mut subset_transform = RecursiveTransform(OpenAiSchemaSubsetTransform);
+    subset_transform.transform(&mut transformed);
 
-    for key in ["$defs", "definitions"] {
-        if let Some(definitions) = obj.get_mut(key).and_then(|v| v.as_object_mut()) {
-            for definition in definitions.values_mut() {
-                sanitize_schema_for_openai_compat(definition);
-            }
-        }
-    }
+    *schema = transformed.to_value();
 }
 
 /// Recursively patch schema for OpenAI strict mode compliance.
@@ -1184,8 +1239,8 @@ pub fn parse_responses_completion(resp: &serde_json::Value) -> CompletionRespons
 #[cfg(test)]
 mod tests {
     use super::{
-        OPENAI_UNSUPPORTED_SCHEMA_KEYWORDS, parse_responses_completion, parse_tool_calls,
-        sanitize_schema_for_openai_compat, to_responses_api_tools,
+        parse_responses_completion, parse_tool_calls, sanitize_schema_for_openai_compat,
+        to_responses_api_tools,
     };
 
     #[test]
@@ -1371,6 +1426,8 @@ mod tests {
                     },
                     "minContains": 1,
                     "maxContains": 2,
+                    "const": "active",
+                    "x-custom": "remove-me",
                     "items": {
                         "not": {
                             "type": "integer"
@@ -1383,12 +1440,28 @@ mod tests {
         sanitize_schema_for_openai_compat(&mut schema);
         let encoded = schema.to_string();
 
-        for keyword in OPENAI_UNSUPPORTED_SCHEMA_KEYWORDS {
-            assert!(
-                !encoded.contains(&format!("\"{keyword}\"")),
-                "{keyword} should be removed"
-            );
+        for keyword in [
+            "\"if\"",
+            "\"then\"",
+            "\"else\"",
+            "\"dependentSchemas\"",
+            "\"patternProperties\"",
+            "\"dependentRequired\"",
+            "\"unevaluatedProperties\"",
+            "\"unevaluatedItems\"",
+            "\"propertyNames\"",
+            "\"contains\"",
+            "\"minContains\"",
+            "\"maxContains\"",
+            "\"not\"",
+            "\"x-custom\"",
+        ] {
+            assert!(!encoded.contains(keyword), "{keyword} should be removed");
         }
+        assert_eq!(
+            schema["properties"]["config"]["enum"],
+            serde_json::json!(["active"])
+        );
         assert_eq!(
             schema["properties"]["config"]["properties"]["mode"]["type"],
             "string"

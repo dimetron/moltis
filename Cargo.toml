@@ -26,8 +26,8 @@ default-members = [
   "crates/metrics",
   "crates/msteams",
   "crates/network-filter",
-  "crates/node-host",
   "crates/node-exec-types",
+  "crates/node-host",
   "crates/nostr",
   "crates/oauth",
   "crates/onboarding",
@@ -83,8 +83,8 @@ members = [
   "crates/memory",
   "crates/metrics",
   "crates/msteams",
-  "crates/node-host",
   "crates/node-exec-types",
+  "crates/node-host",
   "crates/nostr",
   "crates/oauth",
   "crates/onboarding",
@@ -152,6 +152,7 @@ axum       = { features = ["ws"], version = "0.8" }
 axum-extra = "0.10"
 # Serialization
 postcard   = { features = ["alloc"], version = "1.1" }
+schemars   = "1.2"
 serde      = { features = ["derive"], version = "1" }
 serde_json = "1"
 # Error handling
@@ -190,13 +191,14 @@ tokio-tungstenite = "0.26"
 toml              = "0.8"
 toml_edit         = "0.22"
 # LLM provider crates (optional, behind feature flags)
-async-openai = { features = ["chat-completion"], version = "0.32" }
-base64       = "0.22"
-bytemuck     = { features = ["derive"], version = "1" }
-bytes        = "1"
-encoding_rs  = "0.8"
-fd-lock      = "4"
-genai        = "0.5"
+async-openai    = { features = ["chat-completion"], version = "0.32" }
+base64          = "0.22"
+bytemuck        = { features = ["derive"], version = "1" }
+bytes           = "1"
+encoding_rs     = "0.8"
+fd-lock         = "4"
+genai           = "0.5"
+json_schema_ast = "0.3.1"
 # GraphQL
 async-graphql      = "7"
 async-graphql-axum = "7"
@@ -297,9 +299,9 @@ grep-regex            = "0.1"
 grep-searcher         = "0.1"
 ignore                = "0.4"
 include_dir           = "0.7"
-pdf-extract           = "0.10"
 json5                 = "0.4"
 notify-debouncer-full = "0.7"
+pdf-extract           = "0.10"
 portable-pty          = "0.9"
 rstest                = "0.25"
 serial_test           = "3"
@@ -320,59 +322,59 @@ tower-service = "0.3"
 zeroize       = { features = ["derive"], version = "1" }
 
 # Workspace crates
-moltis                 = { path = "crates/cli" }
-moltis-agents          = { path = "crates/agents" }
-moltis-auth            = { path = "crates/auth" }
-moltis-auto-reply      = { path = "crates/auto-reply" }
-moltis-browser         = { path = "crates/browser" }
-moltis-caldav          = { path = "crates/caldav" }
-moltis-canvas          = { path = "crates/canvas" }
-moltis-channels        = { path = "crates/channels" }
-moltis-chat            = { path = "crates/chat" }
-moltis-common          = { path = "crates/common" }
-moltis-config          = { path = "crates/config" }
-moltis-cron            = { path = "crates/cron" }
-moltis-discord         = { path = "crates/discord" }
-moltis-gateway         = { default-features = false, path = "crates/gateway" }
-moltis-graphql         = { path = "crates/graphql" }
-moltis-httpd           = { default-features = false, path = "crates/httpd" }
-moltis-matrix          = { path = "crates/matrix" }
-moltis-mcp             = { path = "crates/mcp" }
+moltis                  = { path = "crates/cli" }
+moltis-agents           = { path = "crates/agents" }
+moltis-auth             = { path = "crates/auth" }
+moltis-auto-reply       = { path = "crates/auto-reply" }
+moltis-browser          = { path = "crates/browser" }
+moltis-caldav           = { path = "crates/caldav" }
+moltis-canvas           = { path = "crates/canvas" }
+moltis-channels         = { path = "crates/channels" }
+moltis-chat             = { path = "crates/chat" }
+moltis-common           = { path = "crates/common" }
+moltis-config           = { path = "crates/config" }
+moltis-cron             = { path = "crates/cron" }
+moltis-discord          = { path = "crates/discord" }
+moltis-gateway          = { default-features = false, path = "crates/gateway" }
+moltis-graphql          = { path = "crates/graphql" }
+moltis-httpd            = { default-features = false, path = "crates/httpd" }
+moltis-matrix           = { path = "crates/matrix" }
+moltis-mcp              = { path = "crates/mcp" }
 moltis-mcp-agent-bridge = { path = "crates/mcp-agent-bridge" }
-moltis-media           = { path = "crates/media" }
-moltis-memory          = { path = "crates/memory" }
-moltis-metrics         = { path = "crates/metrics" }
-moltis-msteams         = { path = "crates/msteams" }
-moltis-network-filter  = { default-features = false, path = "crates/network-filter" }
-moltis-node-host       = { path = "crates/node-host" }
-moltis-node-exec-types = { path = "crates/node-exec-types" }
-moltis-nostr           = { path = "crates/nostr" }
-moltis-oauth           = { path = "crates/oauth" }
-moltis-onboarding      = { path = "crates/onboarding" }
-moltis-openclaw-import = { path = "crates/openclaw-import" }
-moltis-plugins         = { path = "crates/plugins" }
-moltis-projects        = { path = "crates/projects" }
-moltis-protocol        = { path = "crates/protocol" }
-moltis-provider-setup  = { path = "crates/provider-setup" }
-moltis-providers       = { features = ["provider-github-copilot", "provider-kimi-code", "provider-openai-codex"], path = "crates/providers" }
-moltis-qmd             = { path = "crates/qmd" }
-moltis-routing         = { path = "crates/routing" }
-moltis-schema-export   = { path = "crates/schema-export" }
-moltis-secret-store    = { default-features = false, path = "crates/secret-store" }
-moltis-service-traits  = { path = "crates/service-traits" }
-moltis-sessions        = { path = "crates/sessions" }
-moltis-skills          = { path = "crates/skills" }
-moltis-slack           = { path = "crates/slack" }
-moltis-swift-bridge    = { path = "crates/swift-bridge" }
-moltis-tailscale       = { path = "crates/tailscale" }
-moltis-telegram        = { path = "crates/telegram" }
-moltis-tls             = { path = "crates/tls" }
-moltis-tools           = { path = "crates/tools" }
-moltis-vault           = { path = "crates/vault" }
-moltis-voice           = { path = "crates/voice" }
-moltis-web             = { default-features = false, path = "crates/web" }
-moltis-webhooks        = { path = "crates/webhooks" }
-moltis-whatsapp        = { path = "crates/whatsapp" }
+moltis-media            = { path = "crates/media" }
+moltis-memory           = { path = "crates/memory" }
+moltis-metrics          = { path = "crates/metrics" }
+moltis-msteams          = { path = "crates/msteams" }
+moltis-network-filter   = { default-features = false, path = "crates/network-filter" }
+moltis-node-exec-types  = { path = "crates/node-exec-types" }
+moltis-node-host        = { path = "crates/node-host" }
+moltis-nostr            = { path = "crates/nostr" }
+moltis-oauth            = { path = "crates/oauth" }
+moltis-onboarding       = { path = "crates/onboarding" }
+moltis-openclaw-import  = { path = "crates/openclaw-import" }
+moltis-plugins          = { path = "crates/plugins" }
+moltis-projects         = { path = "crates/projects" }
+moltis-protocol         = { path = "crates/protocol" }
+moltis-provider-setup   = { path = "crates/provider-setup" }
+moltis-providers        = { features = ["provider-github-copilot", "provider-kimi-code", "provider-openai-codex"], path = "crates/providers" }
+moltis-qmd              = { path = "crates/qmd" }
+moltis-routing          = { path = "crates/routing" }
+moltis-schema-export    = { path = "crates/schema-export" }
+moltis-secret-store     = { default-features = false, path = "crates/secret-store" }
+moltis-service-traits   = { path = "crates/service-traits" }
+moltis-sessions         = { path = "crates/sessions" }
+moltis-skills           = { path = "crates/skills" }
+moltis-slack            = { path = "crates/slack" }
+moltis-swift-bridge     = { path = "crates/swift-bridge" }
+moltis-tailscale        = { path = "crates/tailscale" }
+moltis-telegram         = { path = "crates/telegram" }
+moltis-tls              = { path = "crates/tls" }
+moltis-tools            = { path = "crates/tools" }
+moltis-vault            = { path = "crates/vault" }
+moltis-voice            = { path = "crates/voice" }
+moltis-web              = { default-features = false, path = "crates/web" }
+moltis-webhooks         = { path = "crates/webhooks" }
+moltis-whatsapp         = { path = "crates/whatsapp" }
 
 [profile.release]
 codegen-units = 1
