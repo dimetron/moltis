@@ -731,7 +731,7 @@ async fn test_env_var_encryption_when_vault_unsealed() {
 #[cfg(feature = "vault")]
 #[tokio::test]
 async fn test_env_var_plaintext_when_vault_sealed() {
-    let vault_password = fixture_secret("vault-env-plaintext-password");
+    let vault_password = generate_token();
     let visible_value = fixture_secret("vault-env-plaintext-visible");
     let (store, vault) = vault_store(&vault_password).await;
     vault.seal().await;
