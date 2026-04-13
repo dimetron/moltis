@@ -970,6 +970,23 @@ base_url = "http://127.0.0.1:8001/"
     }
 
     #[test]
+    fn test_resolve_openai_tts_base_url_falls_back_to_provider_value() {
+        let mut cfg = moltis_config::MoltisConfig::default();
+        cfg.providers.providers.insert(
+            "openai".to_string(),
+            moltis_config::schema::ProviderEntry {
+                base_url: Some("http://127.0.0.1:8001".to_string()),
+                ..moltis_config::schema::ProviderEntry::default()
+            },
+        );
+
+        assert_eq!(
+            resolve_openai_tts_base_url(&cfg).as_deref(),
+            Some("http://127.0.0.1:8001")
+        );
+    }
+
+    #[test]
     fn test_resolve_openai_whisper_base_url_prefers_voice_specific_value() {
         let mut cfg = moltis_config::MoltisConfig::default();
         cfg.voice.stt.whisper.base_url = Some("http://127.0.0.1:8002".to_string());
@@ -984,6 +1001,23 @@ base_url = "http://127.0.0.1:8001/"
         assert_eq!(
             resolve_openai_whisper_base_url(&cfg).as_deref(),
             Some("http://127.0.0.1:8002")
+        );
+    }
+
+    #[test]
+    fn test_resolve_openai_whisper_base_url_falls_back_to_provider_value() {
+        let mut cfg = moltis_config::MoltisConfig::default();
+        cfg.providers.providers.insert(
+            "openai".to_string(),
+            moltis_config::schema::ProviderEntry {
+                base_url: Some("http://127.0.0.1:8001".to_string()),
+                ..moltis_config::schema::ProviderEntry::default()
+            },
+        );
+
+        assert_eq!(
+            resolve_openai_whisper_base_url(&cfg).as_deref(),
+            Some("http://127.0.0.1:8001")
         );
     }
 

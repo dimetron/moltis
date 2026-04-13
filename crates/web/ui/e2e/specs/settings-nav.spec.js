@@ -295,6 +295,89 @@ test.describe("Settings navigation", () => {
 		expect(pageErrors).toEqual([]);
 	});
 
+	test("voice settings can clear an existing whisper base URL", async ({ page }) => {
+		const pageErrors = watchPageErrors(page);
+		await navigateAndWait(page, "/settings/voice");
+		await waitForWsConnected(page);
+
+		const whisperRow = page
+			.locator(".provider-card")
+			.filter({ has: page.getByText("OpenAI Whisper", { exact: true }) })
+			.first();
+		await expect(whisperRow).toBeVisible();
+
+		await page.evaluate(async () => {
+			const appScript = document.querySelector('script[type="module"][src*="js/app.js"]');
+			if (!appScript) throw new Error("app.js script not found");
+			const appUrl = new URL(appScript.src, window.location.origin).href;
+			const marker = "js/app.js";
+			const markerIdx = appUrl.indexOf(marker);
+			if (markerIdx < 0) throw new Error("app.js marker not found in script URL");
+			const prefix = appUrl.slice(0, markerIdx);
+			const state = await import(`${prefix}js/state.js`);
+			const wsOpen = typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1;
+			window.__voiceSettingsClearBaseUrlRequest = null;
+			state.setConnected(true);
+			state.setWs({
+				readyState: wsOpen,
+				send(raw) {
+					const req = JSON.parse(raw || "{}");
+					const resolver = state.pending[req.id];
+					if (!resolver) return;
+					if (req.method === "voice.config.save_settings") {
+						window.__voiceSettingsClearBaseUrlRequest = req.params || null;
+						resolver({ ok: true, payload: { ok: true } });
+					} else if (req.method === "voice.providers.all") {
+						resolver({
+							ok: true,
+							payload: {
+								stt: [
+									{
+										id: "whisper",
+										name: "OpenAI Whisper",
+										type: "stt",
+										category: "cloud",
+										description: "Best accuracy, handles accents and background noise",
+										available: true,
+										enabled: false,
+										keySource: "config",
+										settings: { baseUrl: "http://127.0.0.1:8001/v1" },
+										capabilities: { baseUrl: true },
+									},
+								],
+								tts: [],
+							},
+						});
+					} else {
+						resolver({
+							ok: false,
+							error: { message: `unexpected rpc in voice settings clear-base-url test: ${req.method}` },
+						});
+					}
+					delete state.pending[req.id];
+				},
+			});
+		});
+
+		await whisperRow.getByRole("button", { name: "Configure", exact: true }).click();
+		const modal = page
+			.locator(".modal-box")
+			.filter({ has: page.getByText("OpenAI Whisper", { exact: false }) })
+			.last();
+		await expect(modal).toBeVisible();
+		await modal.locator('input[data-field="baseUrl"]').fill("");
+		await modal.getByRole("button", { name: "Save", exact: true }).click();
+
+		await expect.poll(() => page.evaluate(() => window.__voiceSettingsClearBaseUrlRequest)).not.toBeNull();
+
+		const sentRequest = await page.evaluate(() => window.__voiceSettingsClearBaseUrlRequest);
+		expect(sentRequest).toMatchObject({
+			provider: "whisper",
+			baseUrl: "",
+		});
+		expect(pageErrors).toEqual([]);
+	});
+
 	test("remote access page shows tailscale and ngrok cards", async ({ page }) => {
 		const pageErrors = watchPageErrors(page);
 		await page.route("**/api/auth/status", async (route) => {

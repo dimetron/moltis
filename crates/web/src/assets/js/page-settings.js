@@ -43,7 +43,6 @@ import {
 	testTts,
 	toggleVoiceProvider,
 	transcribeAudio,
-	voiceProviderSupportsBaseUrl,
 } from "./voice-utils.js";
 
 var identity = signal(null);
@@ -4506,7 +4505,7 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 		: null;
 	var isElevenLabsProvider = selectedProvider === "elevenlabs" || selectedProvider === "elevenlabs-stt";
 	var supportsTtsVoiceSettings = providerMeta?.type === "tts";
-	var supportsBaseUrl = voiceProviderSupportsBaseUrl(selectedProvider);
+	var supportsBaseUrl = providerMeta?.capabilities?.baseUrl === true;
 
 	function onClose() {
 		voiceShowAddModal.value = false;
@@ -4522,7 +4521,10 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 
 	function onSaveKey() {
 		var hasApiKey = apiKey.trim().length > 0;
-		var hasBaseUrl = supportsBaseUrl && baseUrlValue.trim().length > 0;
+		var trimmedBaseUrl = baseUrlValue.trim();
+		var hadBaseUrl =
+			typeof providerMeta?.settings?.baseUrl === "string" && providerMeta.settings.baseUrl.trim().length > 0;
+		var hasBaseUrl = supportsBaseUrl && (trimmedBaseUrl.length > 0 || hadBaseUrl);
 		var hasSettings =
 			(supportsTtsVoiceSettings && (voiceValue.trim() || modelValue.trim() || languageCodeValue.trim())) || hasBaseUrl;
 		if (!(hasApiKey || hasSettings)) {
@@ -4533,7 +4535,7 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 		setSaving(true);
 
 		var voiceOpts = {
-			baseUrl: baseUrlValue.trim() || undefined,
+			baseUrl: hasBaseUrl ? trimmedBaseUrl : undefined,
 			voice: supportsTtsVoiceSettings ? voiceValue.trim() || undefined : undefined,
 			model: supportsTtsVoiceSettings ? modelValue.trim() || undefined : undefined,
 			languageCode: supportsTtsVoiceSettings ? languageCodeValue.trim() || undefined : undefined,
@@ -4614,10 +4616,10 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 			return html`<${Modal} show=${voiceShowAddModal.value} onClose=${onClose} title="Add ${providerMeta.name}">
 				<div class="channel-form">
 					<div class="text-sm text-[var(--text-strong)]">${providerMeta.name}</div>
-					<div class="text-xs text-[var(--muted)]" style="margin-bottom:12px;">${providerMeta.description}</div>
+					<div class="mb-3 text-xs text-[var(--muted)]">${providerMeta.description}</div>
 
 					<label class="text-xs text-[var(--muted)]">API Key</label>
-					<input type="password" class="provider-key-input" style="width:100%;"
+					<input type="password" class="provider-key-input w-full"
 						value=${apiKey} onInput=${(e) => setApiKey(e.target.value)}
 						placeholder=${providerMeta.keyPlaceholder || "Leave blank to keep existing key"} />
 					${
@@ -4630,9 +4632,9 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 
 					${
 						supportsBaseUrl
-							? html`<div class="flex flex-col gap-2" style="margin-top:8px;">
+							? html`<div class="mt-2 flex flex-col gap-2">
 					<label class="text-xs text-[var(--muted)]">Base URL</label>
-					<input type="text" class="provider-key-input" style="width:100%;"
+					<input type="text" class="provider-key-input w-full"
 						data-field="baseUrl"
 						value=${baseUrlValue} onInput=${(e) => setBaseUrlValue(e.target.value)}
 						placeholder="http://localhost:8000/v1" />
@@ -4651,13 +4653,13 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 					${isElevenLabsProvider && elevenlabsCatalog.warning ? html`<div class="text-xs text-[var(--muted)]">${elevenlabsCatalog.warning}</div>` : null}
 					${
 						isElevenLabsProvider && elevenlabsCatalog.voices.length > 0
-							? html`<select class="provider-key-input" style="width:100%;" onChange=${(e) => setVoiceValue(e.target.value)}>
+							? html`<select class="provider-key-input w-full" onChange=${(e) => setVoiceValue(e.target.value)}>
 						<option value="">Pick a voice from your account...</option>
 						${elevenlabsCatalog.voices.map((v) => html`<option value=${v.id}>${v.name} (${v.id})</option>`)}
 					</select>`
 							: null
 					}
-					<input type="text" class="provider-key-input" style="width:100%;"
+					<input type="text" class="provider-key-input w-full"
 						value=${voiceValue} onInput=${(e) => setVoiceValue(e.target.value)}
 						list=${isElevenLabsProvider ? "elevenlabs-voice-options" : undefined}
 						placeholder="voice id / name (optional)" />
@@ -4672,13 +4674,13 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 					<label class="text-xs text-[var(--muted)]">Model</label>
 					${
 						isElevenLabsProvider && elevenlabsCatalog.models.length > 0
-							? html`<select class="provider-key-input" style="width:100%;" onChange=${(e) => setModelValue(e.target.value)}>
+							? html`<select class="provider-key-input w-full" onChange=${(e) => setModelValue(e.target.value)}>
 						<option value="">Pick a model...</option>
 						${elevenlabsCatalog.models.map((m) => html`<option value=${m.id}>${m.name} (${m.id})</option>`)}
 					</select>`
 							: null
 					}
-					<input type="text" class="provider-key-input" style="width:100%;"
+					<input type="text" class="provider-key-input w-full"
 						value=${modelValue} onInput=${(e) => setModelValue(e.target.value)}
 						list=${isElevenLabsProvider ? "elevenlabs-model-options" : undefined}
 						placeholder="model (optional)" />
@@ -4694,7 +4696,7 @@ function AddVoiceProviderModal({ unconfiguredProviders, voxtralReqs, onSaved }) 
 						selectedProvider === "google" || selectedProvider === "google-tts"
 							? html`<div class="flex flex-col gap-2">
 							<label class="text-xs text-[var(--muted)]">Language Code</label>
-							<input type="text" class="provider-key-input" style="width:100%;"
+							<input type="text" class="provider-key-input w-full"
 								value=${languageCodeValue} onInput=${(e) => setLanguageCodeValue(e.target.value)}
 								placeholder="en-US (optional)" />
 						</div>`

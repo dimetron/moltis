@@ -56,7 +56,6 @@ import {
 	toggleVoiceProvider,
 	transcribeAudio,
 	VOICE_COUNTERPART_IDS,
-	voiceProviderSupportsBaseUrl,
 } from "./voice-utils.js";
 import { connectWs } from "./ws-connect.js";
 
@@ -1811,7 +1810,7 @@ function OnboardingVoiceRow({
 			keyInputRef.current.focus();
 		}
 	}, [isConfiguring]);
-	var supportsBaseUrl = voiceProviderSupportsBaseUrl(provider.id);
+	var supportsBaseUrl = provider.capabilities?.baseUrl === true;
 	var keySourceLabel =
 		provider.keySource === "env" ? "(from env)" : provider.keySource === "llm_provider" ? "(from LLM provider)" : "";
 
@@ -2044,9 +2043,12 @@ function VoiceStep({ onNext, onBack }) {
 
 	function onSaveKey(e) {
 		e.preventDefault();
+		var provider = [...allProviders.stt, ...allProviders.tts].find((candidate) => candidate.id === configuring);
 		var trimmedApiKey = apiKey.trim();
 		var trimmedBaseUrl = baseUrl.trim();
-		if (!(trimmedApiKey || trimmedBaseUrl)) {
+		var hadBaseUrl = typeof provider?.settings?.baseUrl === "string" && provider.settings.baseUrl.trim().length > 0;
+		var shouldSaveBaseUrl = provider?.capabilities?.baseUrl === true && (trimmedBaseUrl.length > 0 || hadBaseUrl);
+		if (!(trimmedApiKey || shouldSaveBaseUrl)) {
 			setError("API key or base URL is required.");
 			return;
 		}
@@ -2054,8 +2056,8 @@ function VoiceStep({ onNext, onBack }) {
 		setSaving(true);
 		var providerId = configuring;
 		var req = trimmedApiKey
-			? saveVoiceKey(providerId, trimmedApiKey, { baseUrl: trimmedBaseUrl || undefined })
-			: saveVoiceSettings(providerId, { baseUrl: trimmedBaseUrl });
+			? saveVoiceKey(providerId, trimmedApiKey, { baseUrl: shouldSaveBaseUrl ? trimmedBaseUrl : undefined })
+			: saveVoiceSettings(providerId, shouldSaveBaseUrl ? { baseUrl: trimmedBaseUrl } : undefined);
 		req.then(async (res) => {
 			if (res?.ok) {
 				// Auto-enable in onboarding: toggle on for each type this provider appears in.

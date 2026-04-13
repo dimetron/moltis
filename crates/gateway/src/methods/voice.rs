@@ -991,6 +991,16 @@ pub(super) fn apply_voice_provider_settings(
     provider: &str,
     params: &serde_json::Value,
 ) {
+    let get_nullable_string = |key: &str| -> Option<Option<String>> {
+        params.get(key).map(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+        })
+    };
+
     let get_string = |key: &str| -> Option<String> {
         params
             .get(key)
@@ -1002,8 +1012,8 @@ pub(super) fn apply_voice_provider_settings(
 
     match provider {
         "openai" | "openai-tts" => {
-            if let Some(base_url) = get_string("baseUrl") {
-                cfg.voice.tts.openai.base_url = Some(base_url);
+            if let Some(base_url) = get_nullable_string("baseUrl") {
+                cfg.voice.tts.openai.base_url = base_url;
             }
             if let Some(voice) = get_string("voice") {
                 cfg.voice.tts.openai.voice = Some(voice);
@@ -1013,8 +1023,12 @@ pub(super) fn apply_voice_provider_settings(
             }
         },
         "whisper" => {
-            if let Some(base_url) = get_string("baseUrl") {
-                cfg.voice.stt.whisper.base_url = Some(base_url);
+            if let Some(base_url) = get_nullable_string("baseUrl") {
+                cfg.voice.stt.whisper.base_url = base_url;
+                if cfg.voice.stt.whisper.base_url.is_some() {
+                    cfg.voice.stt.provider = Some(VoiceSttProvider::Whisper);
+                    cfg.voice.stt.enabled = true;
+                }
             }
         },
         "elevenlabs" => {
@@ -1292,6 +1306,33 @@ mod tests {
             config.voice.stt.whisper.base_url.as_deref(),
             Some("http://127.0.0.1:8001/v1")
         );
+        assert_eq!(config.voice.stt.provider, Some(VoiceSttProvider::Whisper));
+        assert!(config.voice.stt.enabled);
+    }
+
+    #[test]
+    fn apply_voice_provider_settings_clears_base_urls_when_requested() {
+        let mut config = moltis_config::MoltisConfig::default();
+        config.voice.tts.openai.base_url = Some("http://127.0.0.1:8003/v1".to_string());
+        config.voice.stt.whisper.base_url = Some("http://127.0.0.1:8001/v1".to_string());
+
+        apply_voice_provider_settings(
+            &mut config,
+            "openai",
+            &serde_json::json!({
+                "baseUrl": "",
+            }),
+        );
+        apply_voice_provider_settings(
+            &mut config,
+            "whisper",
+            &serde_json::json!({
+                "baseUrl": "",
+            }),
+        );
+
+        assert_eq!(config.voice.tts.openai.base_url, None);
+        assert_eq!(config.voice.stt.whisper.base_url, None);
     }
 
     #[tokio::test]

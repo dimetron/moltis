@@ -47,7 +47,7 @@ export function saveVoiceKey(providerId, apiKey, opts) {
 	}
 	if (opts?.model) payload.model = opts.model;
 	if (opts?.languageCode) payload.languageCode = opts.languageCode;
-	if (opts?.baseUrl) payload.baseUrl = opts.baseUrl;
+	if (typeof opts?.baseUrl === "string") payload.baseUrl = opts.baseUrl;
 	return sendRpc("voice.config.save_key", payload);
 }
 
@@ -64,17 +64,8 @@ export function saveVoiceSettings(providerId, opts) {
 	}
 	if (opts?.model) payload.model = opts.model;
 	if (opts?.languageCode) payload.languageCode = opts.languageCode;
-	if (opts?.baseUrl) payload.baseUrl = opts.baseUrl;
+	if (typeof opts?.baseUrl === "string") payload.baseUrl = opts.baseUrl;
 	return sendRpc("voice.config.save_settings", payload);
-}
-
-/**
- * Providers that support an OpenAI-compatible base URL override.
- * @param {string} providerId
- * @returns {boolean}
- */
-export function voiceProviderSupportsBaseUrl(providerId) {
-	return providerId === "openai" || providerId === "openai-tts" || providerId === "whisper";
 }
 
 /**
