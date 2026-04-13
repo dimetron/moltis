@@ -1,5 +1,49 @@
 use super::*;
 
+fn default_channel_session_key(target: &moltis_channels::ChannelReplyTarget) -> String {
+    match &target.thread_id {
+        Some(thread_id) => format!(
+            "{}:{}:{}:{}",
+            target.channel_type, target.account_id, target.chat_id, thread_id
+        ),
+        None => format!(
+            "{}:{}:{}",
+            target.channel_type, target.account_id, target.chat_id
+        ),
+    }
+}
+
+async fn is_current_channel_session(
+    metadata: &SqliteSessionMetadata,
+    entry: &moltis_sessions::metadata::SessionEntry,
+) -> bool {
+    let Some(binding_json) = entry.channel_binding.as_deref() else {
+        return false;
+    };
+    let Ok(target) = serde_json::from_str::<moltis_channels::ChannelReplyTarget>(binding_json)
+    else {
+        return false;
+    };
+
+    let active_key = metadata
+        .get_active_session(
+            target.channel_type.as_str(),
+            &target.account_id,
+            &target.chat_id,
+            target.thread_id.as_deref(),
+        )
+        .await
+        .unwrap_or_else(|| default_channel_session_key(&target));
+    active_key == entry.key
+}
+
+async fn is_archivable_entry(
+    metadata: &SqliteSessionMetadata,
+    entry: &moltis_sessions::metadata::SessionEntry,
+) -> bool {
+    entry.key != "main" && !is_current_channel_session(metadata, entry).await
+}
+
 /// Live session service backed by JSONL store + SQLite metadata.
 pub struct LiveSessionService {
     pub(super) store: Arc<SessionStore>,
@@ -236,26 +280,7 @@ impl SessionService for LiveSessionService {
         for mut e in all {
             let agent_id = self.resolve_agent_id_for_entry(&e, false).await;
             // Check if this session is the active one for its channel binding.
-            let active_channel = if let Some(ref binding_json) = e.channel_binding {
-                if let Ok(target) =
-                    serde_json::from_str::<moltis_channels::ChannelReplyTarget>(binding_json)
-                {
-                    self.metadata
-                        .get_active_session(
-                            target.channel_type.as_str(),
-                            &target.account_id,
-                            &target.chat_id,
-                            target.thread_id.as_deref(),
-                        )
-                        .await
-                        .map(|k| k == e.key)
-                        .unwrap_or(false)
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
+            let active_channel = is_current_channel_session(&self.metadata, &e).await;
 
             // Backfill preview for sessions that have messages but no preview yet.
             if e.preview.is_none()
@@ -293,6 +318,7 @@ impl SessionService for LiveSessionService {
                 "forkPoint": e.fork_point,
                 "mcpDisabled": e.mcp_disabled,
                 "preview": preview,
+                "archived": e.archived,
                 "agent_id": agent_id,
                 "agentId": agent_id,
                 "node_id": e.node_id,
@@ -441,11 +467,19 @@ impl SessionService for LiveSessionService {
             .get(key)
             .await
             .ok_or_else(|| format!("session '{key}' not found"))?;
+        if p.archived == Some(true) && !is_archivable_entry(&self.metadata, &entry).await {
+            return Err(ServiceError::message(format!(
+                "session '{key}' cannot be archived"
+            )));
+        }
         if p.label.is_some() {
             let _ = self.metadata.upsert(key, p.label).await;
         }
         if p.model.is_some() {
             self.metadata.set_model(key, p.model).await;
+        }
+        if let Some(archived) = p.archived {
+            self.metadata.set_archived(key, archived).await;
         }
         if let Some(project_id_opt) = p.project_id {
             let project_id = project_id_opt.filter(|s| !s.is_empty());
@@ -517,6 +551,7 @@ impl SessionService for LiveSessionService {
             "key": entry.key,
             "label": entry.label,
             "model": entry.model,
+            "archived": entry.archived,
             "sandbox_enabled": entry.sandbox_enabled,
             "sandbox_image": entry.sandbox_image,
             "worktree_branch": entry.worktree_branch,

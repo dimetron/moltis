@@ -180,6 +180,19 @@ fn truncate_preview(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn default_channel_session_key(target: &moltis_channels::ChannelReplyTarget) -> String {
+    match &target.thread_id {
+        Some(thread_id) => format!(
+            "{}:{}:{}:{}",
+            target.channel_type, target.account_id, target.chat_id, thread_id
+        ),
+        None => format!(
+            "{}:{}:{}",
+            target.channel_type, target.account_id, target.chat_id
+        ),
+    }
+}
+
 async fn build_recent_sessions_snapshot(gw: &GatewayState, limit: usize) -> Vec<serde_json::Value> {
     let Some(ref metadata) = gw.services.session_metadata else {
         return Vec::new();
@@ -199,8 +212,8 @@ async fn build_recent_sessions_snapshot(gw: &GatewayState, limit: usize) -> Vec<
                         target.thread_id.as_deref(),
                     )
                     .await
-                    .map(|key| key == entry.key)
-                    .unwrap_or(false)
+                    .unwrap_or_else(|| default_channel_session_key(&target))
+                    == entry.key
             } else {
                 false
             }

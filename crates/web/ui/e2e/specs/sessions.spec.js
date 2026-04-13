@@ -361,6 +361,42 @@ test.describe("Session management", () => {
 		expect(pageErrors).toEqual([]);
 	});
 
+	test("archived sessions are hidden by default and can be restored with the sidebar toggle", async ({ page }) => {
+		const pageErrors = watchPageErrors(page);
+		await navigateAndWait(page, "/");
+		await waitForWsConnected(page);
+		await expectRpcOk(page, "sessions.clear_all", {});
+
+		await createSession(page);
+		const sessionPath = new URL(page.url()).pathname;
+		const sessionKey = sessionPath.replace(/^\/chats\//, "").replace(/\//g, ":");
+		const sessionItem = page.locator(`#sessionList .session-item[data-session-key="${sessionKey}"]`);
+
+		await expect(sessionItem).toBeVisible({ timeout: 10_000 });
+
+		await openChatMoreModal(page);
+		await page.locator('#chatMoreModal button[title="Archive session"]').click();
+		await expect(page).toHaveURL(/\/chats\/main$/);
+		await expect(sessionItem).toHaveCount(0);
+
+		const archivedToggle = page.locator("#showArchivedSessions");
+		await expect(archivedToggle).toBeVisible();
+		await archivedToggle.check();
+		await expect(sessionItem).toBeVisible({ timeout: 10_000 });
+
+		await sessionItem.click();
+		await expect(page).toHaveURL(new RegExp(`/chats/${sessionKey.replace(/:/g, "/")}$`));
+
+		await openChatMoreModal(page);
+		await page.locator('#chatMoreModal button[title="Unarchive session"]').click();
+		await expect(sessionItem).toBeVisible({ timeout: 10_000 });
+
+		await archivedToggle.uncheck();
+		await expect(sessionItem).toBeVisible({ timeout: 10_000 });
+
+		expect(pageErrors).toEqual([]);
+	});
+
 	test("stop action appears for active run and clears after abort", async ({ page }) => {
 		const pageErrors = watchPageErrors(page);
 		await page.goto("/");
@@ -766,7 +802,49 @@ test.describe("Session management", () => {
 		expect(pageErrors).toEqual([]);
 	});
 
-	test("cron session shows delete button in more controls", async ({ page }) => {
+	test("current channel session is not archivable in the client helper", async ({ page }) => {
+		const pageErrors = await navigateAndWait(page, "/");
+		await waitForWsConnected(page);
+
+		const archivable = await page.evaluate(async () => {
+			const appScript = document.querySelector('script[type="module"][src*="js/app.js"]');
+			if (!appScript) throw new Error("app module script not found");
+			const appUrl = new URL(appScript.src, window.location.origin);
+			const prefix = appUrl.href.slice(0, appUrl.href.length - "js/app.js".length);
+			const sessionsModule = await import(`${prefix}js/sessions.js`);
+			return sessionsModule.isArchivableSession({
+				key: "telegram:bot:archive-guard",
+				activeChannel: true,
+				archived: false,
+			});
+		});
+		expect(archivable).toBe(false);
+
+		expect(pageErrors).toEqual([]);
+	});
+
+	test("current archived channel session remains archivable for unarchive in the client helper", async ({ page }) => {
+		const pageErrors = await navigateAndWait(page, "/");
+		await waitForWsConnected(page);
+
+		const archivable = await page.evaluate(async () => {
+			const appScript = document.querySelector('script[type="module"][src*="js/app.js"]');
+			if (!appScript) throw new Error("app module script not found");
+			const appUrl = new URL(appScript.src, window.location.origin);
+			const prefix = appUrl.href.slice(0, appUrl.href.length - "js/app.js".length);
+			const sessionsModule = await import(`${prefix}js/sessions.js`);
+			return sessionsModule.isArchivableSession({
+				key: "telegram:bot:unarchive-guard",
+				activeChannel: true,
+				archived: true,
+			});
+		});
+		expect(archivable).toBe(true);
+
+		expect(pageErrors).toEqual([]);
+	});
+
+	test("cron session shows archive and delete buttons in more controls", async ({ page }) => {
 		const pageErrors = await navigateAndWait(page, "/");
 		await waitForWsConnected(page);
 
@@ -803,7 +881,9 @@ test.describe("Session management", () => {
 
 		// Open more controls and verify delete button is visible
 		await openChatMoreModal(page);
+		const archiveBtn = page.locator('#chatMoreModal button[title="Archive session"]');
 		const deleteBtn = page.locator('#chatMoreModal button[title="Delete session"]');
+		await expect(archiveBtn).toBeVisible({ timeout: 5_000 });
 		await expect(deleteBtn).toBeVisible({ timeout: 5_000 });
 
 		// Click delete — should show confirmation since it has messages

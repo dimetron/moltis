@@ -1437,6 +1437,7 @@ function mountSessionHeaderControls(closeChatMore) {
 					showFork=${false}
 					showClear=${false}
 					showDelete=${false}
+					showArchive=${false}
 				/>`,
 			headerToolbarMount,
 		);
@@ -1450,6 +1451,7 @@ function mountSessionHeaderControls(closeChatMore) {
 					showFork=${false}
 					showShare=${false}
 					showDelete=${false}
+					showArchive=${false}
 					nameOwnLine=${true}
 					showRenameButton=${true}
 				/>`,
@@ -1466,6 +1468,7 @@ function mountSessionHeaderControls(closeChatMore) {
 					showClear=${false}
 					actionButtonClass=${"provider-btn provider-btn-secondary provider-btn-sm"}
 					onBeforeShare=${() => closeChatMore?.()}
+					onBeforeArchive=${() => closeChatMore?.()}
 					onBeforeDelete=${() => closeChatMore?.()}
 				/>`,
 			headerModalTopMount,
