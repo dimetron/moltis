@@ -70,11 +70,11 @@ pub extern "C" fn moltis_auth_password_change(request_json: *const c_char) -> *m
             Err(e) => return e,
         };
 
-        if request.new_password.expose_secret().len() < 8 {
+        if request.new_password.expose_secret().len() < 12 {
             record_error("moltis_auth_password_change", "AUTH_PASSWORD_TOO_SHORT");
             return encode_error(
                 "AUTH_PASSWORD_TOO_SHORT",
-                "new password must be at least 8 characters",
+                "new password must be at least 12 characters",
             );
         }
 

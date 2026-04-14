@@ -1031,8 +1031,8 @@ function SecuritySection() {
 		e.preventDefault();
 		setPwErr(null);
 		setPwMsg(null);
-		if (newPw.length < 8) {
-			setPwErr("New password must be at least 8 characters.");
+		if (newPw.length < 12) {
+			setPwErr("New password must be at least 12 characters.");
 			return;
 		}
 		if (newPw !== confirmPw) {
@@ -1368,7 +1368,7 @@ function SecuritySection() {
 					<div>
 						<div class="text-xs text-[var(--muted)]" style="margin-bottom:4px;">${hasPassword ? "New password" : "Password"}</div>
 						<input type="password" class="provider-key-input" style="width:100%;" value=${newPw}
-							onInput=${(e) => setNewPw(e.target.value)} placeholder="At least 8 characters" />
+							onInput=${(e) => setNewPw(e.target.value)} placeholder="At least 12 characters" />
 					</div>
 					<div>
 						<div class="text-xs text-[var(--muted)]" style="margin-bottom:4px;">Confirm ${hasPassword ? "new " : ""}password</div>

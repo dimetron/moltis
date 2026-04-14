@@ -223,8 +223,8 @@ function AuthStep({ onNext, skippable }) {
 		e.preventDefault();
 		setError(null);
 		if (password.length > 0 || !localhostOnly) {
-			if (password.length < 8) {
-				setError("Password must be at least 8 characters.");
+			if (password.length < 12) {
+				setError("Password must be at least 12 characters.");
 				return;
 			}
 			if (password !== confirm) {
@@ -353,8 +353,8 @@ function AuthStep({ onNext, skippable }) {
 	function onOptionalPassword(e) {
 		e.preventDefault();
 		setError(null);
-		if (optPw.length < 8) {
-			setError("Password must be at least 8 characters.");
+		if (optPw.length < 12) {
+			setError("Password must be at least 12 characters.");
 			return;
 		}
 		if (optPw !== optPwConfirm) {
@@ -474,7 +474,7 @@ function AuthStep({ onNext, skippable }) {
 						class="provider-key-input w-full"
 						value=${optPw}
 						onInput=${(e) => setOptPw(e.target.value)}
-						placeholder="At least 8 characters"
+						placeholder="At least 12 characters"
 						autofocus
 					/>
 				</div>
@@ -585,7 +585,7 @@ function AuthStep({ onNext, skippable }) {
 						class="provider-key-input w-full"
 						value=${password}
 						onInput=${(e) => setPassword(e.target.value)}
-						placeholder=${localhostOnly ? "Optional on localhost" : "At least 8 characters"}
+						placeholder=${localhostOnly ? "Optional on localhost" : "At least 12 characters"}
 						autofocus
 					/>
 				</div>
