@@ -108,12 +108,12 @@ auto_generate = true              # Auto-generate local CA and server certificat
 #   policy    - Per-provider tool policy override (allow/deny lists)
 
 [providers]
-offered = ["local-llm", "github-copilot", "openai-codex", "openai", "anthropic", "openrouter", "ollama", "moonshot", "minimax", "zai"] # Enabled providers and those shown in onboarding/picker UI ([] = enable/show all)
+offered = ["local-llm", "lmstudio", "github-copilot", "openai-codex", "openai", "anthropic", "openrouter", "ollama", "moonshot", "minimax", "zai"] # Enabled providers and those shown in onboarding/picker UI ([] = enable/show all)
 # show_legacy_models = true  # Show models older than 1 year in the chat model selector (they always appear in Settings)
 # All available providers:
 #   "anthropic", "openai", "gemini", "groq", "xai", "deepseek",
 #   "fireworks", "mistral", "openrouter", "cerebras", "minimax",
-#   "moonshot", "zai", "zai-code", "venice", "ollama", "local-llm", "openai-codex",
+#   "moonshot", "zai", "zai-code", "venice", "ollama", "lmstudio", "local-llm", "openai-codex",
 #   "github-copilot", "kimi-code"
 
 # ── Anthropic (Claude) ────────────────────────────────────────

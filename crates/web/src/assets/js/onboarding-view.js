@@ -733,7 +733,7 @@ function IdentityStep({ onNext, onBack }) {
 
 var OPENAI_COMPATIBLE = ["openai", "mistral", "openrouter", "cerebras", "minimax", "moonshot", "venice", "ollama"];
 var BYOM_PROVIDERS = ["venice"];
-var RECOMMENDED_PROVIDERS = new Set(["anthropic", "openai", "gemini", "deepseek", "minimax", "zai", "ollama"]);
+var RECOMMENDED_PROVIDERS = new Set(["anthropic", "openai", "gemini", "deepseek", "minimax", "zai", "ollama", "local-llm", "lmstudio"]);
 
 function ModelSelectCard({ model, selected, probe, onToggle }) {
 	var probeError = probe && probe !== "ok" && probe !== "probing" ? probe.error || "" : "";
