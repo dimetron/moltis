@@ -3,7 +3,7 @@
 import { signal, useSignal } from "@preact/signals";
 import { html } from "htm/preact";
 import { render } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import {
 	addChannel,
 	buildTeamsEndpoint,
