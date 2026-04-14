@@ -1852,7 +1852,7 @@ function AddWhatsAppModal() {
 							? html`<div class="text-sm text-[var(--error)]">${waPairingError.value}</div>`
 							: html`<${QrCodeDisplay} data=${waQrData.value} svg=${waQrSvg.value} />`
 					}
-          <div class="text-xs text-[var(--muted)]">QR code refreshes automatically. Keep this window open.</div>
+          <div class="text-xs text-[var(--muted)]">QR code refreshes automatically. Keep this window open.<br/>Only new messages will be processed — past conversations are not synced.</div>
         </div>
       `
 					: html`
