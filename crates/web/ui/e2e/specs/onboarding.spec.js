@@ -318,6 +318,7 @@ test.describe("Onboarding wizard", () => {
 		const startedTime = page.locator(".onboarding-card time[data-epoch-ms]").first();
 		await expect(startedTime).toBeVisible();
 		await expect.poll(async () => ((await startedTime.textContent()) || "").trim(), { timeout: 10_000 }).not.toBe("");
+		await expect(page.locator(".onboarding-card")).toContainText("Version v");
 
 		expect(pageErrors).toEqual([]);
 	});

@@ -4290,6 +4290,7 @@ function OnboardingPage() {
 	}
 
 	var startedAt = getGon("started_at");
+	var version = String(getGon("version") || "").trim();
 
 	return html`<div class="onboarding-card">
 		<${StepIndicator} steps=${steps} current=${stepIndex} />
@@ -4303,7 +4304,15 @@ function OnboardingPage() {
 			${step === identityStep && html`<${IdentityStep} onNext=${goNext} onBack=${goBack} />`}
 			${step === summaryStep && html`<${SummaryStep} onBack=${goBack} onFinish=${goFinish} />`}
 		</div>
-		${startedAt ? html`<div class="text-xs text-[var(--muted)] text-center mt-4 pt-3 border-t border-[var(--border)]">Server started <time data-epoch-ms=${startedAt}></time></div>` : null}
+		${
+			startedAt || version
+				? html`<div class="text-xs text-[var(--muted)] text-center mt-4 pt-3 border-t border-[var(--border)]">
+					${startedAt ? html`<span>Server started <time data-epoch-ms=${startedAt}></time></span>` : null}
+					${startedAt && version ? html`<span> · </span>` : null}
+					${version ? html`<span>${t("onboarding:summary.versionLabel")} v${version}</span>` : null}
+				</div>`
+				: null
+		}
 	</div>`;
 }
 
