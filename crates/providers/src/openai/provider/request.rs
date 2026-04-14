@@ -75,6 +75,30 @@ impl OpenAiProvider {
         }
     }
 
+    /// Returns `true` when tool schemas should use OpenAI strict mode.
+    ///
+    /// Strict mode is an OpenAI-specific feature that adds `additionalProperties:
+    /// false` and forces all properties into the `required` array (making
+    /// originally-optional ones nullable via array-form types like
+    /// `["boolean", "null"]`).
+    ///
+    /// The `strict_tools` config field overrides auto-detection when set.
+    /// When unset, providers whose backends reject array-form types default to
+    /// non-strict: OpenRouter (proxies to Google, Anthropic, Meta, etc.) and
+    /// Gemini direct.
+    pub(super) fn needs_strict_tools(&self) -> bool {
+        if let Some(explicit) = self.strict_tools_override {
+            return explicit;
+        }
+        if self.base_url.contains("openrouter.ai") {
+            return false;
+        }
+        if self.provider_name.eq_ignore_ascii_case("gemini") {
+            return false;
+        }
+        true
+    }
+
     fn requires_reasoning_content_on_tool_messages(&self) -> bool {
         self.provider_name.eq_ignore_ascii_case("moonshot")
             || self.base_url.contains("moonshot.ai")
