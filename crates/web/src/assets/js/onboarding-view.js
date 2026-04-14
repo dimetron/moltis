@@ -3342,6 +3342,27 @@ function WhatsAppForm({ onConnected, error, setError }) {
 		};
 	}, []);
 
+	// Poll channels.status as a fallback in case the WebSocket QR event was missed.
+	useEffect(() => {
+		if (!pairingStarted || qrData) return undefined;
+		var id = accountId.trim();
+		var timer = setInterval(async () => {
+			try {
+				var res = await sendRpc("channels.status");
+				if (!res?.ok) return;
+				var ch = (res.result?.channels || []).find(
+					(c) => c.type === "whatsapp" && c.account_id === id,
+				);
+				if (ch?.extra?.qr_data && !qrData) {
+					setQrData(ch.extra.qr_data);
+				}
+			} catch (_e) {
+				/* ignore */
+			}
+		}, 2000);
+		return () => clearInterval(timer);
+	}, [pairingStarted, qrData]);
+
 	useEffect(() => {
 		if (!qrSvg) {
 			setQrSvgUrl(null);

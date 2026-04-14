@@ -1748,6 +1748,7 @@ function AddWhatsAppModal() {
 	var allowlistItems = useSignal([]);
 	var accountDraft = useSignal("");
 	var advancedConfigPatch = useSignal("");
+	var qrPollRef = useRef(null);
 
 	function onStartPairing(e) {
 		e.preventDefault();
@@ -1783,6 +1784,27 @@ function AddWhatsAppModal() {
 			saving.value = false;
 			if (res?.ok) {
 				pairingStarted.value = true;
+				// Poll channels.status as fallback if WebSocket QR event is missed.
+				if (qrPollRef.current) clearInterval(qrPollRef.current);
+				qrPollRef.current = setInterval(async () => {
+					if (waQrData.value) {
+						clearInterval(qrPollRef.current);
+						qrPollRef.current = null;
+						return;
+					}
+					try {
+						var st = await sendRpc("channels.status");
+						if (!st?.ok) return;
+						var ch = (st.result?.channels || []).find(
+							(c) => c.type === "whatsapp" && c.account_id === accountId,
+						);
+						if (ch?.extra?.qr_data && !waQrData.value) {
+							waQrData.value = ch.extra.qr_data;
+						}
+					} catch (_e) {
+						/* ignore */
+					}
+				}, 2000);
 			} else {
 				error.value = (res?.error && (res.error.message || res.error.detail)) || "Failed to start pairing.";
 			}
@@ -1790,6 +1812,10 @@ function AddWhatsAppModal() {
 	}
 
 	function onClose() {
+		if (qrPollRef.current) {
+			clearInterval(qrPollRef.current);
+			qrPollRef.current = null;
+		}
 		showAddWhatsApp.value = false;
 		pairingStarted.value = false;
 		waQrData.value = null;

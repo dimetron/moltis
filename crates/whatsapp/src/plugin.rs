@@ -316,11 +316,17 @@ impl ChannelStatus for WhatsAppPlugin {
                     } else {
                         Some("disconnected".into())
                     };
+                    let extra = state
+                        .latest_qr
+                        .read()
+                        .ok()
+                        .and_then(|q| q.clone())
+                        .map(|qr| serde_json::json!({ "qr_data": qr }));
                     ChannelHealthSnapshot {
                         connected,
                         account_id: account_id.to_string(),
                         details,
-                        extra: None,
+                        extra,
                     }
                 },
                 None => ChannelHealthSnapshot {
