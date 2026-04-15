@@ -23,7 +23,6 @@ fn str_value<'a>(value: &'a serde_json::Value, context: &str) -> &'a str {
         None => panic!("{context} should be a string, got {value:?}"),
     }
 }
-
 #[test]
 fn strict_mode_collapses_object_union_types() {
     let mut schema = serde_json::json!({
@@ -127,9 +126,10 @@ fn strict_mode_collapses_nested_object_union_types() {
         .iter()
         .map(|value| str_value(value, "required entry"))
         .collect();
+    let properties = object_value(&schema["properties"], "properties");
     for name in &top_required {
         assert!(
-            object_value(&schema["properties"], "properties").contains_key(*name),
+            properties.contains_key(*name),
             "top-level required '{name}' missing from properties"
         );
     }
