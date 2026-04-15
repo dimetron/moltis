@@ -737,7 +737,11 @@ pub(super) fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut V
     // Negative values are rejected by u32 deserialization (type error),
     // so we only need to guard zero and unusually large values here.
     for (model_id, override_cfg) in &config.models {
-        validate_context_window(override_cfg.context_window, &format!("models.{model_id}.context_window"), diagnostics);
+        validate_context_window(
+            override_cfg.context_window,
+            &format!("models.{model_id}.context_window"),
+            diagnostics,
+        );
     }
 
     // Validate provider-scoped model overrides.
@@ -753,11 +757,7 @@ pub(super) fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut V
 }
 
 /// Validate a `context_window` override value (optional field).
-fn validate_context_window(
-    value: Option<u32>,
-    path: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
+fn validate_context_window(value: Option<u32>, path: &str, diagnostics: &mut Vec<Diagnostic>) {
     let Some(cw) = value else {
         return;
     };

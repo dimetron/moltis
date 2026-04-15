@@ -30,11 +30,7 @@ pub(super) fn build_schema_map() -> KnownKeys {
         ]))
     };
 
-    let model_override = || {
-        Struct(HashMap::from([
-            ("context_window", Leaf),
-        ]))
-    };
+    let model_override = || Struct(HashMap::from([("context_window", Leaf)]));
 
     let provider_entry = || {
         Struct(HashMap::from([

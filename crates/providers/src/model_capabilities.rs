@@ -709,7 +709,11 @@ mod tests {
     fn config_override_returns_heuristic_when_no_overrides() {
         // With empty overrides, should behave identically to the heuristic.
         assert_eq!(
-            context_window_for_model_with_config("claude-sonnet-4-20250514", &empty_map(), &empty_map()),
+            context_window_for_model_with_config(
+                "claude-sonnet-4-20250514",
+                &empty_map(),
+                &empty_map()
+            ),
             200_000,
         );
         assert_eq!(
