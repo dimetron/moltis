@@ -176,7 +176,7 @@ fn strip_trailing_stop_tokens(text: &str) -> String {
                     && !token_content.is_empty()
                     && token_content
                         .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                 {
                     result = trimmed[..start].to_string();
                     continue; // Check for stacked trailing tokens.
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(strip_trailing_stop_tokens(input), input);
     }
 
-    // ── clean_response with eom ─────���─────────────────────────────
+    // ── clean_response with eom ───────────────────────────────────
 
     #[test]
     fn clean_response_strips_eom_from_jamba() {
