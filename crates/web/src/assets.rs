@@ -15,8 +15,11 @@ use std::{
 use {
     axum::{extract::Path, http::StatusCode, response::IntoResponse},
     serde::Serialize,
-    tracing::{info, warn},
+    tracing::info,
 };
+
+#[cfg(feature = "embedded-assets")]
+use tracing::warn;
 
 // ── Embedded assets (feature-gated) ─────────────────────────────────────────
 
