@@ -192,7 +192,9 @@ async fn handle_message(
 
     let peer_id = sender_jid.to_string();
     let chat_id = chat_jid.to_string();
-    let username = sender_jid.user.clone();
+    // Use the sender's user part as display username.  Resolved later for
+    // self-chat so the phone number appears instead of the opaque LID.
+    let mut username = sender_jid.user.clone();
     let sender_name = if info.push_name.is_empty() {
         None
     } else {
@@ -268,9 +270,11 @@ async fn handle_message(
     }
 
     // For self-chat, the chat JID is the LID which doesn't work as a reply
-    // target. Use the PN JID instead so outbound messages are delivered.
+    // target and shows an opaque ID in the UI. Use the PN JID instead so
+    // outbound messages are delivered and the phone number is displayed.
     let chat_id = if is_owner_self_chat {
         if let Some(ref pn) = own_pn {
+            username = pn.user.clone();
             format!("{}@{}", pn.user, pn.server)
         } else {
             chat_id
