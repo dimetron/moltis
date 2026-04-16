@@ -36,6 +36,7 @@ install_core_packages() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     curl \
     git \
+    openssh-client \
     cmake \
     build-essential \
     clang \
