@@ -61,6 +61,9 @@ pub struct LiveProviderSetupService {
     /// Static env overrides (for example config `[env]`) used when resolving
     /// provider credentials without mutating the process environment.
     pub(crate) env_overrides: HashMap<String, String>,
+    /// Global context-window overrides extracted from `[models.*].context_window`.
+    /// Set once at construction, then cloned into spawned tasks.
+    pub(crate) global_cw_overrides: HashMap<String, u32>,
     /// Injected error parser for interpreting provider API errors.
     pub(crate) error_parser: ErrorParser,
     /// Address the OAuth callback server binds to. Defaults to `127.0.0.1`
@@ -86,6 +89,7 @@ impl LiveProviderSetupService {
             priority_models: None,
             registry_rebuild_seq: Arc::new(AtomicU64::new(0)),
             env_overrides: HashMap::new(),
+            global_cw_overrides: HashMap::new(),
             error_parser: default_error_parser,
             callback_bind_addr: "127.0.0.1".to_string(),
         }
@@ -93,6 +97,12 @@ impl LiveProviderSetupService {
 
     pub fn with_env_overrides(mut self, env_overrides: HashMap<String, String>) -> Self {
         self.env_overrides = env_overrides;
+        self
+    }
+
+    /// Set global context-window overrides (from `[models.*].context_window`).
+    pub fn with_global_cw_overrides(mut self, overrides: HashMap<String, u32>) -> Self {
+        self.global_cw_overrides = overrides;
         self
     }
 
@@ -155,6 +165,7 @@ impl LiveProviderSetupService {
         let config = Arc::clone(&self.config);
         let key_store = self.key_store.clone();
         let env_overrides = self.env_overrides.clone();
+        let cw_overrides = self.global_cw_overrides.clone();
         let provider_name = provider_name.to_string();
 
         tokio::spawn(async move {
@@ -172,7 +183,7 @@ impl LiveProviderSetupService {
             };
 
             let new_registry = match tokio::task::spawn_blocking(move || {
-                ProviderRegistry::from_env_with_config_and_overrides(&effective, &env_overrides)
+                ProviderRegistry::from_env_with_config_and_overrides(&effective, &env_overrides, cw_overrides)
             })
             .await
             {
@@ -335,7 +346,7 @@ impl LiveProviderSetupService {
     }
 
     pub(crate) fn build_registry(&self, config: &ProvidersConfig) -> ProviderRegistry {
-        ProviderRegistry::from_env_with_config_and_overrides(config, &self.env_overrides)
+        ProviderRegistry::from_env_with_config_and_overrides(config, &self.env_overrides, self.global_cw_overrides.clone())
     }
 }
 

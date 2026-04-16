@@ -749,10 +749,61 @@ pub(super) fn check_semantic_warnings(config: &MoltisConfig, diagnostics: &mut V
         for (model_id, override_cfg) in &provider_entry.model_overrides {
             validate_context_window(
                 override_cfg.context_window,
-                &format!("providers.{provider_name}.models.{model_id}.context_window"),
+                &format!("providers.{provider_name}.model_overrides.{model_id}.context_window"),
                 diagnostics,
             );
         }
+    }
+
+    // tools: overflow_ratio must not be zero (budget becomes 0, every iteration fails)
+    if config.tools.preemptive_overflow_ratio == 0 {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "invalid-value",
+            path: "tools.preemptive_overflow_ratio".into(),
+            message: "preemptive_overflow_ratio = 0 means the overflow budget is always \
+                      0 tokens; the agent loop will fail immediately on every iteration"
+                .into(),
+        });
+    }
+
+    // tools: ratio fields should not exceed 100 (percentages)
+    if config.tools.tool_result_compaction_ratio > 100 {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "invalid-value",
+            path: "tools.tool_result_compaction_ratio".into(),
+            message: format!(
+                "tool_result_compaction_ratio ({}) exceeds 100 — compaction will trigger on every iteration regardless of context usage",
+                config.tools.tool_result_compaction_ratio
+            ),
+        });
+    }
+    if config.tools.preemptive_overflow_ratio > 100 {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "invalid-value",
+            path: "tools.preemptive_overflow_ratio".into(),
+            message: format!(
+                "preemptive_overflow_ratio ({}) exceeds 100 — overflow protection will always trigger",
+                config.tools.preemptive_overflow_ratio
+            ),
+        });
+    }
+
+    // tools: overflow_ratio must be greater than compaction_ratio
+    if config.tools.tool_result_compaction_ratio > 0
+        && config.tools.preemptive_overflow_ratio <= config.tools.tool_result_compaction_ratio
+    {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            category: "invalid-value",
+            path: "tools.preemptive_overflow_ratio".into(),
+            message: format!(
+                "preemptive_overflow_ratio ({}) should be greater than tool_result_compaction_ratio ({}) to avoid context overflow on every iteration",
+                config.tools.preemptive_overflow_ratio, config.tools.tool_result_compaction_ratio
+            ),
+        });
     }
 }
 
