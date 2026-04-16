@@ -528,6 +528,23 @@ export function clearSessionHistoryCache(key) {
 	clearHistoryPaginationState(key);
 }
 
+export function removeSessionFromClientState(key, options) {
+	var opts = options || {};
+	if (!key) return false;
+	var removedActive = sessionStore.activeSessionKey.value === key;
+	var removed = sessionStore.remove(key);
+	if (!removed) return false;
+	var nextKey = opts.nextKey || sessionStore.activeSessionKey.value || "main";
+	if (removedActive && nextKey !== sessionStore.activeSessionKey.value) sessionStore.setActive(nextKey);
+	clearSessionHistoryCache(key);
+	S.setSessions(S.sessions.filter((session) => session.key !== key));
+	renderSessionList();
+	if (!removedActive) return true;
+	S.setActiveSessionKey(nextKey);
+	if (opts.navigateIfActive && location.pathname.startsWith("/chats/")) navigate(sessionPath(nextKey));
+	return true;
+}
+
 // ── New session button ──────────────────────────────────────
 var newSessionBtn = S.$("newSessionBtn");
 newSessionBtn.addEventListener("click", () => {
