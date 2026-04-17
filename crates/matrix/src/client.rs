@@ -24,8 +24,8 @@ use {
 use moltis_channels::{Error as ChannelError, Result as ChannelResult};
 
 use crate::{
-    config::{MatrixAccountConfig, MatrixOwnershipMode},
-    handler,
+    config::{MatrixAccountConfig, MatrixAuthMode, MatrixOwnershipMode},
+    handler, oidc,
     state::AccountStateMap,
     verification,
 };
@@ -34,6 +34,7 @@ use crate::{
 pub(crate) enum AuthMode {
     AccessToken,
     Password,
+    Oidc,
 }
 
 #[derive(Debug, Clone)]
@@ -67,10 +68,16 @@ pub(crate) async fn build_client(
     config: &MatrixAccountConfig,
 ) -> ChannelResult<Client> {
     let store_path = ensure_store_path(account_id)?;
-    Client::builder()
+    let mut builder = Client::builder()
         .homeserver_url(&config.homeserver)
         .with_encryption_settings(encryption_settings())
-        .sqlite_store(&store_path, None)
+        .sqlite_store(&store_path, None);
+
+    if matches!(auth_mode(config), Ok(AuthMode::Oidc)) {
+        builder = builder.handle_refresh_tokens();
+    }
+
+    builder
         .build()
         .await
         .map_err(|error| ChannelError::external("matrix client build", error))
@@ -122,6 +129,49 @@ fn should_rebuild_store_after_auth_error(
 }
 
 pub(crate) fn auth_mode(config: &MatrixAccountConfig) -> ChannelResult<AuthMode> {
+    // Explicit auth_mode takes precedence when present.
+    if let Some(ref explicit) = config.auth_mode {
+        return match explicit {
+            MatrixAuthMode::Oidc => {
+                if config.homeserver.trim().is_empty() {
+                    return Err(ChannelError::invalid_input(
+                        "homeserver is required when using OIDC authentication",
+                    ));
+                }
+                Ok(AuthMode::Oidc)
+            },
+            MatrixAuthMode::Password => {
+                if config.user_id.as_deref().is_none_or(str::is_empty) {
+                    return Err(ChannelError::invalid_input(
+                        "user_id is required when using password authentication",
+                    ));
+                }
+                let password = config
+                    .password
+                    .as_ref()
+                    .map(|secret| secret.expose_secret().trim())
+                    .unwrap_or_default();
+                if password.is_empty() || password == moltis_common::secret_serde::REDACTED {
+                    return Err(ChannelError::invalid_input(
+                        "password is required when auth_mode is \"password\"",
+                    ));
+                }
+                Ok(AuthMode::Password)
+            },
+            MatrixAuthMode::AccessToken => {
+                let access_token = config.access_token.expose_secret().trim();
+                if access_token.is_empty() || access_token == moltis_common::secret_serde::REDACTED
+                {
+                    return Err(ChannelError::invalid_input(
+                        "access_token is required when auth_mode is \"access_token\"",
+                    ));
+                }
+                Ok(AuthMode::AccessToken)
+            },
+        };
+    }
+
+    // Backward-compatible auto-detection from credentials.
     let access_token = config.access_token.expose_secret().trim();
     if !access_token.is_empty() && access_token != moltis_common::secret_serde::REDACTED {
         return Ok(AuthMode::AccessToken);
@@ -188,6 +238,7 @@ pub(crate) async fn authenticate_client(
                 ownership_startup_error: None,
             })
         },
+        AuthMode::Oidc => oidc::restore_oidc_session(client, account_id).await,
     }
 }
 
@@ -198,6 +249,12 @@ pub(crate) async fn maybe_take_matrix_account_ownership(
 ) -> OwnershipAttemptResult {
     if config.ownership_mode != MatrixOwnershipMode::MoltisOwned {
         return OwnershipAttemptResult::default();
+    }
+
+    // OIDC sessions don't have a password — bootstrap cross-signing
+    // without UIAA password auth (MAS handles auth via OAuth).
+    if matches!(auth_mode(config), Ok(AuthMode::Oidc)) {
+        return ensure_oidc_owned_encryption_state(client, account_id).await;
     }
 
     match ensure_moltis_owned_encryption_state(client, account_id, config).await {
@@ -353,6 +410,172 @@ async fn ensure_moltis_owned_encryption_state(
     }
 
     Ok(None)
+}
+
+/// OIDC ownership: bootstrap cross-signing without a password.
+///
+/// MAS handles authentication via OAuth, so `bootstrap_cross_signing_if_needed(None)`
+/// works without UIAA password auth. If MAS requires browser approval for a
+/// cross-signing reset, we return the handle for the user to approve.
+#[instrument(skip(client), fields(account_id))]
+async fn ensure_oidc_owned_encryption_state(
+    client: &Client,
+    account_id: &str,
+) -> OwnershipAttemptResult {
+    // Bootstrap cross-signing without password auth.
+    if let Err(error) = client
+        .encryption()
+        .bootstrap_cross_signing_if_needed(None)
+        .await
+    {
+        // If UIAA is needed, try reset_identity which may return an OAuth approval handle.
+        if let Some(handle) = client
+            .encryption()
+            .recovery()
+            .reset_identity()
+            .await
+            .ok()
+            .flatten()
+        {
+            match handle.auth_type() {
+                CrossSigningResetAuthType::OAuth(_) => {
+                    let startup_error = ownership_approval_message(&handle);
+                    warn!(
+                        account_id,
+                        error = startup_error,
+                        "matrix OIDC ownership needs browser approval"
+                    );
+                    return OwnershipAttemptResult {
+                        startup_error: Some(startup_error),
+                        pending_identity_reset: Some(handle),
+                    };
+                },
+                CrossSigningResetAuthType::Uiaa(_) => {
+                    // OIDC sessions can't provide UIAA password auth.
+                    warn!(
+                        account_id,
+                        error = %error,
+                        "matrix OIDC ownership bootstrap failed (UIAA required but no password available)"
+                    );
+                    return OwnershipAttemptResult {
+                        startup_error: Some(format!(
+                            "cross-signing bootstrap needs password auth: {error}"
+                        )),
+                        pending_identity_reset: None,
+                    };
+                },
+            }
+        }
+
+        warn!(
+            account_id,
+            error = %error,
+            "matrix OIDC cross-signing bootstrap failed"
+        );
+        return OwnershipAttemptResult {
+            startup_error: Some(error.to_string()),
+            pending_identity_reset: None,
+        };
+    }
+
+    wait_for_e2ee_state_to_settle(client).await;
+
+    // After bootstrap, check if this device can actually self-sign.
+    // If cross-signing was already set up by a previous session, this device
+    // won't have the private signing keys. In that case, reset the identity
+    // to create fresh cross-signing keys owned by this device.
+    if !ownership_is_ready(client).await.unwrap_or(false) {
+        info!(
+            account_id,
+            "matrix OIDC cross-signing exists but this device lacks signing keys, resetting identity"
+        );
+
+        match client.encryption().recovery().reset_identity().await {
+            Ok(Some(handle)) => {
+                match handle.auth_type() {
+                    CrossSigningResetAuthType::OAuth(_) => {
+                        let startup_error = ownership_approval_message(&handle);
+                        warn!(
+                            account_id,
+                            error = startup_error,
+                            "matrix OIDC ownership needs browser approval"
+                        );
+                        return OwnershipAttemptResult {
+                            startup_error: Some(startup_error),
+                            pending_identity_reset: Some(handle),
+                        };
+                    },
+                    CrossSigningResetAuthType::Uiaa(_) => {
+                        // Try reset without auth — MAS may allow it.
+                        if let Err(error) = handle.reset(None).await {
+                            warn!(
+                                account_id,
+                                error = %error,
+                                "matrix OIDC identity reset auth failed"
+                            );
+                            return OwnershipAttemptResult {
+                                startup_error: Some(error.to_string()),
+                                pending_identity_reset: None,
+                            };
+                        }
+                        let _ = client
+                            .encryption()
+                            .bootstrap_cross_signing_if_needed(None)
+                            .await;
+                        wait_for_e2ee_state_to_settle(client).await;
+                    },
+                }
+            },
+            Ok(None) => {
+                // Reset completed — re-bootstrap to load private signing
+                // keys into the local crypto store, then settle.
+                let _ = client
+                    .encryption()
+                    .bootstrap_cross_signing_if_needed(None)
+                    .await;
+                wait_for_e2ee_state_to_settle(client).await;
+            },
+            Err(error) => {
+                warn!(
+                    account_id,
+                    error = %error,
+                    "matrix OIDC identity reset failed"
+                );
+                return OwnershipAttemptResult {
+                    startup_error: Some(error.to_string()),
+                    pending_identity_reset: None,
+                };
+            },
+        }
+    }
+
+    // Re-bootstrap to ensure private signing keys are in the local store.
+    // After identity reset or on restart, the keys may exist on the server
+    // but not be loaded locally.
+    let _ = client
+        .encryption()
+        .bootstrap_cross_signing_if_needed(None)
+        .await;
+    wait_for_e2ee_state_to_settle(client).await;
+
+    if let Err(error) = ensure_own_device_is_cross_signed(client).await {
+        warn!(
+            account_id,
+            error = %error,
+            "matrix OIDC device self-signing failed"
+        );
+    }
+
+    if ownership_is_ready(client).await.unwrap_or(false) {
+        info!(account_id, "matrix OIDC ownership bootstrap complete");
+    } else {
+        info!(
+            account_id,
+            "matrix OIDC ownership bootstrap partial — device may need verification in Element"
+        );
+    }
+
+    OwnershipAttemptResult::default()
 }
 
 async fn enable_password_backed_recovery(client: &Client, password: &str) -> ChannelResult<String> {
@@ -678,14 +901,26 @@ pub(crate) async fn sync_once_and_spawn_loop(
     };
     if let Some(ownership_attempt) = ownership_startup_error {
         let ownership_attempt = ownership_attempt.await;
-        let mut guard = accounts.write().unwrap_or_else(|error| error.into_inner());
-        if let Some(state) = guard.get_mut(account_id) {
-            state.ownership_startup_error = ownership_attempt.startup_error;
-            let mut pending_identity_reset = state
-                .pending_identity_reset
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            *pending_identity_reset = ownership_attempt.pending_identity_reset;
+        let event_sink = {
+            let mut guard = accounts.write().unwrap_or_else(|error| error.into_inner());
+            let sink = guard.get(account_id).and_then(|s| s.event_sink.clone());
+            if let Some(state) = guard.get_mut(account_id) {
+                state.ownership_startup_error = ownership_attempt.startup_error;
+                let mut pending_identity_reset = state
+                    .pending_identity_reset
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                *pending_identity_reset = ownership_attempt.pending_identity_reset;
+            }
+            sink
+        };
+        // Notify the UI that the channel status changed (ownership result).
+        if let Some(sink) = event_sink {
+            sink.emit(moltis_channels::ChannelEvent::StatusChanged {
+                channel_type: moltis_channels::ChannelType::Matrix,
+                account_id: account_id.to_string(),
+            })
+            .await;
         }
     }
     info!(
@@ -1158,6 +1393,46 @@ mod tests {
             false,
             RecoveryState::Unknown
         ));
+    }
+
+    #[test]
+    fn explicit_oidc_auth_mode_returns_oidc() {
+        let cfg = MatrixAccountConfig {
+            auth_mode: Some(MatrixAuthMode::Oidc),
+            ..config()
+        };
+        assert!(matches!(auth_mode(&cfg), Ok(AuthMode::Oidc)));
+    }
+
+    #[test]
+    fn explicit_oidc_auth_mode_requires_homeserver() {
+        let cfg = MatrixAccountConfig {
+            auth_mode: Some(MatrixAuthMode::Oidc),
+            homeserver: String::new(),
+            ..Default::default()
+        };
+        let error = match auth_mode(&cfg) {
+            Ok(mode) => panic!("OIDC with empty homeserver should fail, got {mode:?}"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("homeserver is required"));
+    }
+
+    #[test]
+    fn backward_compat_auto_detection_ignores_absent_auth_mode() {
+        // No auth_mode field — should auto-detect from credentials.
+        let token_cfg = MatrixAccountConfig {
+            access_token: Secret::new("syt_test".into()),
+            ..config()
+        };
+        assert!(matches!(auth_mode(&token_cfg), Ok(AuthMode::AccessToken)));
+
+        let password_cfg = MatrixAccountConfig {
+            password: Some(Secret::new("wordpass".into())),
+            user_id: Some("@bot:example.com".into()),
+            ..config()
+        };
+        assert!(matches!(auth_mode(&password_cfg), Ok(AuthMode::Password)));
     }
 
     mod retry_loop_tests {

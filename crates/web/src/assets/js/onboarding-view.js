@@ -496,9 +496,7 @@ function AuthStep({ onNext, skippable }) {
 				</div>
 				${error && html`<${ErrorPanel} message=${error} />`}
 				<div class="flex flex-wrap items-center gap-3 mt-1">
-					<button type="submit" class="provider-btn" disabled=${optPwSaving}>
-						${optPwSaving ? "Setting\u2026" : "Set password & continue"}
-					</button>
+					<button key=${`pw-${optPwSaving}`} type="submit" class="provider-btn" disabled=${optPwSaving}>${optPwSaving ? "Setting\u2026" : "Set password & continue"}</button>
 					<button type="button" class="text-xs text-[var(--muted)] cursor-pointer bg-transparent border-none underline" onClick=${() => {
 						ensureWsConnected();
 						onNext();
@@ -563,9 +561,7 @@ function AuthStep({ onNext, skippable }) {
 			${originsHint && html`<div class="text-xs text-[var(--muted)]">Passkeys will work when visiting: ${originsHint}</div>`}
 			${error && html`<${ErrorPanel} message=${error} />`}
 			<div class="flex flex-wrap items-center gap-3 mt-1">
-				<button type="button" class="provider-btn" disabled=${saving} onClick=${onPasskeyRegister}>
-					${saving ? "Registering\u2026" : "Register passkey"}
-				</button>
+				<button key=${`pk-${saving}`} type="button" class="provider-btn" disabled=${saving} onClick=${onPasskeyRegister}>${saving ? "Registering\u2026" : "Register passkey"}</button>
 				${
 					skippable
 						? html`<button type="button" class="text-xs text-[var(--muted)] cursor-pointer bg-transparent border-none underline" onClick=${onNext}>${t("common:actions.skip")}</button>`
@@ -607,9 +603,7 @@ function AuthStep({ onNext, skippable }) {
 				</div>
 			${error && html`<${ErrorPanel} message=${error} />`}
 			<div class="flex flex-wrap items-center gap-3 mt-1">
-				<button type="submit" class="provider-btn" disabled=${saving}>
-					${saving ? "Setting up\u2026" : localhostOnly && !password ? "Skip" : "Set password"}
-				</button>
+				<button key=${`auth-${saving}`} type="submit" class="provider-btn" disabled=${saving}>${saving ? "Setting up\u2026" : localhostOnly && !password ? "Skip" : "Set password"}</button>
 				${
 					skippable
 						? html`<button type="button" class="text-xs text-[var(--muted)] cursor-pointer bg-transparent border-none underline" onClick=${onNext}>${t("common:actions.skip")}</button>`
@@ -724,9 +718,7 @@ function IdentityStep({ onNext, onBack }) {
 						? html`<button type="button" class="provider-btn provider-btn-secondary" onClick=${onBack}>${t("common:actions.back")}</button>`
 						: null
 				}
-				<button type="submit" class="provider-btn" disabled=${saving}>
-					${saving ? "Saving\u2026" : "Continue"}
-				</button>
+				<button key=${`id-${saving}`} type="submit" class="provider-btn" disabled=${saving}>${saving ? "Saving\u2026" : "Continue"}</button>
 			</div>
 		</form>
 	</div>`;
@@ -934,7 +926,7 @@ function OnboardingProviderRow({
 				}
 				${error ? html`<${ErrorPanel} message=${error} />` : null}
 				<div class="flex items-center gap-2 mt-1">
-					<button type="submit" class="provider-btn provider-btn-sm" disabled=${phase === "validating"}>${phase === "validating" ? "Saving\u2026" : "Save"}</button>
+					<button key=${`prov-${phase}`} type="submit" class="provider-btn provider-btn-sm" disabled=${phase === "validating"}>${phase === "validating" ? "Saving\u2026" : "Save"}</button>
 					<button type="button" class="provider-btn provider-btn-secondary provider-btn-sm" onClick=${onCancelConfigure} disabled=${phase === "validating"}>Cancel</button>
 				</div>
 				${phase === "validating" ? html`<div class="text-xs text-[var(--muted)] mt-1">Discovering available models\u2026</div>` : null}
@@ -977,7 +969,7 @@ function OnboardingProviderRow({
 				<div class="text-xs text-[var(--muted)]">${selectedModels.size === 0 ? "No models selected" : `${selectedModels.size} model${selectedModels.size > 1 ? "s" : ""} selected`}</div>
 				${error ? html`<${ErrorPanel} message=${error} />` : null}
 				<div class="flex items-center gap-2 mt-1">
-					<button type="button" class="provider-btn provider-btn-sm" disabled=${selectedModels.size === 0 || savingModels} onClick=${onSaveModels}>${savingModels ? "Saving\u2026" : "Save"}</button>
+					<button key=${`models-${savingModels}`} type="button" class="provider-btn provider-btn-sm" disabled=${selectedModels.size === 0 || savingModels} onClick=${onSaveModels}>${savingModels ? "Saving\u2026" : "Save"}</button>
 					<button type="button" class="provider-btn provider-btn-secondary provider-btn-sm" onClick=${onCancelConfigure} disabled=${savingModels}>Cancel</button>
 				</div>
 				${savingModels ? html`<div class="text-xs text-[var(--muted)] mt-1">Saving credentials and validating selected models\u2026</div>` : null}
@@ -1940,7 +1932,7 @@ function OnboardingVoiceRow({
 				${provider.hint ? html`<div class="text-xs text-[var(--accent)]">${provider.hint}</div>` : null}
 				${error ? html`<${ErrorPanel} message=${error} />` : null}
 				<div class="flex items-center gap-2 mt-1">
-					<button type="submit" class="provider-btn provider-btn-sm" disabled=${saving}>${saving ? "Saving\u2026" : "Save"}</button>
+					<button key=${`voice-${saving}`} type="submit" class="provider-btn provider-btn-sm" disabled=${saving}>${saving ? "Saving\u2026" : "Save"}</button>
 					<button type="button" class="provider-btn provider-btn-secondary provider-btn-sm" onClick=${onCancelConfigure}>Cancel</button>
 				</div>
 			</form>`
@@ -2815,7 +2807,7 @@ function TelegramForm({ onConnected, error, setError }) {
 		</div>
 		<${AdvancedConfigPatchField} value=${advancedConfig} onInput=${setAdvancedConfig} />
 		${error && html`<${ErrorPanel} message=${error} />`}
-		<button type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Bot"}</button>
+		<button key=${`tg-${saving}`} type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Bot"}</button>
 	</form>`;
 }
 
@@ -2984,7 +2976,7 @@ function TeamsForm({ onConnected, error, setError }) {
 		}
 		<${AdvancedConfigPatchField} value=${advancedConfig} onInput=${setAdvancedConfig} />
 		${error && html`<${ErrorPanel} message=${error} />`}
-		<button type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Teams"}</button>
+		<button key=${`teams-${saving}`} type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Teams"}</button>
 	</form>`;
 }
 
@@ -3104,13 +3096,22 @@ function DiscordForm({ onConnected, error, setError }) {
 		</div>
 		<${AdvancedConfigPatchField} value=${advancedConfig} onInput=${setAdvancedConfig} />
 		${error && html`<${ErrorPanel} message=${error} />`}
-		<button type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Bot"}</button>
+		<button key=${`disc-${saving}`} type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Bot"}</button>
 	</form>`;
+}
+
+function matrixSubmitLabel(saving, oidcWaiting, authMode) {
+	if (saving) return "Connecting\u2026";
+	if (oidcWaiting) return "Waiting for OIDC\u2026";
+	if (authMode === "oidc") return "Authenticate with OIDC";
+	return "Connect Matrix";
 }
 
 function MatrixForm({ onConnected, error, setError }) {
 	var [homeserver, setHomeserver] = useState(MATRIX_DEFAULT_HOMESERVER);
-	var [authMode, setAuthMode] = useState("password");
+	var [authMode, setAuthMode] = useState("oidc");
+	var [oidcWaiting, setOidcWaiting] = useState(false);
+	var oidcPollRef = useRef(null);
 	var [userId, setUserId] = useState("");
 	var [credential, setCredential] = useState("");
 	var [deviceDisplayName, setDeviceDisplayName] = useState("");
@@ -3156,10 +3157,67 @@ function MatrixForm({ onConnected, error, setError }) {
 		}
 		setError(null);
 		setSaving(true);
+
+		// OIDC flow: start browser-based auth.
+		if (normalizeMatrixAuthMode(authMode) === "oidc") {
+			var redirectUri = window.location.origin + "/auth/callback";
+			var oidcConfig = {
+				homeserver: homeserver.trim(),
+				ownership_mode: normalizeMatrixOwnershipMode(ownershipMode),
+				dm_policy: dmPolicy,
+				room_policy: roomPolicy,
+				mention_mode: mentionMode,
+				auto_join: autoJoin,
+				otp_self_approval: otpSelfApproval,
+				otp_cooldown_secs: normalizeMatrixOtpCooldown(otpCooldown),
+				user_allowlist: splitLines(userAllowlist),
+				room_allowlist: splitLines(roomAllowlist),
+			};
+			if (deviceDisplayName.trim()) oidcConfig.device_display_name = deviceDisplayName.trim();
+			Object.assign(oidcConfig, advancedPatch.value);
+			sendRpc("channels.oauth_start", {
+				account_id: accountId,
+				homeserver: homeserver.trim(),
+				redirect_uri: redirectUri,
+				config: oidcConfig,
+			}).then((res) => {
+				if (res?.ok && res.payload?.auth_url) {
+					setOidcWaiting(true);
+					setSaving(false);
+					window.open(res.payload.auth_url, "_blank", "noopener");
+					var pollCount = 0;
+					oidcPollRef.current = setInterval(() => {
+						pollCount++;
+						if (pollCount > 120) {
+							clearInterval(oidcPollRef.current);
+							oidcPollRef.current = null;
+							setOidcWaiting(false);
+							setError("OIDC authentication timed out. Please try again.");
+							return;
+						}
+						fetchChannelStatus().then((statusRes) => {
+							if (!statusRes?.ok) return;
+							var channels = statusRes.payload?.channels || [];
+							if (channels.some((ch) => ch.account_id === accountId && ch.status === "connected")) {
+								clearInterval(oidcPollRef.current);
+								oidcPollRef.current = null;
+								setOidcWaiting(false);
+								onConnected(accountId.trim(), "matrix");
+							}
+						});
+					}, 1000);
+				} else {
+					setSaving(false);
+					setError((res?.error && (res.error.message || res.error.detail)) || "Failed to start OIDC login.");
+				}
+			});
+			return;
+		}
+
 		var config = {
 			homeserver: homeserver.trim(),
 			ownership_mode:
-				normalizeMatrixAuthMode(authMode) === "password" ? normalizeMatrixOwnershipMode(ownershipMode) : "user_managed",
+				normalizeMatrixAuthMode(authMode) === "password" || normalizeMatrixAuthMode(authMode) === "oidc" ? normalizeMatrixOwnershipMode(ownershipMode) : "user_managed",
 			dm_policy: dmPolicy,
 			room_policy: roomPolicy,
 			mention_mode: mentionMode,
@@ -3191,11 +3249,11 @@ function MatrixForm({ onConnected, error, setError }) {
 		<div class="rounded-md border border-[var(--border)] bg-[var(--surface2)] p-3 text-xs text-[var(--muted)] flex flex-col gap-1">
 			<span class="font-medium text-[var(--text-strong)]">Connect a Matrix bot user</span>
 			<span>1. Leave the homeserver as <span class="font-mono">${MATRIX_DEFAULT_HOMESERVER}</span> for matrix.org accounts</span>
-			<span>2. Password is the default because it supports encrypted Matrix chats. Access token auth is only for plain Matrix traffic</span>
+			<span>2. OIDC is the default for modern homeservers. Use Password for encrypted chats on older servers, or Access Token for plain traffic</span>
 			<span>3. Moltis generates the local account ID automatically from the Matrix user or homeserver</span>
 		</div>
-		<div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-100 flex flex-col gap-1">
-			<span class="font-medium text-emerald-50">Encrypted chats require password auth</span>
+		<div class="rounded-md border border-emerald-600/30 bg-emerald-50 p-3 text-xs text-emerald-900 flex flex-col gap-1">
+			<span class="font-medium text-emerald-800">Encrypted chats require OIDC or Password auth</span>
 			<span>${MATRIX_ENCRYPTION_GUIDANCE}</span>
 		</div>
 		<div>
@@ -3209,13 +3267,20 @@ function MatrixForm({ onConnected, error, setError }) {
 		<div>
 			<label class="text-xs text-[var(--muted)] mb-1 block">Authentication</label>
 			<select class="provider-key-input w-full cursor-pointer" value=${authMode} onChange=${(e) => setAuthMode(normalizeMatrixAuthMode(e.target.value))}>
+				<option value="oidc">OIDC (recommended)</option>
 				<option value="password">Password</option>
 				<option value="access_token">Access token</option>
 			</select>
 			<div class="text-xs text-[var(--muted)] mt-1">${matrixAuthModeGuidance(authMode)}</div>
 		</div>
+		${oidcWaiting && html`
+			<div class="rounded-md border border-blue-600/30 bg-blue-50 px-3 py-3 text-xs text-blue-900 flex items-center gap-2">
+				<span class="animate-spin inline-block w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full"></span>
+				<span>Waiting for OIDC authentication... Complete the login in the browser window that opened.</span>
+			</div>
+		`}
 		${
-			authMode === "password"
+			authMode === "password" || authMode === "oidc"
 				? html`<label class="flex items-start gap-2 rounded-md border border-[var(--border)] bg-[var(--surface2)] p-3">
 					<input
 						type="checkbox"
@@ -3229,6 +3294,7 @@ function MatrixForm({ onConnected, error, setError }) {
 				</label>`
 				: html`<div class="text-xs text-[var(--muted)]">${matrixOwnershipModeGuidance(authMode, "user_managed")}</div>`
 		}
+		${authMode !== "oidc" && html`
 		<div>
 			<label class="text-xs text-[var(--muted)] mb-1 block">Matrix User ID${authMode === "password" ? " (required)" : " (optional)"}</label>
 			<input type="text" class="provider-key-input w-full"
@@ -3254,6 +3320,7 @@ function MatrixForm({ onConnected, error, setError }) {
 				<a href=${MATRIX_DOCS_URL} target="_blank" rel="noreferrer" class="text-[var(--accent)] underline">Matrix setup docs</a>
 			</div>
 		</div>
+		`}
 		<div>
 			<label class="text-xs text-[var(--muted)] mb-1 block">Device Display Name (optional)</label>
 			<input type="text" class="provider-key-input w-full"
@@ -3322,7 +3389,7 @@ function MatrixForm({ onConnected, error, setError }) {
 		</div>
 		<${AdvancedConfigPatchField} value=${advancedConfig} onInput=${setAdvancedConfig} />
 		${error && html`<${ErrorPanel} message=${error} />`}
-		<button type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Matrix"}</button>
+		<button key=${`matrix-${saving}-${oidcWaiting}`} type="submit" class="provider-btn" disabled=${saving || oidcWaiting}>${matrixSubmitLabel(saving, oidcWaiting, authMode)}</button>
 	</form>`;
 }
 
@@ -3506,7 +3573,7 @@ function WhatsAppForm({ onConnected, error, setError }) {
 		</div>
 		<${AdvancedConfigPatchField} value=${advancedConfig} onInput=${setAdvancedConfig} />
 		${error && html`<${ErrorPanel} message=${error} />`}
-		<button type="submit" class="provider-btn" disabled=${saving}>${saving ? "Starting\u2026" : "Start Pairing"}</button>
+		<button key=${`wa-${saving}`} type="submit" class="provider-btn" disabled=${saving}>${saving ? "Starting\u2026" : "Start Pairing"}</button>
 	</form>`;
 }
 
@@ -3651,9 +3718,7 @@ function NostrForm({ onConnected, error, setError }) {
 		<${AdvancedConfigPatchField} value=${advancedConfig}
 			onInput=${(value) => setAdvancedConfig(value)} />
 		${error && html`<div class="text-xs text-[var(--error)]">${error}</div>`}
-		<button type="submit" class="provider-btn self-start" disabled=${saving}>
-			${saving ? "Connecting\u2026" : "Connect Nostr"}
-		</button>
+		<button key=${`nostr-${saving}`} type="submit" class="provider-btn self-start" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Nostr"}</button>
 	</form>`;
 }
 
@@ -3806,7 +3871,7 @@ function SlackForm({ onConnected, error, setError }) {
 		</div>
 		<${AdvancedConfigPatchField} value=${advancedConfig} onInput=${setAdvancedConfig} />
 		${error && html`<${ErrorPanel} message=${error} />`}
-		<button type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Slack"}</button>
+		<button key=${`slack-${saving}`} type="submit" class="provider-btn" disabled=${saving}>${saving ? "Connecting\u2026" : "Connect Slack"}</button>
 	</form>`;
 }
 
@@ -3851,6 +3916,7 @@ function ChannelStep({ onNext, onBack }) {
 		<h2 class="text-lg font-medium text-[var(--text-strong)]">Connect a Channel</h2>
 		<p class="text-xs text-[var(--muted)] leading-relaxed">Connect a messaging channel so you can chat from your phone or team workspace. You can set this up later in Channels.</p>
 		<${ChannelStorageNotice} />
+		<div key=${`${phase}-${selectedType || "none"}`}>
 		${phase === "select" && html`<${ChannelTypeSelector} onSelect=${onSelectType} offered=${offered} />`}
 		${phase === "form" && selectedType === "telegram" && html`<${TelegramForm} onConnected=${onConnected} error=${error} setError=${setError} />`}
 		${phase === "form" && selectedType === "whatsapp" && html`<${WhatsAppForm} onConnected=${onConnected} error=${error} setError=${setError} />`}
@@ -3860,6 +3926,7 @@ function ChannelStep({ onNext, onBack }) {
 		${phase === "form" && selectedType === "matrix" && html`<${MatrixForm} onConnected=${onConnected} error=${error} setError=${setError} />`}
 		${phase === "form" && selectedType === "nostr" && html`<${NostrForm} onConnected=${onConnected} error=${error} setError=${setError} />`}
 		${phase === "success" && html`<${ChannelSuccess} channelName=${connectedName} channelType=${connectedType} onAnother=${onAnother} />`}
+		</div>
 		<div class="flex flex-wrap items-center gap-3 mt-1">
 			<button type="button" class="provider-btn provider-btn-secondary" onClick=${showBackSelector ? () => setPhase("select") : onBack}>${t("common:actions.back")}</button>
 			${phase === "success" && html`<button type="button" class="provider-btn" onClick=${onNext}>${t("common:actions.continue")}</button>`}
@@ -4146,8 +4213,7 @@ function OpenClawImportStep({ onNext, onBack }) {
 		}
 		<div class="flex flex-wrap items-center gap-3 mt-1">
 			${onBack ? html`<button class="provider-btn provider-btn-secondary" onClick=${onBack} disabled=${importing}>Back</button>` : null}
-			<button class="provider-btn" onClick=${doImport} disabled=${!anySelected || importing}>
-				${importing ? "Importing\u2026" : "Import Selected"}
+			<button key=${`import-${importing}`} class="provider-btn" onClick=${doImport} disabled=${!anySelected || importing}>${importing ? "Importing\u2026" : "Import Selected"}
 			</button>
 			<button
 				class="text-xs text-[var(--muted)] cursor-pointer bg-transparent border-none underline"

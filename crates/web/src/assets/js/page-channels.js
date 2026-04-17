@@ -134,8 +134,8 @@ function MatrixInfoRow({ label, value, copyLabel = null }) {
 	var text = String(value || "").trim();
 	return html`<div class="flex items-center justify-between gap-3">
 		<div class="min-w-0">
-			<div class="text-[11px] uppercase tracking-wide text-emerald-200/70">${label}</div>
-			<div class="truncate font-mono text-emerald-50">${text || "\u2014"}</div>
+			<div class="text-[11px] uppercase tracking-wide text-sky-700">${label}</div>
+			<div class="truncate font-mono text-sky-900">${text || "\u2014"}</div>
 		</div>
 		${
 			text &&
@@ -181,9 +181,9 @@ function MatrixOwnershipCard({ channel, matrixStatus }) {
 				? "This account already has partial Matrix secure-backup state. Finish or repair it in Element, or switch this channel to user-managed mode."
 				: ownershipIssue === "generic_blocked"
 					? "Moltis could not take ownership of this Matrix account automatically. Repair the account in Element or switch this channel to user-managed mode."
-					: authMode === "password"
+					: authMode === "password" || authMode === "oidc"
 						? matrixOwnershipModeGuidance(authMode, ownershipMode)
-						: "Access token auth is always user-managed. If you want encrypted Matrix chats, reconnect this channel with password auth so Moltis can create its own device.";
+						: "Access token auth is always user-managed. If you want encrypted Matrix chats, reconnect this channel with OIDC or password auth so Moltis can create its own device.";
 	var detailTitle =
 		ownershipIssue === "approval_required"
 			? "Browser approval pending"
@@ -220,20 +220,20 @@ function MatrixOwnershipCard({ channel, matrixStatus }) {
 		});
 	}
 
-	return html`<div class="rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
+	return html`<div class="rounded-md border border-sky-600/30 bg-sky-50 px-3 py-2 text-xs text-sky-900">
 		<div class="flex items-center gap-2">
-			<div class="font-medium text-sky-50">${modeTitle}</div>
+			<div class="font-medium text-sky-800">${modeTitle}</div>
 			<span class="provider-item-badge ${deviceVerified ? "configured" : "oauth"}">${verificationText}</span>
 		</div>
-		<div class="mt-1 text-sky-100/90">${modeText}</div>
-		<div class="mt-2 text-sky-100/90">
+		<div class="mt-1 text-sky-900">${modeText}</div>
+		<div class="mt-2 text-sky-900">
 			Cross-signing: <span class="font-medium">${matrixStatus?.cross_signing_complete ? "ready" : "not ready"}</span>.
 			Recovery: <span class="font-medium">${recoveryState}</span>.
 		</div>
 		${
 			hasAccountDetails &&
-			html`<details class="mt-2 rounded-md border border-sky-500/20 bg-sky-500/5 px-3 py-2">
-				<summary class="cursor-pointer text-[11px] font-medium uppercase tracking-wide text-sky-100/80">
+			html`<details class="mt-2 rounded-md border border-sky-600/20 bg-sky-100/50 px-3 py-2">
+				<summary class="cursor-pointer text-[11px] font-medium uppercase tracking-wide text-sky-800">
 					Matrix account details
 				</summary>
 				<div class="mt-2 grid gap-2">
@@ -268,10 +268,10 @@ function MatrixOwnershipCard({ channel, matrixStatus }) {
 						${retryingOwnership.value ? "Retrying ownership setup..." : "Click here once you reset the account"}
 					</button>
 				</div>
-				<div class="mt-2 text-[11px] text-sky-100/80">Make sure the browser page is signed into <span class="font-mono text-sky-50">${matrixStatus?.user_id || "the Matrix bot account"}</span>.</div>
+				<div class="mt-2 text-[11px] text-sky-800">Make sure the browser page is signed into <span class="font-mono text-sky-800">${matrixStatus?.user_id || "the Matrix bot account"}</span>.</div>
 				${
 					retryOwnershipError.value &&
-					html`<div class="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+					html`<div class="mt-2 rounded-md border border-amber-600/30 bg-amber-50 px-3 py-2 text-amber-900">
 						${retryOwnershipError.value}
 					</div>`
 				}
@@ -279,9 +279,22 @@ function MatrixOwnershipCard({ channel, matrixStatus }) {
 		}
 		${
 			detailTitle &&
-			html`<div class="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
-				<div class="font-medium text-amber-50">${detailTitle}</div>
+			html`<div class="mt-2 rounded-md border border-amber-600/30 bg-amber-50 px-3 py-2 text-amber-900">
+				<div class="font-medium text-amber-800">${detailTitle}</div>
 				<div class="mt-1">${detailText}</div>
+			</div>`
+		}
+		${
+			ownershipIssue === "none" && ownershipMode === "moltis_owned" && !deviceVerified &&
+			html`<div class="mt-2 flex flex-wrap gap-2">
+				<button
+					type="button"
+					class="provider-btn provider-btn-sm"
+					onClick=${retryOwnershipSetup}
+					disabled=${retryingOwnership.value}>
+					${retryingOwnership.value ? "Verifying\u2026" : "Retry device verification"}
+				</button>
+				${retryOwnershipError.value && html`<div class="text-xs text-[var(--error)]">${retryOwnershipError.value}</div>`}
 			</div>`
 		}
 	</div>`;
@@ -417,8 +430,8 @@ function ChannelCard(props) {
     ${
 			channelType(ch.type) === "matrix" &&
 			pendingVerifications.length > 0 &&
-			html`<div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-		      <div class="font-medium text-emerald-50">Verification pending</div>
+			html`<div class="rounded-md border border-emerald-600/30 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+		      <div class="font-medium text-emerald-800">Verification pending</div>
 		      ${pendingVerifications.map(
 						(prompt) => html`<div class="mt-1">
 							<div>With ${prompt.other_user_id}</div>
@@ -931,7 +944,7 @@ function AddTeamsModal() {
 	      ${
 					!(tsLoading.value || (tsStatus.value?.mode === "funnel" && tsStatus.value?.url)) &&
 					html`
-	        <div class="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs flex flex-col gap-2">
+	        <div class="rounded-md border border-amber-600/30 bg-amber-50 p-3 text-xs flex flex-col gap-2">
 	          <span class="font-medium text-[var(--text-strong)]">Public URL required</span>
 	          <span class="text-[var(--muted)]">Teams sends messages to your server via webhook. Your Moltis instance must be reachable over HTTPS.</span>
 	          ${
@@ -1327,14 +1340,36 @@ function AddMatrixModal() {
 	var userAllowlistItems = useSignal([]);
 	var roomAllowlistItems = useSignal([]);
 	var homeserverDraft = useSignal(MATRIX_DEFAULT_HOMESERVER);
-	var authModeDraft = useSignal("password");
+	var authModeDraft = useSignal("oidc");
 	var userIdDraft = useSignal("");
 	var credentialDraft = useSignal("");
 	var deviceDisplayNameDraft = useSignal("");
 	var ownershipModeDraft = useSignal("moltis_owned");
+	var oidcWaiting = useSignal(false);
+	var oidcPollRef = useRef(null);
 	var otpSelfApprovalDraft = useSignal(true);
 	var otpCooldownDraft = useSignal("300");
 	var advancedConfigPatch = useSignal("");
+
+	function resetForm() {
+		if (oidcPollRef.current) {
+			clearInterval(oidcPollRef.current);
+			oidcPollRef.current = null;
+		}
+		addModel.value = "";
+		userAllowlistItems.value = [];
+		roomAllowlistItems.value = [];
+		homeserverDraft.value = MATRIX_DEFAULT_HOMESERVER;
+		authModeDraft.value = "oidc";
+		userIdDraft.value = "";
+		credentialDraft.value = "";
+		deviceDisplayNameDraft.value = "";
+		ownershipModeDraft.value = "moltis_owned";
+		otpSelfApprovalDraft.value = true;
+		otpCooldownDraft.value = "300";
+		advancedConfigPatch.value = "";
+		oidcWaiting.value = false;
+	}
 
 	function onSubmit(e) {
 		e.preventDefault();
@@ -1363,9 +1398,74 @@ function AddMatrixModal() {
 		}
 		error.value = "";
 		saving.value = true;
+
+		// OIDC flow: start browser-based auth instead of direct connect.
+		if (authMode === "oidc") {
+			var redirectUri = window.location.origin + "/auth/callback";
+			var oidcConfig = {
+				homeserver: homeserver,
+				ownership_mode: normalizeMatrixOwnershipMode(ownershipModeDraft.value),
+				dm_policy: form.querySelector("[data-field=dmPolicy]").value,
+				room_policy: form.querySelector("[data-field=roomPolicy]").value,
+				mention_mode: form.querySelector("[data-field=mentionMode]").value,
+				auto_join: form.querySelector("[data-field=autoJoin]").value,
+				user_allowlist: userAllowlistItems.value,
+				room_allowlist: roomAllowlistItems.value,
+				otp_self_approval: otpSelfApprovalDraft.value,
+				otp_cooldown_secs: normalizeMatrixOtpCooldown(otpCooldownDraft.value),
+			};
+			if (deviceDisplayNameDraft.value.trim()) oidcConfig.device_display_name = deviceDisplayNameDraft.value.trim();
+			if (addModel.value) {
+				oidcConfig.model = addModel.value;
+				var found = modelsSig.value.find((x) => x.id === addModel.value);
+				if (found?.provider) oidcConfig.model_provider = found.provider;
+			}
+			Object.assign(oidcConfig, advancedPatch.value);
+			sendRpc("channels.oauth_start", {
+				account_id: accountId,
+				homeserver: homeserver,
+				redirect_uri: redirectUri,
+				config: oidcConfig,
+			}).then((res) => {
+				if (res?.ok && res.payload?.auth_url) {
+					oidcWaiting.value = true;
+					saving.value = false;
+					window.open(res.payload.auth_url, "_blank", "noopener");
+					// Poll for the channel to appear.
+					var pollCount = 0;
+					oidcPollRef.current = setInterval(() => {
+						pollCount++;
+						if (pollCount > 120) { // 2 min timeout
+							clearInterval(oidcPollRef.current);
+							oidcPollRef.current = null;
+							oidcWaiting.value = false;
+							error.value = "OIDC authentication timed out. Please try again.";
+							return;
+						}
+						fetchChannelStatus().then((statusRes) => {
+							if (!statusRes?.ok) return;
+							var channels = statusRes.payload?.channels || [];
+							if (channels.some((ch) => ch.account_id === accountId && ch.status === "connected")) {
+								clearInterval(oidcPollRef.current);
+								oidcPollRef.current = null;
+								oidcWaiting.value = false;
+								showAddMatrix.value = false;
+								resetForm();
+								loadChannels();
+							}
+						});
+					}, 1000);
+				} else {
+					saving.value = false;
+					error.value = (res?.error && (res.error.message || res.error.detail)) || "Failed to start OIDC login.";
+				}
+			});
+			return;
+		}
+
 		var addConfig = {
 			homeserver: homeserver,
-			ownership_mode: authMode === "password" ? normalizeMatrixOwnershipMode(ownershipModeDraft.value) : "user_managed",
+			ownership_mode: authMode === "password" || authMode === "oidc" ? normalizeMatrixOwnershipMode(ownershipModeDraft.value) : "user_managed",
 			dm_policy: form.querySelector("[data-field=dmPolicy]").value,
 			room_policy: form.querySelector("[data-field=roomPolicy]").value,
 			mention_mode: form.querySelector("[data-field=mentionMode]").value,
@@ -1392,18 +1492,7 @@ function AddMatrixModal() {
 			saving.value = false;
 			if (res?.ok) {
 				showAddMatrix.value = false;
-				addModel.value = "";
-				userAllowlistItems.value = [];
-				roomAllowlistItems.value = [];
-				homeserverDraft.value = MATRIX_DEFAULT_HOMESERVER;
-				authModeDraft.value = "password";
-				userIdDraft.value = "";
-				credentialDraft.value = "";
-				deviceDisplayNameDraft.value = "";
-				ownershipModeDraft.value = "moltis_owned";
-				otpSelfApprovalDraft.value = true;
-				otpCooldownDraft.value = "300";
-				advancedConfigPatch.value = "";
+				resetForm();
 				loadChannels();
 			} else {
 				error.value = (res?.error && (res.error.message || res.error.detail)) || "Failed to connect Matrix.";
@@ -1417,6 +1506,7 @@ function AddMatrixModal() {
 			: "(server default)";
 
 	return html`<${Modal} show=${showAddMatrix.value} onClose=${() => {
+		resetForm();
 		showAddMatrix.value = false;
 	}}
 	    title="Connect Matrix">
@@ -1425,12 +1515,12 @@ function AddMatrixModal() {
 	        <div>
 	          <span class="text-xs font-medium text-[var(--text-strong)]">Connect a Matrix bot user</span>
 	          <div class="text-xs text-[var(--muted)] channel-help">1. Leave the homeserver as <span class="font-mono">${MATRIX_DEFAULT_HOMESERVER}</span> for matrix.org accounts</div>
-	          <div class="text-xs text-[var(--muted)]">2. Password is the default because it supports encrypted Matrix chats. Access token auth is only for plain Matrix traffic</div>
+	          <div class="text-xs text-[var(--muted)]">2. OIDC is the default for modern homeservers. Use Password for encrypted chats on older servers, or Access Token for plain traffic</div>
 	          <div class="text-xs text-[var(--muted)]">3. Moltis generates the local account ID automatically from the Matrix user or homeserver</div>
 	        </div>
 	      </div>
-	      <div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-	        <div class="font-medium text-emerald-50">Encrypted chats require password auth</div>
+	      <div class="rounded-md border border-emerald-600/30 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+	        <div class="font-medium text-emerald-800">Encrypted chats require OIDC or Password auth</div>
 	        <div>${MATRIX_ENCRYPTION_GUIDANCE}</div>
 	      </div>
 	      <${ConnectionModeHint} type="matrix" />
@@ -1449,12 +1539,19 @@ function AddMatrixModal() {
 	        onChange=${(e) => {
 						authModeDraft.value = normalizeMatrixAuthMode(e.target.value);
 					}}>
+	        <option value="oidc">OIDC (recommended)</option>
 	        <option value="password">Password</option>
 	        <option value="access_token">Access token</option>
 	      </select>
 	      <div class="text-xs text-[var(--muted)]">${matrixAuthModeGuidance(authModeDraft.value)}</div>
+	      ${oidcWaiting.value && html`
+	        <div class="rounded-md border border-blue-600/30 bg-blue-50 px-3 py-3 text-xs text-blue-900 flex items-center gap-2">
+	          <span class="animate-spin inline-block w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full"></span>
+	          <span>Waiting for OIDC authentication... Complete the login in the browser window that opened.</span>
+	        </div>
+	      `}
 	      ${
-					authModeDraft.value === "password"
+					authModeDraft.value === "password" || authModeDraft.value === "oidc"
 						? html`
 	        <label class="flex items-start gap-2 rounded-md border border-[var(--border)] bg-[var(--surface2)] px-3 py-2">
 	          <input
@@ -1477,6 +1574,7 @@ function AddMatrixModal() {
 								"user_managed",
 							)}</div>`
 				}
+	      ${authModeDraft.value !== "oidc" && html`
 	      <label class="text-xs text-[var(--muted)]">Matrix User ID${authModeDraft.value === "password" ? " (required)" : " (optional)"}</label>
 	      <input data-field="userId" type="text" placeholder="@bot:example.com"
 	        value=${userIdDraft.value}
@@ -1501,6 +1599,7 @@ function AddMatrixModal() {
 	        ${" "}
 	        <a href=${MATRIX_DOCS_URL} target="_blank" rel="noreferrer" class="text-[var(--accent)] underline">Matrix setup docs</a>
 	      </div>
+	      `}
 	      <label class="text-xs text-[var(--muted)]">Device Display Name (optional)</label>
 	      <input data-field="deviceDisplayName" type="text" placeholder="Moltis Matrix Bot"
 	        value=${deviceDisplayNameDraft.value}
@@ -1566,9 +1665,7 @@ function AddMatrixModal() {
 					advancedConfigPatch.value = value;
 				}} />
 	      ${error.value && html`<div class="text-xs text-[var(--error)] py-1">${error.value}</div>`}
-	      <button class="provider-btn" onClick=${onSubmit} disabled=${saving.value}>
-	        ${saving.value ? "Connecting\u2026" : "Connect Matrix"}
-	      </button>
+	      <button key=${`mx-${saving.value}-${oidcWaiting.value}`} class="provider-btn" onClick=${onSubmit} disabled=${saving.value || oidcWaiting.value}>${saving.value ? "Connecting\u2026" : oidcWaiting.value ? "Waiting for OIDC\u2026" : authModeDraft.value === "oidc" ? "Authenticate with OIDC" : "Connect Matrix"}</button>
 	    </div>
 	  </${Modal}>`;
 }
@@ -2143,8 +2240,8 @@ function EditChannelModal() {
 				}
 	      ${
 					isMatrix &&
-					html`<div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-				        <div class="font-medium text-emerald-50">Encrypted chats require password auth</div>
+					html`<div class="rounded-md border border-emerald-600/30 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+				        <div class="font-medium text-emerald-800">Encrypted chats require OIDC or Password auth</div>
 				        <div>${MATRIX_ENCRYPTION_GUIDANCE}</div>
 				      </div>`
 				}
@@ -2156,6 +2253,7 @@ function EditChannelModal() {
 				          onChange=${(e) => {
 										editMatrixAuthMode.value = normalizeMatrixAuthMode(e.target.value);
 									}}>
+				          <option value="oidc">OIDC</option>
 				          <option value="access_token">Access token</option>
 				          <option value="password">Password</option>
 				        </select>
@@ -2343,7 +2441,7 @@ function handleChannelEvent(p) {
 		loadChannels();
 	}
 	handleWhatsAppPairingEvent(p);
-	if (p.kind === "pairing_complete" || p.kind === "account_disabled") {
+	if (p.kind === "pairing_complete" || p.kind === "account_disabled" || p.kind === "status_changed") {
 		loadChannels();
 	}
 	var selected = parseSenderSelectionKey(sendersAccount.value || "");

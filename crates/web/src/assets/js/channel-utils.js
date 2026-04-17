@@ -8,11 +8,16 @@ import { sendRpc } from "./helpers.js";
 export var MATRIX_DOCS_URL = "https://docs.moltis.org/matrix.html";
 export var MATRIX_DEFAULT_HOMESERVER = "https://matrix.org";
 export var MATRIX_ENCRYPTION_GUIDANCE =
-	"Encrypted Matrix chats require Password auth. Access token auth can connect for plain Matrix traffic, but it reuses an existing Matrix session without that device's private encryption keys, so Moltis cannot reliably decrypt encrypted chats. Use Password so Moltis creates and persists its own Matrix device keys, then finish Element verification in the same Matrix DM or room by sending `verify yes`, `verify no`, `verify show`, or `verify cancel` as normal chat messages.";
+	"Encrypted Matrix chats require OIDC or Password auth. Access token auth can connect for plain Matrix traffic, but it reuses an existing Matrix session without that device's private encryption keys, so Moltis cannot reliably decrypt encrypted chats. Use OIDC (recommended) or Password so Moltis creates and persists its own Matrix device keys, then finish Element verification in the same Matrix DM or room by sending `verify yes`, `verify no`, `verify show`, or `verify cancel` as normal chat messages.";
 export function matrixAuthModeGuidance(authMode) {
-	return normalizeMatrixAuthMode(authMode) === "password"
-		? "Required for encrypted Matrix chats. Moltis logs in as its own Matrix device and stores the device's encryption keys locally."
-		: "Does not support encrypted Matrix chats. Access tokens authenticate an existing Matrix session, but they do not transfer that device's private encryption keys into Moltis.";
+	var mode = normalizeMatrixAuthMode(authMode);
+	if (mode === "password") {
+		return "Required for encrypted Matrix chats. Moltis logs in as its own Matrix device and stores the device's encryption keys locally.";
+	}
+	if (mode === "oidc") {
+		return "Recommended for homeservers using Matrix Authentication Service (e.g. matrix.org since April 2025). Moltis authenticates via your browser — no password or token needed.";
+	}
+	return "Does not support encrypted Matrix chats. Access tokens authenticate an existing Matrix session, but they do not transfer that device's private encryption keys into Moltis.";
 }
 export function channelStorageNote() {
 	var dbPath = String(getGon("channel_storage_db_path") || "").trim();
@@ -34,6 +39,10 @@ export function validateChannelFields(type, accountId, credential, options = {})
 	if (!accountId.trim()) {
 		return { valid: false, error: "Account ID is required." };
 	}
+	// OIDC mode does not require a credential upfront.
+	if (type === "matrix" && normalizeMatrixAuthMode(options.matrixAuthMode) === "oidc") {
+		return { valid: true };
+	}
 	if (!credential.trim()) {
 		if (type === "matrix") {
 			return { valid: false, error: matrixCredentialError(options.matrixAuthMode) };
@@ -54,7 +63,9 @@ export function validateChannelFields(type, accountId, credential, options = {})
 }
 
 export function normalizeMatrixAuthMode(authMode) {
-	return authMode === "password" ? "password" : "access_token";
+	if (authMode === "password") return "password";
+	if (authMode === "oidc") return "oidc";
+	return "access_token";
 }
 
 export function normalizeMatrixOwnershipMode(mode) {
@@ -62,7 +73,8 @@ export function normalizeMatrixOwnershipMode(mode) {
 }
 
 export function matrixOwnershipModeGuidance(authMode, ownershipMode) {
-	if (normalizeMatrixAuthMode(authMode) !== "password") {
+	var mode = normalizeMatrixAuthMode(authMode);
+	if (mode !== "password" && mode !== "oidc") {
 		return "Access token auth always stays user-managed because it reuses an existing Matrix session instead of giving Moltis full control of the account's encryption state.";
 	}
 	return normalizeMatrixOwnershipMode(ownershipMode) === "moltis_owned"

@@ -351,6 +351,11 @@ pub enum ChannelEvent {
         account_id: String,
         reason: String,
     },
+    /// Channel account status changed (e.g. ownership bootstrap complete).
+    StatusChanged {
+        channel_type: ChannelType,
+        account_id: String,
+    },
 }
 
 /// Sink for channel events — the gateway provides the concrete implementation.
@@ -782,6 +787,29 @@ pub trait ChannelPlugin: Send + Sync {
         _account_id: &str,
     ) -> Option<Box<dyn crate::channel_webhook_middleware::ChannelWebhookVerifier>> {
         None
+    }
+
+    /// Start an OAuth/OIDC login flow. Returns auth URL and CSRF state.
+    async fn oidc_start(
+        &self,
+        _account_id: &str,
+        _config: serde_json::Value,
+        _redirect_uri: &str,
+    ) -> Result<serde_json::Value> {
+        Err(Error::unavailable(
+            "OIDC login not supported for this channel",
+        ))
+    }
+
+    /// Complete an OAuth/OIDC login after browser redirect.
+    async fn oidc_complete(
+        &self,
+        _csrf_state: &str,
+        _callback_url: &str,
+    ) -> Result<serde_json::Value> {
+        Err(Error::unavailable(
+            "OIDC login not supported for this channel",
+        ))
     }
 }
 
