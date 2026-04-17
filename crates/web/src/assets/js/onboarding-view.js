@@ -3160,7 +3160,7 @@ function MatrixForm({ onConnected, error, setError }) {
 
 		// OIDC flow: start browser-based auth.
 		if (normalizeMatrixAuthMode(authMode) === "oidc") {
-			var redirectUri = window.location.origin + "/auth/callback";
+			var redirectUri = `${window.location.origin}/auth/callback`;
 			var oidcConfig = {
 				homeserver: homeserver.trim(),
 				ownership_mode: normalizeMatrixOwnershipMode(ownershipMode),
@@ -3217,7 +3217,9 @@ function MatrixForm({ onConnected, error, setError }) {
 		var config = {
 			homeserver: homeserver.trim(),
 			ownership_mode:
-				normalizeMatrixAuthMode(authMode) === "password" || normalizeMatrixAuthMode(authMode) === "oidc" ? normalizeMatrixOwnershipMode(ownershipMode) : "user_managed",
+				normalizeMatrixAuthMode(authMode) === "password" || normalizeMatrixAuthMode(authMode) === "oidc"
+					? normalizeMatrixOwnershipMode(ownershipMode)
+					: "user_managed",
 			dm_policy: dmPolicy,
 			room_policy: roomPolicy,
 			mention_mode: mentionMode,
@@ -3273,12 +3275,15 @@ function MatrixForm({ onConnected, error, setError }) {
 			</select>
 			<div class="text-xs text-[var(--muted)] mt-1">${matrixAuthModeGuidance(authMode)}</div>
 		</div>
-		${oidcWaiting && html`
+		${
+			oidcWaiting &&
+			html`
 			<div class="rounded-md border border-blue-600/30 bg-blue-50 px-3 py-3 text-xs text-blue-900 flex items-center gap-2">
 				<span class="animate-spin inline-block w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full"></span>
 				<span>Waiting for OIDC authentication... Complete the login in the browser window that opened.</span>
 			</div>
-		`}
+		`
+		}
 		${
 			authMode === "password" || authMode === "oidc"
 				? html`<label class="flex items-start gap-2 rounded-md border border-[var(--border)] bg-[var(--surface2)] p-3">
@@ -3294,7 +3299,9 @@ function MatrixForm({ onConnected, error, setError }) {
 				</label>`
 				: html`<div class="text-xs text-[var(--muted)]">${matrixOwnershipModeGuidance(authMode, "user_managed")}</div>`
 		}
-		${authMode !== "oidc" && html`
+		${
+			authMode !== "oidc" &&
+			html`
 		<div>
 			<label class="text-xs text-[var(--muted)] mb-1 block">Matrix User ID${authMode === "password" ? " (required)" : " (optional)"}</label>
 			<input type="text" class="provider-key-input w-full"
@@ -3320,7 +3327,8 @@ function MatrixForm({ onConnected, error, setError }) {
 				<a href=${MATRIX_DOCS_URL} target="_blank" rel="noreferrer" class="text-[var(--accent)] underline">Matrix setup docs</a>
 			</div>
 		</div>
-		`}
+		`
+		}
 		<div>
 			<label class="text-xs text-[var(--muted)] mb-1 block">Device Display Name (optional)</label>
 			<input type="text" class="provider-key-input w-full"

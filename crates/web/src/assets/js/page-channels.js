@@ -285,7 +285,9 @@ function MatrixOwnershipCard({ channel, matrixStatus }) {
 			</div>`
 		}
 		${
-			ownershipIssue === "none" && ownershipMode === "moltis_owned" && !deviceVerified &&
+			ownershipIssue === "none" &&
+			ownershipMode === "moltis_owned" &&
+			!deviceVerified &&
 			html`<div class="mt-2 flex flex-wrap gap-2">
 				<button
 					type="button"
@@ -1401,7 +1403,7 @@ function AddMatrixModal() {
 
 		// OIDC flow: start browser-based auth instead of direct connect.
 		if (authMode === "oidc") {
-			var redirectUri = window.location.origin + "/auth/callback";
+			var redirectUri = `${window.location.origin}/auth/callback`;
 			var oidcConfig = {
 				homeserver: homeserver,
 				ownership_mode: normalizeMatrixOwnershipMode(ownershipModeDraft.value),
@@ -1417,8 +1419,8 @@ function AddMatrixModal() {
 			if (deviceDisplayNameDraft.value.trim()) oidcConfig.device_display_name = deviceDisplayNameDraft.value.trim();
 			if (addModel.value) {
 				oidcConfig.model = addModel.value;
-				var found = modelsSig.value.find((x) => x.id === addModel.value);
-				if (found?.provider) oidcConfig.model_provider = found.provider;
+				var oidcModel = modelsSig.value.find((x) => x.id === addModel.value);
+				if (oidcModel?.provider) oidcConfig.model_provider = oidcModel.provider;
 			}
 			Object.assign(oidcConfig, advancedPatch.value);
 			sendRpc("channels.oauth_start", {
@@ -1435,7 +1437,8 @@ function AddMatrixModal() {
 					var pollCount = 0;
 					oidcPollRef.current = setInterval(() => {
 						pollCount++;
-						if (pollCount > 120) { // 2 min timeout
+						if (pollCount > 120) {
+							// 2 min timeout
 							clearInterval(oidcPollRef.current);
 							oidcPollRef.current = null;
 							oidcWaiting.value = false;
@@ -1465,7 +1468,10 @@ function AddMatrixModal() {
 
 		var addConfig = {
 			homeserver: homeserver,
-			ownership_mode: authMode === "password" || authMode === "oidc" ? normalizeMatrixOwnershipMode(ownershipModeDraft.value) : "user_managed",
+			ownership_mode:
+				authMode === "password" || authMode === "oidc"
+					? normalizeMatrixOwnershipMode(ownershipModeDraft.value)
+					: "user_managed",
 			dm_policy: form.querySelector("[data-field=dmPolicy]").value,
 			room_policy: form.querySelector("[data-field=roomPolicy]").value,
 			mention_mode: form.querySelector("[data-field=mentionMode]").value,
@@ -1484,8 +1490,8 @@ function AddMatrixModal() {
 		if (deviceDisplayNameDraft.value.trim()) addConfig.device_display_name = deviceDisplayNameDraft.value.trim();
 		if (addModel.value) {
 			addConfig.model = addModel.value;
-			var found = modelsSig.value.find((x) => x.id === addModel.value);
-			if (found?.provider) addConfig.model_provider = found.provider;
+			var selectedModel = modelsSig.value.find((x) => x.id === addModel.value);
+			if (selectedModel?.provider) addConfig.model_provider = selectedModel.provider;
 		}
 		Object.assign(addConfig, advancedPatch.value);
 		addChannel("matrix", accountId, addConfig).then((res) => {
@@ -1544,12 +1550,15 @@ function AddMatrixModal() {
 	        <option value="access_token">Access token</option>
 	      </select>
 	      <div class="text-xs text-[var(--muted)]">${matrixAuthModeGuidance(authModeDraft.value)}</div>
-	      ${oidcWaiting.value && html`
+	      ${
+					oidcWaiting.value &&
+					html`
 	        <div class="rounded-md border border-blue-600/30 bg-blue-50 px-3 py-3 text-xs text-blue-900 flex items-center gap-2">
 	          <span class="animate-spin inline-block w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full"></span>
 	          <span>Waiting for OIDC authentication... Complete the login in the browser window that opened.</span>
 	        </div>
-	      `}
+	      `
+				}
 	      ${
 					authModeDraft.value === "password" || authModeDraft.value === "oidc"
 						? html`
@@ -1574,7 +1583,9 @@ function AddMatrixModal() {
 								"user_managed",
 							)}</div>`
 				}
-	      ${authModeDraft.value !== "oidc" && html`
+	      ${
+					authModeDraft.value !== "oidc" &&
+					html`
 	      <label class="text-xs text-[var(--muted)]">Matrix User ID${authModeDraft.value === "password" ? " (required)" : " (optional)"}</label>
 	      <input data-field="userId" type="text" placeholder="@bot:example.com"
 	        value=${userIdDraft.value}
@@ -1599,7 +1610,8 @@ function AddMatrixModal() {
 	        ${" "}
 	        <a href=${MATRIX_DOCS_URL} target="_blank" rel="noreferrer" class="text-[var(--accent)] underline">Matrix setup docs</a>
 	      </div>
-	      `}
+	      `
+				}
 	      <label class="text-xs text-[var(--muted)]">Device Display Name (optional)</label>
 	      <input data-field="deviceDisplayName" type="text" placeholder="Moltis Matrix Bot"
 	        value=${deviceDisplayNameDraft.value}
