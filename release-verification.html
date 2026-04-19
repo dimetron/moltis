@@ -1,0 +1,393 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Release Verification - Moltis Documentation</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Documentation for Moltis - Your AI coding assistant">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/admonish.css">
+        <link rel="stylesheet" href="theme/custom.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Moltis Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/moltis-org/moltis" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/moltis-org/moltis/edit/main/docs/src/src/release-verification.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="release-verification"><a class="header" href="#release-verification">Release Verification</a></h1>
+<p>Moltis releases use <strong>multiple signing layers</strong> to provide strong supply chain guarantees:</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Proves</th><th>Verification</th></tr></thead><tbody>
+<tr><td><strong>GitHub Artifact Attestations</strong> (CI-generated)</td><td>Artifact was built by this repo’s GitHub Actions workflow</td><td><code>gh attestation verify</code></td></tr>
+<tr><td><strong>Sigstore</strong> (keyless, CI-generated)</td><td>Artifact was built by GitHub Actions from this repo</td><td><code>cosign verify-blob</code></td></tr>
+<tr><td><strong>GPG</strong> (YubiKey-resident key, maintainer-signed)</td><td>A specific maintainer authorized the release</td><td><code>gpg --verify</code></td></tr>
+<tr><td><strong>SHA256/SHA512 checksums</strong></td><td>File integrity (no corruption/tampering in transit)</td><td><code>sha256sum --check</code></td></tr>
+</tbody></table>
+</div>
+<p>All attestations are publicly visible on the
+<a href="https://github.com/moltis-org/moltis/attestations">repository attestations page</a>.</p>
+<h2 id="quick-verification"><a class="header" href="#quick-verification">Quick Verification</a></h2>
+<p>The easiest way to verify a release is with the included script:</p>
+<pre><code class="language-bash"># Verify all artifacts for a release (fetches GPG key automatically)
+./scripts/verify-release.sh --version VERSION
+
+# Also check SHA256 checksums
+./scripts/verify-release.sh --checksums --version VERSION
+
+# Verify specific local files
+./scripts/verify-release.sh moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz
+</code></pre>
+<h3 id="github-artifact-attestations"><a class="header" href="#github-artifact-attestations">GitHub Artifact Attestations</a></h3>
+<p>GitHub artifact attestations provide cryptographic proof that release artifacts
+were built inside this repository’s GitHub Actions workflow. Verification uses
+the <a href="https://cli.github.com/">GitHub CLI</a>:</p>
+<pre><code class="language-bash"># Verify a downloaded binary
+gh attestation verify moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz \
+  -R moltis-org/moltis
+
+# Verify a Docker image
+gh attestation verify oci://ghcr.io/moltis-org/moltis:VERSION \
+  -R moltis-org/moltis
+
+# Verify an SBOM
+gh attestation verify moltis-sbom.spdx.json \
+  -R moltis-org/moltis
+</code></pre>
+<p>Browse all attestations at
+<a href="https://github.com/moltis-org/moltis/attestations">https://github.com/moltis-org/moltis/attestations</a>.</p>
+<h3 id="manual-verification"><a class="header" href="#manual-verification">Manual Verification</a></h3>
+<h4 id="1-verify-checksums"><a class="header" href="#1-verify-checksums">1. Verify checksums</a></h4>
+<pre><code class="language-bash"># Download the artifact and its checksum
+curl -LO https://github.com/moltis-org/moltis/releases/download/VERSION/moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/moltis-org/moltis/releases/download/VERSION/moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256
+
+sha256sum --check moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256
+</code></pre>
+<h4 id="2-verify-gpg-signature"><a class="header" href="#2-verify-gpg-signature">2. Verify GPG signature</a></h4>
+<p>The maintainer’s GPG key fingerprint is:</p>
+<pre><code>3103 20A8 CC1C 5BA8 6AD0  9040 C045 1BAD F764 9BBF
+</code></pre>
+<pre><code class="language-bash"># Import the maintainer's public key (one-time)
+curl -fsSL https://pen.so/gpg.asc | gpg --import
+
+# Confirm the fingerprint matches
+gpg --fingerprint F7649BBF
+
+# Download the detached signature
+curl -LO https://github.com/moltis-org/moltis/releases/download/VERSION/moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.asc
+
+# Verify
+gpg --verify \
+  moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.asc \
+  moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz
+</code></pre>
+<p>You should see <code>Good signature from ...</code> with the maintainer’s identity.</p>
+<h4 id="3-verify-sigstore-signature"><a class="header" href="#3-verify-sigstore-signature">3. Verify Sigstore signature</a></h4>
+<pre><code class="language-bash"># Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
+
+# Download signature and certificate
+curl -LO https://github.com/moltis-org/moltis/releases/download/VERSION/moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.sig
+curl -LO https://github.com/moltis-org/moltis/releases/download/VERSION/moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.crt
+
+cosign verify-blob \
+  --signature moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.sig \
+  --certificate moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz.crt \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp 'https://github\.com/moltis-org/moltis/' \
+  moltis-VERSION-x86_64-unknown-linux-gnu.tar.gz
+</code></pre>
+<h4 id="4-verify-docker-images"><a class="header" href="#4-verify-docker-images">4. Verify Docker images</a></h4>
+<pre><code class="language-bash">cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp 'https://github\.com/moltis-org/moltis/' \
+  ghcr.io/moltis-org/moltis:VERSION
+</code></pre>
+<h2 id="what-each-layer-proves"><a class="header" href="#what-each-layer-proves">What Each Layer Proves</a></h2>
+<p><strong>Checksums</strong> detect download corruption or CDN tampering. They do not prove
+who created the file.</p>
+<p><strong>GitHub artifact attestations</strong> create unfalsifiable provenance records tied
+to the repository, workflow, commit SHA, and triggering event. They are stored
+in GitHub’s attestation ledger and verifiable with <code>gh attestation verify</code>.
+This provides SLSA v1.0 Build Level 2 guarantees.</p>
+<p><strong>Sigstore signatures</strong> prove the artifact was built inside the
+<code>moltis-org/moltis</code> GitHub Actions workflow using OIDC-based keyless signing.
+This guards against a compromised maintainer laptop — even if someone steals
+credentials, they cannot reproduce a valid Sigstore certificate from the CI
+environment. Signatures are recorded in Sigstore’s Rekor transparency log.</p>
+<p><strong>GPG signatures</strong> prove the release was reviewed and authorized by a specific
+maintainer holding the corresponding private key. Because the key lives on a
+YubiKey hardware token, compromise requires physical access to the device plus
+the PIN.</p>
+<p>Together, these layers create a strong chain: GitHub attestations and Sigstore
+prove <em>where</em> the artifact was built (CI), and GPG proves <em>who</em> authorized it
+(maintainer with hardware key).</p>
+<h2 id="release-artifacts-per-file"><a class="header" href="#release-artifacts-per-file">Release Artifacts Per File</a></h2>
+<p>Each release artifact (<code>.deb</code>, <code>.rpm</code>, <code>.tar.gz</code>, <code>.exe</code>, etc.) may have:</p>
+<div class="table-wrapper"><table><thead><tr><th>Extension</th><th>Source</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>.sha256</code></td><td>CI</td><td>SHA-256 checksum</td></tr>
+<tr><td><code>.sha512</code></td><td>CI</td><td>SHA-512 checksum</td></tr>
+<tr><td><code>.sig</code></td><td>CI</td><td>Sigstore detached signature</td></tr>
+<tr><td><code>.crt</code></td><td>CI</td><td>Sigstore signing certificate</td></tr>
+<tr><td><code>.asc</code></td><td>Maintainer</td><td>GPG detached armored signature</td></tr>
+</tbody></table>
+</div>
+<h2 id="for-maintainers-signing-a-release"><a class="header" href="#for-maintainers-signing-a-release">For Maintainers: Signing a Release</a></h2>
+<p>After CI publishes a release, sign the artifacts locally using your
+YubiKey-resident GPG key:</p>
+<pre><code class="language-bash"># Sign the latest release (prompts for YubiKey PIN/touch)
+./scripts/gpg-sign-release.sh
+
+# Sign a specific version
+./scripts/gpg-sign-release.sh 20260331.01
+
+# Use a specific key
+./scripts/gpg-sign-release.sh --key 0xABCD1234 20260331.01
+
+# Dry run (sign locally, don't upload)
+./scripts/gpg-sign-release.sh --dry-run 20260331.01
+</code></pre>
+<p>The script:</p>
+<ol>
+<li>Downloads all release packages from GitHub</li>
+<li>Verifies their SHA256 checksums against CI-generated values</li>
+<li>Creates <code>.asc</code> detached GPG signatures for each artifact</li>
+<li>Uploads the <code>.asc</code> files to the GitHub release</li>
+</ol>
+<h3 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h3>
+<ul>
+<li><a href="https://cli.github.com/">GitHub CLI</a> (<code>gh</code>) authenticated</li>
+<li>GPG with your signing key available (YubiKey inserted)</li>
+<li>The <code>GPG_KEY_ID</code> environment variable or <code>--key</code> flag if you have
+multiple secret keys</li>
+</ul>
+<h3 id="publish-your-public-key"><a class="header" href="#publish-your-public-key">Publish Your Public Key</a></h3>
+<p>Upload your public GPG key so users can verify signatures:</p>
+<pre><code class="language-bash"># Export and upload to a keyserver
+gpg --export --armor YOUR_KEY_ID | \
+  curl -T - https://keys.openpgp.org
+
+# Also add to your GitHub profile:
+# Settings &gt; SSH and GPG keys &gt; New GPG key
+gpg --export --armor YOUR_KEY_ID
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="skills-security.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="docker.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="skills-security.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="docker.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

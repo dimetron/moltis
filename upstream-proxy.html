@@ -1,0 +1,311 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Upstream Proxy - Moltis Documentation</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Documentation for Moltis - Your AI coding assistant">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/admonish.css">
+        <link rel="stylesheet" href="theme/custom.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Moltis Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/moltis-org/moltis" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/moltis-org/moltis/edit/main/docs/src/src/upstream-proxy.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="upstream-proxy"><a class="header" href="#upstream-proxy">Upstream Proxy</a></h1>
+<p>Moltis can route all outbound HTTP traffic through an upstream proxy. This is
+useful when running behind a corporate firewall, in a restricted network, or
+when you need to audit/filter outbound connections.</p>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>Add <code>upstream_proxy</code> to the top level of your <code>moltis.toml</code>:</p>
+<pre><code class="language-toml">upstream_proxy = "http://proxy.corp.example.com:8080"
+</code></pre>
+<h3 id="supported-schemes"><a class="header" href="#supported-schemes">Supported schemes</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Scheme</th><th>Example</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>http://</code></td><td><code>http://proxy:8080</code></td><td>HTTP CONNECT proxy (most common)</td></tr>
+<tr><td><code>https://</code></td><td><code>https://proxy:8443</code></td><td>TLS-encrypted proxy connection</td></tr>
+<tr><td><code>socks5://</code></td><td><code>socks5://proxy:1080</code></td><td>SOCKS5 proxy (DNS resolved locally)</td></tr>
+<tr><td><code>socks5h://</code></td><td><code>socks5h://proxy:1080</code></td><td>SOCKS5 proxy (DNS resolved by proxy)</td></tr>
+</tbody></table>
+</div>
+<h3 id="proxy-authentication"><a class="header" href="#proxy-authentication">Proxy authentication</a></h3>
+<p>Include credentials in the URL:</p>
+<pre><code class="language-toml">upstream_proxy = "http://user:password@proxy.corp.example.com:8080"
+</code></pre>
+<h3 id="what-is-proxied"><a class="header" href="#what-is-proxied">What is proxied</a></h3>
+<p>When <code>upstream_proxy</code> is set, the following traffic routes through the proxy:</p>
+<ul>
+<li><strong>LLM provider API calls</strong> (Anthropic, OpenAI, Gemini, etc.)</li>
+<li><strong>Tool HTTP requests</strong> (web fetch, web search, Firecrawl)</li>
+<li><strong>OAuth flows</strong> (device auth, token exchange)</li>
+<li><strong>MCP server auth</strong> (OAuth for remote MCP servers)</li>
+<li><strong>Channel outbound</strong> (Slack streaming, MS Teams API calls)</li>
+</ul>
+<p>Localhost and loopback addresses (<code>127.0.0.1</code>, <code>::1</code>, <code>localhost</code>) are
+automatically excluded from the proxy (<code>no_proxy</code>).</p>
+<h3 id="slack-caveat"><a class="header" href="#slack-caveat">Slack caveat</a></h3>
+<p>Slack streaming messages (progressive edits) are proxied via reqwest.
+However, regular <code>chat.postMessage</code> calls go through the <code>slack-morphism</code>
+library’s built-in hyper connector, which does <strong>not</strong> use the upstream
+proxy. If you need full Slack proxy coverage, also set the <code>HTTPS_PROXY</code>
+environment variable.</p>
+<h3 id="telegram-caveat"><a class="header" href="#telegram-caveat">Telegram caveat</a></h3>
+<p>Telegram uses <a href="https://github.com/teloxide/teloxide">teloxide</a> which bundles
+its own HTTP client (reqwest 0.11). The <code>upstream_proxy</code> config does not apply
+to Telegram traffic directly. To proxy Telegram, set the standard
+<code>HTTPS_PROXY</code> environment variable, which teloxide’s reqwest honours:</p>
+<pre><code class="language-bash">export HTTPS_PROXY=http://proxy.corp.example.com:8080
+moltis
+</code></pre>
+<p>Or use the <code>env</code> section in <code>moltis.toml</code>:</p>
+<pre><code class="language-toml">[env]
+HTTPS_PROXY = "http://proxy.corp.example.com:8080"
+</code></pre>
+<h2 id="environment-variable-fallback"><a class="header" href="#environment-variable-fallback">Environment variable fallback</a></h2>
+<p>When <code>upstream_proxy</code> is <strong>not</strong> set in <code>moltis.toml</code>, reqwest automatically
+honours the standard proxy environment variables:</p>
+<ul>
+<li><code>HTTP_PROXY</code> / <code>http_proxy</code></li>
+<li><code>HTTPS_PROXY</code> / <code>https_proxy</code></li>
+<li><code>ALL_PROXY</code> / <code>all_proxy</code></li>
+<li><code>NO_PROXY</code> / <code>no_proxy</code></li>
+</ul>
+<p>Setting <code>upstream_proxy</code> in the config takes precedence over these variables
+for all traffic except Telegram (see caveat above).</p>
+<h2 id="interaction-with-trusted-network"><a class="header" href="#interaction-with-trusted-network">Interaction with Trusted Network</a></h2>
+<p>If you use both <code>upstream_proxy</code> and
+<a href="trusted-network.html">trusted network mode</a> (<code>network = "trusted"</code>), they
+serve different purposes:</p>
+<ul>
+<li><strong>Trusted network proxy</strong> is a local domain-filtering proxy for sandbox
+tool execution. It controls <em>which</em> domains tools can reach.</li>
+<li><strong>Upstream proxy</strong> routes traffic through your corporate/network proxy to
+<em>reach</em> the internet.</li>
+</ul>
+<p>When both are active, tool traffic routes through the trusted-network proxy
+(which enforces domain allowlists), while provider and channel traffic routes
+through the upstream proxy.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="configuration.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="configuration-reference.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="configuration.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="configuration-reference.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
