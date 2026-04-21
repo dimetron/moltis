@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260421.05] - 2026-04-21
+### Fixed
+- [code-index] Use discover_opts with permissive trust for gix
+- [web] Render inline markdown in table cells
+- [code-index] Set required_trust to Reduced for gix discovery
+- [code-index] Use struct init for clippy field_reassign_with_default
+- [code-index] Use open_opts with forced Trust::Full for gix
+- [code-index] Skip git-dependent tests when .git is absent
+- [telegram] Infer MIME from filename when Telegram sends octet-stream (#819)
+- [ci] Install git before checkout in CUDA containers
+
 ## [20260421.04] - 2026-04-21
 ### Fixed
 - [ci] Make safe.directory step non-fatal when git is absent
