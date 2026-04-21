@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260421.04] - 2026-04-21
+### Fixed
+- [ci] Make safe.directory step non-fatal when git is absent
+
 ## [20260421.03] - 2026-04-21
 ### Fixed
 - [ci] Restore original step order, fix gix open, revert npm flag
