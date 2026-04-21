@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260421.02] - 2026-04-21
+### Fixed
+- [ci] Gix safe.directory, read_ops file_path regression, npm --ignore-scripts
+- [tools] Empty file_path falls through to read_primary, whitespace rejected
+
 ## [20260421.01] - 2026-04-21
 ### Added
 - [channels] Centralized command registry for all channels (#794)
