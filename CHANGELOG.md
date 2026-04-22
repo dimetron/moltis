@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260422.01] - 2026-04-22
+### Added
+- [skills] Add bundled skill category management to onboarding and settings (#829)
+
+
+### Fixed
+- [tools] Block exec approval bypass via env-var prefix injection (#822)
+- [browser] Add diagnostic logging for container readiness failures (#820)
+- [gateway] Downgrade broadcast log from debug to trace (#830)
+- [chat] Correct push notification click-through URL (#831)
+- [tools] Skip sysfs tmpfs mounts on WSL2 (#835)
+- [chat] Preserve Gemini tool call metadata (#836)
+- [providers] Normalize non-strict tool schema unions (#833)
+- [providers] Apply Kimi router overrides in Fireworks integration tests (#832)
+- [config] Resolve ${VAR} placeholders against [env] section and DB env vars (#834)
+- [web] Repair gemini tool-signature and reasoning-toggle E2E tests
+
 ## [20260421.05] - 2026-04-21
 ### Fixed
 - [code-index] Use discover_opts with permissive trust for gix
