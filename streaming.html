@@ -309,11 +309,11 @@ loop:</p>
 assets (JS, CSS, icons), and the axum routes that serve them. It injects its
 routes into the gateway via the <code>RouteEnhancer</code> composition pattern, keeping
 web UI concerns separate from API and agent logic in the gateway.</p>
-<h3 id="7-frontend-crateswebsrcassetsjs"><a class="header" href="#7-frontend-crateswebsrcassetsjs">7. Frontend (<code>crates/web/src/assets/js/</code>)</a></h3>
-<p>The JavaScript frontend handles streaming via WebSocket:</p>
+<h3 id="7-frontend-crateswebuisrc"><a class="header" href="#7-frontend-crateswebuisrc">7. Frontend (<code>crates/web/ui/src/</code>)</a></h3>
+<p>The TypeScript frontend handles streaming via WebSocket:</p>
 <ol>
-<li><strong>websocket.js</strong> - Receives WebSocket frames and dispatches to handlers</li>
-<li><strong>events.js</strong> - Event bus for distributing events to components</li>
+<li><strong>websocket.ts</strong> - Receives WebSocket frames and dispatches to handlers</li>
+<li><strong>events.ts</strong> - Event bus for distributing events to components</li>
 <li><strong>state.js</strong> - Manages streaming state (<code>streamText</code>, <code>streamEl</code>)</li>
 </ol>
 <p>When a <code>delta</code> event arrives:</p>
@@ -405,7 +405,7 @@ several tools at once</li>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="system-prompt.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="frontend.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -419,7 +419,7 @@ several tools at once</li>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="system-prompt.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="frontend.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 

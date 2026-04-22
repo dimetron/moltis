@@ -1,0 +1,378 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Frontend - Moltis Documentation</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Documentation for Moltis - Your AI coding assistant">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/admonish.css">
+        <link rel="stylesheet" href="theme/custom.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Moltis Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/moltis-org/moltis" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/moltis-org/moltis/edit/main/docs/src/src/frontend.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="frontend-architecture"><a class="header" href="#frontend-architecture">Frontend Architecture</a></h1>
+<p>The moltis web UI is a TypeScript single-page application built with
+<a href="https://preactjs.com/">Preact</a> and <a href="https://vite.dev/">Vite</a>.</p>
+<h2 id="directory-layout"><a class="header" href="#directory-layout">Directory Layout</a></h2>
+<pre><code>crates/web/
+├── ui/                          # TypeScript source &amp; tooling
+│   ├── src/                     # Application source
+│   │   ├── app.tsx              # Main entry point
+│   │   ├── login-app.tsx        # Login page entry
+│   │   ├── onboarding-app.tsx   # Onboarding wizard entry
+│   │   ├── types/               # Shared type definitions
+│   │   ├── stores/              # Preact Signal stores
+│   │   ├── components/          # Reusable Preact components
+│   │   │   └── forms/           # Form field &amp; layout components
+│   │   ├── pages/               # Page components
+│   │   │   ├── sections/        # Settings page sections
+│   │   │   ├── channels/        # Channel modal sub-components
+│   │   │   └── chat/            # Chat page sub-modules
+│   │   ├── providers/           # Provider setup sub-modules
+│   │   ├── sessions/            # Session management sub-modules
+│   │   ├── onboarding/          # Onboarding step components
+│   │   ├── ws/                  # WebSocket handler sub-modules
+│   │   ├── hooks/               # Custom Preact hooks
+│   │   └── locales/             # i18n translations (en, fr, zh)
+│   ├── e2e/                     # Playwright E2E tests
+│   ├── vite.config.ts           # Vite build configuration
+│   ├── tsconfig.json            # TypeScript strict config
+│   └── package.json             # Dependencies &amp; scripts
+├── src/
+│   ├── assets/                  # Served static assets
+│   │   ├── dist/                # Vite build output (committed)
+│   │   ├── css/                 # Stylesheets (Tailwind + custom)
+│   │   ├── js/                  # E2E test shims + share page
+│   │   ├── icons/               # Favicons &amp; PWA icons
+│   │   └── sw.js                # Service worker
+│   └── templates/               # Askama HTML templates
+</code></pre>
+<h2 id="build-pipeline"><a class="header" href="#build-pipeline">Build Pipeline</a></h2>
+<h3 id="typescript--javascript-vite"><a class="header" href="#typescript--javascript-vite">TypeScript → JavaScript (Vite)</a></h3>
+<p>Source files in <code>ui/src/</code> are compiled and bundled by Vite into
+<code>src/assets/dist/</code>. Three entry points produce three bundles:</p>
+<ul>
+<li><code>dist/main.js</code> — main app (chat, settings, all pages)</li>
+<li><code>dist/login.js</code> — login page</li>
+<li><code>dist/onboarding.js</code> — onboarding wizard</li>
+</ul>
+<pre><code class="language-bash">cd crates/web/ui
+npm run build          # Production build → ../src/assets/dist/
+npm run dev            # Watch mode (rebuilds on file changes)
+</code></pre>
+<p>The <code>dist/</code> output is <strong>committed to git</strong> (unminified, no source maps)
+so that <code>cargo build</code> works without Node.js installed. This mirrors the
+approach used for the committed Tailwind CSS output.</p>
+<h3 id="css-tailwind"><a class="header" href="#css-tailwind">CSS (Tailwind)</a></h3>
+<p>Tailwind CSS is built separately from the TypeScript pipeline:</p>
+<pre><code class="language-bash">cd crates/web/ui
+npm run build:css      # input.css → ../src/assets/css/style.css
+npm run watch:css      # Watch mode
+</code></pre>
+<p>The output <code>style.css</code> is committed unminified (one rule per line) so
+diffs merge cleanly.</p>
+<h3 id="service-worker"><a class="header" href="#service-worker">Service Worker</a></h3>
+<p>The service worker is built from TypeScript via esbuild:</p>
+<pre><code class="language-bash">cd crates/web/ui
+npm run build:sw       # src/sw.ts → ../src/assets/sw.js
+</code></pre>
+<h3 id="full-build"><a class="header" href="#full-build">Full Build</a></h3>
+<pre><code class="language-bash">cd crates/web/ui
+npm run build:all      # Vite + Tailwind + service worker
+</code></pre>
+<h2 id="technology-stack"><a class="header" href="#technology-stack">Technology Stack</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Layer</th><th>Technology</th></tr></thead><tbody>
+<tr><td>UI framework</td><td><a href="https://preactjs.com/">Preact</a> (lightweight React alternative)</td></tr>
+<tr><td>Templating</td><td>JSX with typed Props interfaces</td></tr>
+<tr><td>State management</td><td><a href="https://preactjs.com/guide/v10/signals/">Preact Signals</a></td></tr>
+<tr><td>Build tool</td><td><a href="https://vite.dev/">Vite</a> with <code>@preact/preset-vite</code></td></tr>
+<tr><td>Type checking</td><td>TypeScript strict mode (<code>tsc --noEmit</code>)</td></tr>
+<tr><td>Linting/formatting</td><td><a href="https://biomejs.dev/">Biome</a></td></tr>
+<tr><td>CSS</td><td><a href="https://tailwindcss.com/">Tailwind CSS</a> v4</td></tr>
+<tr><td>i18n</td><td><a href="https://www.i18next.com/">i18next</a> (en, fr, zh)</td></tr>
+<tr><td>Charts</td><td><a href="https://github.com/leeoniya/uPlot">uPlot</a></td></tr>
+<tr><td>Terminal</td><td><a href="https://xtermjs.org/">xterm.js</a></td></tr>
+<tr><td>Syntax highlighting</td><td><a href="https://shiki.style/">Shiki</a> (bundled, lazy-loaded)</td></tr>
+<tr><td>E2E testing</td><td><a href="https://playwright.dev/">Playwright</a></td></tr>
+</tbody></table>
+</div>
+<h2 id="type-safety"><a class="header" href="#type-safety">Type Safety</a></h2>
+<p>The codebase enforces strict TypeScript with zero tolerance for <code>any</code>:</p>
+<ul>
+<li><strong><code>tsc --noEmit</code></strong> runs in CI and local-validate (must pass with 0 errors)</li>
+<li><strong>107 typed RPC methods</strong> via <code>RpcMethodMap</code> — calling <code>sendRpc("models.list", {})</code>
+infers the response type as <code>ModelInfo[]</code></li>
+<li><strong>28 WebSocket events</strong> via <code>WsEventName</code> enum with typed payload discriminated unions</li>
+<li><strong><code>ChannelType</code> enum</strong> for channel type comparisons (no raw strings)</li>
+<li><strong><code>targetValue(e)</code> / <code>targetChecked(e)</code></strong> helpers eliminate <code>(e.target as HTMLInputElement).value</code> casts</li>
+</ul>
+<h2 id="shared-component-library"><a class="header" href="#shared-component-library">Shared Component Library</a></h2>
+<p>Reusable components in <code>components/forms/</code>:</p>
+<ul>
+<li><strong>Form fields</strong>: <code>TextField</code>, <code>TextAreaField</code>, <code>SelectField</code>, <code>CheckboxField</code></li>
+<li><strong>Layout</strong>: <code>SectionHeading</code>, <code>SubHeading</code>, <code>SettingsCard</code>, <code>DangerZone</code></li>
+<li><strong>Lists</strong>: <code>ListItem</code>, <code>Badge</code>, <code>EmptyState</code>, <code>Loading</code>, <code>CopyButton</code></li>
+<li><strong>Navigation</strong>: <code>TabBar</code></li>
+<li><strong>State</strong>: <code>useSaveState()</code> hook, <code>SaveButton</code>, <code>StatusMessage</code></li>
+</ul>
+<h2 id="asset-serving"><a class="header" href="#asset-serving">Asset Serving</a></h2>
+<p>The Rust <code>moltis-web</code> crate serves assets with three-tier resolution:</p>
+<ol>
+<li><strong>Dev filesystem</strong> — <code>MOLTIS_ASSETS_DIR</code> env var or auto-detected
+from the crate source tree (<code>cargo run</code> dev mode)</li>
+<li><strong>External share dir</strong> — <code>share_dir()/web/</code> for packaged deployments</li>
+<li><strong>Embedded fallback</strong> — <code>include_dir!</code> compiled into the binary</li>
+</ol>
+<p>HTML templates are rendered by <a href="https://github.com/djc/askama">Askama</a>
+with server-injected data (<code>window.__MOLTIS__</code>, the “gon” pattern).</p>
+<h2 id="e2e-test-compatibility"><a class="header" href="#e2e-test-compatibility">E2E Test Compatibility</a></h2>
+<p>E2E tests dynamically import individual JS modules (e.g.,
+<code>await import("js/state.js")</code>) to inspect and mock internal app state.
+With Vite bundling, individual modules don’t exist as standalone files.</p>
+<p><strong>Shim layer</strong>: small proxy files in <code>src/assets/js/</code> re-export from
+<code>window.__moltis_modules</code> (populated by <code>app.tsx</code> at startup). This
+lets tests import modules at their original paths without changes.</p>
+<p>The shims are only loaded by E2E tests, never by the production app.</p>
+<h2 id="development-workflow"><a class="header" href="#development-workflow">Development Workflow</a></h2>
+<p>After changing TypeScript source files:</p>
+<pre><code class="language-bash">cd crates/web/ui
+
+# 1. Type check
+npx tsc --noEmit
+
+# 2. Lint and format
+biome check --write src/
+
+# 3. Build (commits dist/ output)
+npm run build
+
+# 4. Run E2E tests
+npx playwright test --project default
+</code></pre>
+<p>For CSS changes, also run <code>npm run build:css</code> and commit <code>style.css</code>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="system-prompt.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="streaming.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="system-prompt.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="streaming.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

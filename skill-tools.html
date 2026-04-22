@@ -187,14 +187,15 @@
 <p>Moltis can create, update, and delete personal skills at runtime through agent
 tools, enabling the system to extend its own capabilities during a conversation.</p>
 <h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
-<p>Three agent tools manage personal skills by default:</p>
+<p>Four agent tools manage personal skills by default:</p>
 <div class="table-wrapper"><table><thead><tr><th>Tool</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>create_skill</code></td><td>Write a new <code>SKILL.md</code> to <code>&lt;data_dir&gt;/skills/&lt;name&gt;/</code></td></tr>
 <tr><td><code>update_skill</code></td><td>Overwrite an existing skill’s <code>SKILL.md</code></td></tr>
+<tr><td><code>patch_skill</code></td><td>Apply surgical find/replace patches to an existing <code>SKILL.md</code></td></tr>
 <tr><td><code>delete_skill</code></td><td>Remove a skill directory</td></tr>
 </tbody></table>
 </div>
-<p>When <code>skills.enable_agent_sidecar_files = true</code>, a fourth tool becomes
+<p>When <code>skills.enable_agent_sidecar_files = true</code>, a fifth tool becomes
 available:</p>
 <div class="table-wrapper"><table><thead><tr><th>Tool</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>write_skill_files</code></td><td>Write supplementary UTF-8 text files inside an existing personal skill directory</td></tr>
@@ -266,6 +267,21 @@ files such as shell scripts, templates, <code>_meta.json</code>, or <code>Docker
   "content": "# summarize-pr\n\nUpdated instructions..."
 }
 </code></pre>
+<h2 id="patching-a-skill"><a class="header" href="#patching-a-skill">Patching a Skill</a></h2>
+<p>The <code>patch_skill</code> tool applies surgical find/replace operations without
+rewriting the full body. This reduces hallucination risk and token cost when
+fixing a few lines:</p>
+<pre><code class="language-json">{
+  "name": "summarize-pr",
+  "patches": [
+    { "find": "key changes", "replace": "key changes and risks" },
+    { "find": "review notes", "replace": "review action items" }
+  ],
+  "description": "Optional: update the frontmatter description too"
+}
+</code></pre>
+<p>Patches are applied sequentially. If a <code>find</code> string is not found, the tool
+returns an error and no changes are written.</p>
 <h2 id="deleting-a-skill"><a class="header" href="#deleting-a-skill">Deleting a Skill</a></h2>
 <pre><code class="language-json">{
   "name": "summarize-pr"

@@ -329,6 +329,7 @@ duckduckgo_fallback = false      # Default: do not use DuckDuckGo fallback
 enabled = true
 auto_load = ["commit"]
 enable_agent_sidecar_files = false  # Opt-in: allow agents to write sidecar text files in personal skills
+enable_self_improvement = true     # System prompt guidance for autonomous skill creation/update
 </code></pre>
 <p><code>enable_agent_sidecar_files</code> is disabled by default. When enabled, Moltis
 registers the <code>write_skill_files</code> tool so agents can write supplementary files
@@ -336,6 +337,11 @@ such as <code>script.sh</code>, <code>Dockerfile</code>, templates, or <code>_me
 <code>&lt;data_dir&gt;/skills/&lt;name&gt;/</code>. Writes stay confined to that personal skill
 directory, reject path traversal and symlink escapes, and are recorded in
 <code>~/.moltis/logs/security-audit.jsonl</code>.</p>
+<p><code>enable_self_improvement</code> (default: true) injects system prompt guidance that
+encourages the agent to proactively create and update skills after complex
+tasks (5+ tool calls), tricky error fixes, or non-obvious workflows. The
+<code>patch_skill</code> tool allows surgical find/replace updates without rewriting the
+entire skill body.</p>
 <h2 id="chat-message-queue"><a class="header" href="#chat-message-queue">Chat Message Queue</a></h2>
 <p>When a new message arrives while an agent run is already active, Moltis can either
 replay queued messages one-by-one or merge them into a single follow-up message.</p>

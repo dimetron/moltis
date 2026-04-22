@@ -184,119 +184,103 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="comparison"><a class="header" href="#comparison">Comparison</a></h1>
-<p>How Moltis compares to other open-source AI agent frameworks.</p>
+<p>How Moltis compares to the larger open-source personal agent projects: OpenClaw
+and Hermes Agent.</p>
 <blockquote>
-<p><strong>Disclaimer:</strong> This comparison reflects publicly available information at the
-time of writing. Projects evolve quickly — check each project’s repository for
-the latest details. Contributions to keep this page accurate are welcome.</p>
+<p><strong>Disclaimer:</strong> This page is based on source snapshots captured while writing:
+OpenClaw <a href="https://github.com/openclaw/openclaw/commit/90eb5b073fd2d7d8e94b19708e3baceeb8811ca8"><code>90eb5b0</code></a>
+from 2026-04-01, Hermes Agent
+<a href="https://github.com/NousResearch/hermes-agent/commit/9f22977fc0d2d6de5ff4d0a1a8e4d4ae3a00ea52"><code>9f22977</code></a>
+from 2026-04-20, and Moltis
+<a href="https://github.com/moltis-org/moltis/commit/5d044c62fd9d19264db0fc5705065f633d10a657"><code>5d044c6</code></a>
+from 2026-04-22. Projects move quickly, so check each repository for current
+behavior before making a deployment decision.</p>
 </blockquote>
 <h2 id="at-a-glance"><a class="header" href="#at-a-glance">At a Glance</a></h2>
-<div class="table-wrapper"><table><thead><tr><th></th><th><a href="https://github.com/openclaw/openclaw">OpenClaw</a></th><th><a href="https://github.com/sipeed/picoclaw">PicoClaw</a></th><th><a href="https://github.com/qwibitai/nanoclaw">NanoClaw</a></th><th><a href="https://github.com/zeroclaw-labs/zeroclaw">ZeroClaw</a></th><th><strong>Moltis</strong></th></tr></thead><tbody>
-<tr><td>Language</td><td>TypeScript</td><td>Go</td><td>TypeScript</td><td>Rust</td><td><strong>Rust</strong></td></tr>
-<tr><td>Agent loop</td><td>~430K LoC</td><td>Small</td><td>~500 LoC</td><td>~3.4K LoC</td><td><strong>~5K LoC</strong></td></tr>
-<tr><td>Full codebase</td><td>—</td><td>—</td><td>—</td><td>1,000+ tests</td><td><strong>~200K LoC</strong> (3,100+ tests)</td></tr>
-<tr><td>Runtime</td><td>Node.js + npm</td><td>Single binary</td><td>Node.js</td><td>Single binary (3.4 MB)</td><td><strong>Single binary (44 MB)</strong></td></tr>
-<tr><td>Sandbox</td><td>App-level</td><td>—</td><td>Docker</td><td>Docker</td><td><strong>Docker + Apple Container</strong></td></tr>
-<tr><td>Memory safety</td><td>GC</td><td>GC</td><td>GC</td><td>Ownership</td><td><strong>Ownership, zero <code>unsafe</code>*</strong></td></tr>
-<tr><td>Auth</td><td>Basic</td><td>API keys</td><td>None</td><td>Token + OAuth</td><td><strong>Password + Passkey + API keys</strong></td></tr>
-<tr><td>Voice I/O</td><td>Plugin</td><td>—</td><td>—</td><td>—</td><td><strong>Built-in (15+ providers)</strong></td></tr>
-<tr><td>MCP</td><td>Yes</td><td>—</td><td>—</td><td>—</td><td><strong>Yes (stdio + HTTP/SSE)</strong></td></tr>
-<tr><td>Hooks</td><td>Yes (limited)</td><td>—</td><td>—</td><td>—</td><td><strong>15 event types</strong></td></tr>
-<tr><td>Skills</td><td>Yes (store)</td><td>Yes</td><td>Yes</td><td>Yes</td><td><strong>Yes (+ OpenClaw Store)</strong></td></tr>
-<tr><td>Memory/RAG</td><td>Plugin</td><td>—</td><td>Per-group</td><td>SQLite + FTS</td><td><strong>SQLite + FTS + vector</strong></td></tr>
+<div class="table-wrapper"><table><thead><tr><th></th><th><a href="https://github.com/openclaw/openclaw">OpenClaw</a></th><th><a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a></th><th><strong>Moltis</strong></th></tr></thead><tbody>
+<tr><td>Primary stack</td><td>TypeScript, with Swift/Kotlin companion apps</td><td>Python, with TypeScript TUI/web surfaces</td><td><strong>Rust</strong></td></tr>
+<tr><td>Main runtime</td><td>Node.js 22.16+/24 + npm/pnpm/bun</td><td>Python + uv/pip, optional Node UI pieces</td><td><strong>Single Rust binary</strong></td></tr>
+<tr><td>Main shape</td><td>Broad gateway, channel, node, app, and plugin ecosystem</td><td>CLI/gateway agent with a learning loop and research tooling</td><td><strong>Persistent personal agent server with modular crates</strong></td></tr>
+<tr><td>Local checkout size*</td><td>~1.1M app LoC</td><td>~152K app LoC</td><td><strong>~270K Rust LoC</strong></td></tr>
+<tr><td>Crates/modules</td><td>npm packages, extensions, apps</td><td>Python packages, plugins, tools, TUI</td><td><strong>59 Rust workspace crates</strong></td></tr>
+<tr><td>Sandbox/backends</td><td>App-level permissions, browser/node tools</td><td>Local, Docker, SSH, Daytona, Singularity, Modal</td><td><strong>Docker/Podman + Apple Container + WASM</strong></td></tr>
+<tr><td>Auth/access</td><td>Pairing and gateway controls</td><td>CLI and messaging gateway setup</td><td><strong>Password + Passkey + API keys + Vault</strong></td></tr>
+<tr><td>Voice I/O</td><td>Voice wake and talk modes</td><td>Voice memo transcription</td><td><strong>Built-in STT + TTS providers</strong></td></tr>
+<tr><td>MCP</td><td>Plugin/integration support</td><td>MCP integration</td><td><strong>stdio + HTTP/SSE</strong></td></tr>
+<tr><td>Skills</td><td>Bundled, managed, and workspace skills</td><td>Self-improving skills, Skills Hub support</td><td><strong>Bundled/workspace skills + autonomous improvement + OpenClaw import</strong></td></tr>
+<tr><td>Memory/RAG</td><td>Plugin-backed memory and context engine</td><td>Agent-curated memory, session search, user modeling</td><td><strong>SQLite + FTS + vector memory</strong></td></tr>
 </tbody></table>
 </div>
-<p>* <code>unsafe</code> is denied workspace-wide in Moltis. The only exceptions are opt-in
-FFI wrappers behind the <code>local-embeddings</code> feature flag, not part of the core.</p>
+<p>* LoC measured with <code>tokei</code>, excluding <code>node_modules</code>, generated build output,
+<code>dist</code>, and <code>target</code>. Counts are a rough auditability signal, not a quality
+metric.</p>
 <h2 id="architecture-approach"><a class="header" href="#architecture-approach">Architecture Approach</a></h2>
-<h3 id="openclaw--full-featured-monolith"><a class="header" href="#openclaw--full-featured-monolith">OpenClaw — Full-featured monolith</a></h3>
-<p>OpenClaw is the original and most popular project (~211K stars). It ships as a
-Node.js application with 52+ modules, 45+ npm dependencies, and a large surface
-area. It has the richest ecosystem of third-party skills and integrations, but
-the codebase is difficult to audit end-to-end.</p>
-<h3 id="picoclaw--minimal-go-binary"><a class="header" href="#picoclaw--minimal-go-binary">PicoClaw — Minimal Go binary</a></h3>
-<p>PicoClaw targets extreme resource constraints — $10 SBCs, RISC-V boards, and
-devices with as little as 10 MB of RAM. It boots in under 1 second on 0.6 GHz
-hardware. The trade-off is a narrower feature set: no sandbox isolation, no
-built-in memory/RAG, and limited extensibility.</p>
-<h3 id="nanoclaw--container-first-typescript"><a class="header" href="#nanoclaw--container-first-typescript">NanoClaw — Container-first TypeScript</a></h3>
-<p>NanoClaw strips away OpenClaw’s complexity to deliver a small, readable
-TypeScript codebase with first-class container isolation. Agents run in
-Linux containers with filesystem isolation. It uses Claude Agent SDK for
-sub-agent delegation and per-group CLAUDE.md memory files. The trade-off is
-Node.js as a runtime dependency and a smaller feature surface.</p>
-<h3 id="zeroclaw--lightweight-rust"><a class="header" href="#zeroclaw--lightweight-rust">ZeroClaw — Lightweight Rust</a></h3>
-<p>ZeroClaw compiles to a tiny 3.4 MB binary with &lt;5 MB RAM usage and sub-10ms
-startup. It uses trait-driven architecture with 22+ provider implementations
-and 9+ channel integrations. Memory is backed by SQLite with hybrid vector +
-FTS search. The focus is on minimal footprint and broad platform support.</p>
-<h3 id="moltis--auditable-persistent-agent-server"><a class="header" href="#moltis--auditable-persistent-agent-server">Moltis — Auditable persistent agent server</a></h3>
-<p>Moltis prioritizes auditability, durable agent workflows, and defense in depth. The core agent engine
-(runner + provider model) is ~5K lines; the core (excluding the optional web UI)
-is ~196K lines across 46 modular crates, each independently auditable. Key
-differences from ZeroClaw:</p>
+<h3 id="openclaw-ecosystem-first-personal-assistant"><a class="header" href="#openclaw-ecosystem-first-personal-assistant">OpenClaw, ecosystem-first personal assistant</a></h3>
+<p>OpenClaw is a full-featured personal assistant platform. The local checkout
+shows a TypeScript gateway with macOS, iOS, and Android companion surfaces,
+plus a large channel list, node tools, browser/canvas support, plugin
+extensions, onboarding, and managed/workspace skills.</p>
+<h3 id="hermes-agent-learning-loop-cli-and-gateway"><a class="header" href="#hermes-agent-learning-loop-cli-and-gateway">Hermes Agent, learning-loop CLI and gateway</a></h3>
+<p>Hermes Agent is Python-first. Its README centers the agent around a terminal
+interface, a messaging gateway, a closed learning loop, self-improving skills,
+agent-curated memory, session search, user modeling, cron scheduling, and
+cloud/serverless execution backends. Moltis has autonomous skill improvement
+too, so Hermes’ sharper distinction is its CLI/research loop and broad terminal
+backend set. It also carries research-oriented pieces such as trajectory
+generation and RL environments.</p>
+<h3 id="moltis-rust-native-persistent-agent-server"><a class="header" href="#moltis-rust-native-persistent-agent-server">Moltis, Rust-native persistent agent server</a></h3>
+<p>Moltis prioritizes a smaller trusted runtime, durable agent workflows, and
+defense in depth. The Rust workspace is currently ~270K lines across 59 crates.
+The agent runner and model interface are ~7.5K lines, with provider
+implementations in ~19K more.</p>
+<p>Key differences:</p>
 <ul>
-<li><strong>Larger binary (44 MB)</strong> in exchange for built-in voice I/O, browser
-automation, web UI, and MCP support</li>
-<li><strong>Apple Container support</strong> in addition to Docker</li>
-<li><strong>WebAuthn passkey authentication</strong> — not just tokens</li>
-<li><strong>Cross-session recall tools</strong> for finding earlier work without dumping raw history</li>
+<li><strong>Single Rust binary</strong> instead of a Node.js or Python application runtime</li>
+<li><strong>Built-in web UI</strong> with streaming chat, settings, sessions, projects, and
+admin surfaces</li>
+<li><strong>Docker/Podman, Apple Container, and WASM sandboxing</strong></li>
+<li><strong>Password, WebAuthn passkeys, scoped API keys, and vault-backed secret
+storage</strong></li>
+<li><strong>Cross-session recall</strong> without dumping raw history into every prompt</li>
+<li><strong>Autonomous skill self-improvement</strong> with <code>enable_self_improvement</code> on by default</li>
 <li><strong>Automatic checkpoints</strong> before built-in skill and memory mutations</li>
 <li><strong>15 lifecycle hook events</strong> with circuit breaker and dry-run mode</li>
-<li><strong>Built-in web UI</strong> with real-time streaming, settings management, and
-session branching</li>
+<li><strong>Read-only OpenClaw import</strong> for identity, providers, skills, memory,
+sessions, channels, and MCP config</li>
 </ul>
+<p>Moltis intentionally has a small unsafe surface, not a zero-unsafe entire
+workspace. Unsafe code is isolated to Swift FFI, local model wrappers, and
+precompiled WASM/runtime boundaries. The core agent and gateway paths stay in
+safe Rust.</p>
 <h2 id="security-model"><a class="header" href="#security-model">Security Model</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>OpenClaw</th><th>PicoClaw</th><th>NanoClaw</th><th>ZeroClaw</th><th><strong>Moltis</strong></th></tr></thead><tbody>
-<tr><td>Code sandbox</td><td>App-level permissions</td><td>None</td><td>Docker containers</td><td>Docker containers</td><td>Docker + Apple Container</td></tr>
-<tr><td>Secret handling</td><td>Environment variables</td><td>Environment variables</td><td>Environment variables</td><td>Encrypted profiles</td><td><code>secrecy::Secret</code>, zeroed on drop</td></tr>
-<tr><td>Auth method</td><td>Basic password</td><td>API keys only</td><td>None (WhatsApp auth)</td><td>Token + OAuth</td><td>Password + Passkey + API keys</td></tr>
-<tr><td>SSRF protection</td><td>Plugin</td><td>—</td><td>—</td><td>DNS validation</td><td>DNS-resolved, blocks loopback/private/link-local/CGNAT</td></tr>
-<tr><td>WebSocket origin</td><td>—</td><td>N/A</td><td>—</td><td>—</td><td>Cross-origin rejection</td></tr>
-<tr><td><code>unsafe</code> code</td><td>N/A (JS)</td><td>N/A (Go)</td><td>N/A (JS)</td><td>Minimal</td><td>Denied workspace-wide*</td></tr>
-<tr><td>Hook gating</td><td>—</td><td>—</td><td>—</td><td>Skills-based</td><td><code>BeforeToolCall</code> inspect/modify/block</td></tr>
-<tr><td>Rate limiting</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Per-IP throttle, strict login limits</td></tr>
+<div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>OpenClaw</th><th>Hermes Agent</th><th><strong>Moltis</strong></th></tr></thead><tbody>
+<tr><td>Code sandbox</td><td>App-level permissions and tool controls</td><td>Local/Docker/SSH/cloud terminal backends</td><td>Docker/Podman + Apple Container + WASM</td></tr>
+<tr><td>Secret handling</td><td>Environment/config/plugin paths</td><td>Config and provider credentials</td><td><code>secrecy::Secret</code>, encrypted vault, redaction</td></tr>
+<tr><td>Auth/access</td><td>Pairing and gateway controls</td><td>CLI plus messaging gateway setup</td><td>Password + Passkey + scoped API keys</td></tr>
+<tr><td>SSRF protection</td><td>Tool/plugin dependent</td><td>Tool/backend dependent</td><td>DNS-resolved, blocks loopback/private/link-local/CGNAT</td></tr>
+<tr><td>WebSocket origin</td><td>Gateway dependent</td><td>Gateway dependent</td><td>Cross-origin rejection</td></tr>
+<tr><td>Unsafe/native boundary</td><td>N/A for TS core, native apps exist</td><td>N/A for Python core, native deps possible</td><td>Isolated FFI/runtime unsafe islands</td></tr>
+<tr><td>Hook gating</td><td>Plugin and runtime hooks</td><td>Hooks/plugins</td><td><code>BeforeToolCall</code> inspect/modify/block</td></tr>
+<tr><td>Rate limiting</td><td>Gateway dependent</td><td>Gateway dependent</td><td>Per-IP throttle, strict login limits</td></tr>
 </tbody></table>
 </div>
-<h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>OpenClaw</th><th>PicoClaw</th><th>ZeroClaw</th><th><strong>Moltis</strong></th></tr></thead><tbody>
-<tr><td>Binary / dist size</td><td>~28 MB (node_modules)</td><td>&lt;10 MB</td><td>3.4 MB</td><td>44 MB</td></tr>
-<tr><td>Cold start</td><td>&gt;30s</td><td>&lt;1s</td><td>&lt;10ms</td><td>~1s</td></tr>
-<tr><td>RAM (idle)</td><td>&gt;100 MB</td><td>&lt;10 MB</td><td>&lt;5 MB</td><td>~30 MB</td></tr>
-<tr><td>Min hardware</td><td>Modern desktop</td><td>$10 SBC (RISC-V)</td><td>$10 SBC</td><td>Raspberry Pi 4+</td></tr>
+<h2 id="local-checkout-snapshot"><a class="header" href="#local-checkout-snapshot">Local Checkout Snapshot</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>OpenClaw</th><th>Hermes Agent</th><th><strong>Moltis</strong></th></tr></thead><tbody>
+<tr><td>Main implementation LoC*</td><td>~1.0M TypeScript, ~89K Swift, ~25K Kotlin</td><td>~144K Python, ~8K TypeScript</td><td><strong>~270K Rust</strong></td></tr>
+<tr><td>Main install path</td><td><code>npm install -g openclaw</code></td><td><code>curl .../install.sh | bash</code>, then <code>hermes</code></td><td><strong>Install script, Homebrew, Docker, or Cargo</strong></td></tr>
+<tr><td>Runtime dependency</td><td>Node.js</td><td>Python environment</td><td><strong>Bundled binary</strong></td></tr>
+<tr><td>Workspace/package count</td><td>npm packages, extensions, apps</td><td>Python package, plugins, tools, UI packages</td><td><strong>59 Rust crates</strong></td></tr>
+<tr><td>Test surface signal</td><td>Large TS/app test tree</td><td>Python and TUI tests</td><td><strong>470+ Rust files containing tests</strong></td></tr>
 </tbody></table>
 </div>
-<p>Moltis is larger because it bundles a web UI, voice engine, browser automation,
-and MCP runtime. Use <code>--no-default-features --features lightweight</code> for
-constrained devices.</p>
-<h2 id="when-to-choose-what"><a class="header" href="#when-to-choose-what">When to Choose What</a></h2>
-<p><strong>Choose OpenClaw if</strong> you want the largest ecosystem, maximum third-party
-skills, and don’t mind Node.js as a dependency.</p>
-<p><strong>Choose PicoClaw if</strong> you need to run on extremely constrained hardware
-($10 boards, RISC-V) and can accept a minimal feature set.</p>
-<p><strong>Choose NanoClaw if</strong> you want a small, readable TypeScript codebase with
-container isolation and don’t need voice, MCP, or a web UI.</p>
-<p><strong>Choose ZeroClaw if</strong> you want the smallest possible Rust binary, sub-10ms
-startup, and broad channel support without a web UI.</p>
-<p><strong>Choose Moltis if</strong> you want:</p>
-<ul>
-<li>A single auditable Rust binary with built-in web UI</li>
-<li>A persistent agent with cross-session recall and restoreable built-in edits</li>
-<li>Voice I/O with 15+ providers (8 TTS + 7 STT)</li>
-<li>MCP server support (stdio + HTTP/SSE)</li>
-<li>WebAuthn passkey authentication</li>
-<li>Apple Container sandbox support (macOS native)</li>
-<li>15 lifecycle hook events with circuit breaker</li>
-<li>Embeddings-powered long-term memory with hybrid search</li>
-<li>Cron scheduling, browser automation, and Tailscale integration</li>
-</ul>
+<p>* These counts are intentionally limited to app/source directories and exclude
+dependency folders and build output. They are useful for spotting scale, not for
+ranking projects.</p>
 <h2 id="links"><a class="header" href="#links">Links</a></h2>
 <ul>
-<li><a href="https://github.com/openclaw/openclaw">OpenClaw</a> — <a href="https://docs.openclaw.ai">Docs</a></li>
-<li><a href="https://github.com/sipeed/picoclaw">PicoClaw</a> — <a href="https://picoclaw.net">Site</a></li>
-<li><a href="https://github.com/qwibitai/nanoclaw">NanoClaw</a></li>
-<li><a href="https://github.com/zeroclaw-labs/zeroclaw">ZeroClaw</a> — <a href="https://zeroclaw.net">Site</a></li>
-<li><a href="https://github.com/moltis-org/moltis">Moltis</a> — <a href="https://docs.moltis.org">Docs</a></li>
+<li><a href="https://github.com/openclaw/openclaw">OpenClaw</a> and <a href="https://docs.openclaw.ai">OpenClaw docs</a></li>
+<li><a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> and <a href="https://hermes-agent.nousresearch.com/docs/">Hermes docs</a></li>
+<li><a href="https://github.com/moltis-org/moltis">Moltis</a> and <a href="https://docs.moltis.org">Moltis docs</a></li>
 </ul>
 
                     </main>
